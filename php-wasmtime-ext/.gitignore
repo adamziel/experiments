@@ -1,0 +1,42 @@
+# Build artifacts
+.libs/
+modules/
+*.lo
+*.la
+*.o
+*.dep
+
+# autotools / phpize generated
+acinclude.m4
+aclocal.m4
+autom4te.cache/
+build/
+config.guess
+config.h
+config.h.in
+config.log
+config.nice
+config.status
+config.sub
+configure
+configure.ac
+include/
+install-sh
+libtool
+ltmain.sh
+Makefile
+Makefile.fragments
+Makefile.global
+Makefile.objects
+missing
+mkinstalldirs
+run-tests.php
+
+# wasmtime C API (downloaded separately)
+wasmtime-c-api/
+
+# nix
+result
+
+# adversarial loop state
+.adversarial-loop/
