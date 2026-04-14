@@ -1,0 +1,32 @@
+services:
+  site-a:
+    build: .
+    image: wp-sync-demo:latest
+    container_name: wpsync-site-a
+    ports:
+      - "8081:80"
+    environment:
+      WP_SITEURL: "http://localhost:8081"
+    volumes:
+      - site-a-wp-content:/var/www/html/wp-content
+      - site-a-wpsync:/var/www/html/wpsync-data
+      - ../plugin/wp-sync:/var/www/html/wp-content/plugins/wp-sync:ro
+
+  site-b:
+    build: .
+    image: wp-sync-demo:latest
+    container_name: wpsync-site-b
+    ports:
+      - "8082:80"
+    environment:
+      WP_SITEURL: "http://localhost:8082"
+    volumes:
+      - site-b-wp-content:/var/www/html/wp-content
+      - site-b-wpsync:/var/www/html/wpsync-data
+      - ../plugin/wp-sync:/var/www/html/wp-content/plugins/wp-sync:ro
+
+volumes:
+  site-a-wp-content:
+  site-a-wpsync:
+  site-b-wp-content:
+  site-b-wpsync:
