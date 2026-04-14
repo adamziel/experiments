@@ -1,0 +1,70 @@
+name: php-wasmtime-ext
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'php-wasmtime-ext/**'
+      - '.github/workflows/php-wasmtime-ext.yml'
+  pull_request:
+    paths:
+      - 'php-wasmtime-ext/**'
+      - '.github/workflows/php-wasmtime-ext.yml'
+  workflow_dispatch:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: php-wasmtime-ext
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install PHP 8.2 + build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            php8.2 php8.2-dev php8.2-cli \
+            build-essential autoconf libtool pkg-config curl xz-utils
+
+      - name: Show versions
+        run: |
+          php --version
+          phpize --version || true
+          gcc --version
+
+      - name: Cache wasmtime C API
+        id: cache-wasmtime
+        uses: actions/cache@v4
+        with:
+          path: php-wasmtime-ext/wasmtime-c-api
+          key: wasmtime-c-api-v29.0.1-x86_64-linux
+
+      - name: Download wasmtime C API
+        if: steps.cache-wasmtime.outputs.cache-hit != 'true'
+        run: ./scripts/download-wasmtime.sh
+
+      - name: Build extension
+        run: |
+          phpize
+          ./configure --enable-wasmtime
+          make -j"$(nproc)"
+
+      - name: Verify extension loads
+        run: |
+          export LD_LIBRARY_PATH="$PWD/wasmtime-c-api/lib:$LD_LIBRARY_PATH"
+          php -d extension="$PWD/modules/wasmtime.so" \
+              -r 'var_dump(extension_loaded("wasmtime"));' \
+              | grep -q 'bool(true)'
+
+      - name: Run test suite
+        run: ./scripts/test.sh
+
+      - name: Upload built .so on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wasmtime-so
+          path: php-wasmtime-ext/modules/wasmtime.so
+          if-no-files-found: ignore
