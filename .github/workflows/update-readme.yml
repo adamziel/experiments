@@ -21,8 +21,8 @@ jobs:
             if [ -f "$dir/README.md" ]; then
               # Grab the first heading line
               title=$(head -5 "$dir/README.md" | grep -m1 '^#' | sed 's/^#\+ *//')
-              # Grab the first non-empty, non-heading line as a summary
-              summary=$(sed -n '/^[^#]/p' "$dir/README.md" | sed '/^$/d' | head -1)
+              # Grab the first non-empty, non-heading line before any code block as a summary
+              summary=$(awk '/^```/{exit} /^[^#]/ && NF{print; exit}' "$dir/README.md")
               listing="${listing}- **${dir}** — ${title}: ${summary}"$'\n'
             fi
           done
@@ -61,7 +61,7 @@ jobs:
               "",
               "## Instructions",
               "",
-              "1. Read each subdirectory\\'s `README.md` to understand what the experiment is about.",
+              "1. Read each subdirectory's `README.md` to understand what the experiment is about.",
               "2. Rewrite the root `README.md` with:",
               "   - A short repo-level title and one-liner description.",
               "   - A table (or list) of every experiment with its name, a one-sentence summary, and a link to its directory.",
