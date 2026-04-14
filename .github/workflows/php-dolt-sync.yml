@@ -1,0 +1,37 @@
+name: php-dolt-sync
+
+on:
+  pull_request:
+    paths:
+      - 'php-dolt-sync/**'
+      - '.github/workflows/php-dolt-sync.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'php-dolt-sync/**'
+      - '.github/workflows/php-dolt-sync.yml'
+
+jobs:
+  tests:
+    name: PHP 8.2 test suite
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: php-dolt-sync
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: sqlite3, intl, mbstring
+          coverage: none
+      - run: php tests/run.php
+
+  docker-build:
+    name: Demo image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: docker build
+        working-directory: php-dolt-sync/docker
+        run: docker build -t wp-sync-demo:ci .
