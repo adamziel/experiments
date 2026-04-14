@@ -21,16 +21,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install PHP 8.2 + build deps
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: none
+          coverage: none
+
+      - name: Install build deps
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            php8.2 php8.2-dev php8.2-cli \
             build-essential autoconf libtool pkg-config curl xz-utils
 
       - name: Show versions
         run: |
           php --version
+          php-config --version
           phpize --version || true
           gcc --version
 
