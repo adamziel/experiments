@@ -1,98 +1,85 @@
-# WordPress Playground — UX Mockups v3
+# WordPress Playground UX Mockups (v3)
 
-Three design directions for the next generation of [playground.wordpress.net](https://playground.wordpress.net), grounded in a thorough audit of all 31 user flows.
+A ground-up redesign exploration for [playground.wordpress.net](https://playground.wordpress.net), informed by a comprehensive feature and flow audit of the live product.
 
-## Research
+## Research Summary
 
-A detailed [feature and flow audit](research/flows.md) (~1,300 lines) was conducted on the live Playground site. The audit maps:
+WordPress Playground is a browser-based WordPress environment (WebAssembly) that runs entirely client-side. The product's mental model centers on three primitives:
 
-- **Three core primitives**: Sites (running WP instances), Blueprints (declarative JSON configs), Storage (temporary / browser-OPFS / device filesystem)
-- **31 user flows**: from first visit through blueprint export, GitHub PR push, and error recovery
-- **10 friction points**: 23+ top-bar buttons, flat modal hierarchy, no plugin search UI, no "Clone site" affordance, technical error messages, and more
+- **Sites** — running WordPress instances (temporary, browser-stored, or device-stored)
+- **Blueprints** — declarative JSON configs that describe how to set up WordPress
+- **Storage** — how site data persists (in-memory, browser OPFS, or local filesystem)
 
-The mockups are designed to address these friction points while preserving full flow coverage.
+The current UI surfaces ~31 user flows through a top bar with 23+ buttons, a flat modal hierarchy, and a resizable sidebar. This redesign explores three distinct information architectures that make the mental model more obvious while keeping all critical flows within ≤2 clicks.
 
-## The three directions
+See [research/flows.md](research/flows.md) for the full feature audit.
 
-### Direction 1: The Notebook
+## The Three Directions
 
-> *Quiet chrome, canvas-first*
+### Direction 1: "Playground is a Notebook" → [mockup-1-notebook/](mockup-1-notebook/index.html)
+A document-centric layout where the preview is the canvas and the chrome is quiet. Advanced actions live in a slim side panel and a command bar (⌘K). Warm neutrals with a sage accent. Inspired by Notion, iA Writer, and Google Docs.
 
-A document-centric layout where the preview is the canvas and advanced actions live in a slim side panel and a slash-style command bar. Warm, book-like palette with an autosave feel. Think Notion + iA Writer + Google Docs.
+### Direction 2: "Playground is a Workspace" → [mockup-2-workspace/](mockup-2-workspace/index.html)
+Multi-site-first: users land on a grid of their sites. Click a card to open an editor view. A left rail groups Drafts, Saved, and Cloned sites. Cool neutrals with a violet accent. Inspired by Linear, Arc, and Raycast.
 
-**Key affordances**: Bottom command bar with `/` prompt, collapsible side panel with tabs, inline-editable title, storage badge always visible.
+### Direction 3: "Playground is a Hub" → [mockup-3-hub/](mockup-3-hub/index.html)
+Everything on one scrolling page. Live preview pinned at top, three panels below for Configure, Extend, and Export & Share. A floating mini-preview appears on scroll. Warm off-white with a coral accent. Inspired by Stripe's settings pages and GitHub Project overviews.
 
-### Direction 2: The Workspace
+## Critical Flow Coverage (all three mockups)
 
-> *Multi-site-first, project switcher*
+All 12 critical flows are interactive in every mockup:
 
-On entry, users see a grid of site cards (with a "Draft (unsaved)" card for the current session). Click a card to open it in a clean editor view. A dark left rail groups Drafts, Saved, and Cloned-from-URL sites. Feels like Linear, Arc, or Raycast.
+| # | Flow | Interaction |
+|---|------|-------------|
+| 1 | First visit | Default state with preview loaded |
+| 2 | Create site | Template picker (Blank, Blog, Portfolio, Store, Docs, Blueprint) |
+| 3 | Switch sites | Site switcher with saved site list |
+| 4 | Change PHP/WP version | Settings panel with version dropdowns |
+| 5 | Install plugin | Search 6 real plugins + ZIP upload |
+| 6 | Install theme | Gallery with 4 real themes |
+| 7 | Import/export blueprint | URL import, JSON paste, export with copy |
+| 8 | Persist site | 3-option menu (Memory / Browser / Device) |
+| 9 | Download as ZIP | Button with toast confirmation |
+| 10 | Push to GitHub | Modal with repo/branch/PR fields |
+| 11 | Share site | Copy URL to clipboard + blueprint URL |
+| 12 | Keyboard shortcuts | ⌘S (save), ⌘K (command palette / search) |
 
-**Key affordances**: Site card grid with hover actions, two-view layout (grid ↔ editor), dark sidebar navigation, Cmd+K command palette.
+## How to View
 
-### Direction 3: The Hub
-
-> *Everything on one scrolling page*
-
-The live preview is pinned at the top; below it, three horizontal panels for Configure, Extend, and Export & Share. A floating mini-preview appears when you scroll past the main preview. Feels like a Stripe settings page or GitHub Project overview.
-
-**Key affordances**: Three-panel layout, sticky section headers on mobile, IntersectionObserver-powered mini-preview, Cmd+K global search.
-
-## Flow coverage
-
-All three mockups implement the same 12 critical flows via click-through interactions with visible state changes and toast notifications:
-
-1. Inline-editable site title (click → edit → Enter/Esc)
-2. Storage state always visible (In memory / Browser / Device) with one-click change
-3. New site flow (template picker: Blank, Blog, Portfolio, Store, Docs, Blueprint)
-4. Settings (PHP/WP version, Language, Networking, Multisite, Extensions)
-5. Plugin management (search 6 real plugins, install, deactivate, remove, ZIP upload)
-6. Theme gallery (4 themes with colored previews, activate/preview)
-7. Blueprint import/export (URL, JSON paste, formatted export with clipboard copy)
-8. Save/Persist (memory → browser → device with clear explanations)
-9. Download (ZIP + WXR export)
-10. Push to GitHub (modal with repo/branch/PR fields)
-11. Share site (clipboard copy + blueprint URL option)
-12. Keyboard shortcuts (Cmd+S save, Cmd+K command palette or search)
-
-Non-critical flows (Clone site, Preview WP/Gutenberg PR, Import from GitHub, error recovery) are represented as disabled/coming-soon affordances.
-
-## How to view
-
-Open any HTML file directly in a browser:
-
+### Quick preview
+Open any `index.html` file directly in a browser:
 ```bash
-# Landing page with all three directions
 open playground-ux-mockups/index.html
-
-# Individual mockups
+# or
 open playground-ux-mockups/mockup-1-notebook/index.html
-open playground-ux-mockups/mockup-2-workspace/index.html
-open playground-ux-mockups/mockup-3-hub/index.html
 ```
 
-Or start a local server:
-
+### With live reload (recommended)
 ```bash
-cd playground-ux-mockups
-python3 -m http.server 8080
-# Then open http://localhost:8080
+# Using Python
+cd playground-ux-mockups && python3 -m http.server 8080
+
+# Using Node
+cd playground-ux-mockups && npx serve .
+
+# Using PHP
+cd playground-ux-mockups && php -S localhost:8080
 ```
+Then open `http://localhost:8080` in your browser.
 
-All mockups are single self-contained HTML files with inline CSS and JavaScript — no build step required. They use Google Fonts (Inter + JetBrains Mono) loaded via CDN.
+### Responsive testing
+Each mockup is responsive at 360px, 768px, 1024px, and 1280px. Use browser dev tools to test at these widths, or see the `screenshots/` folder for pre-rendered views.
 
-## Responsive breakpoints
-
-Each mockup is responsive at 360px, 768px, 1024px, and 1280px. Screenshots at all widths are in the `screenshots/` directory.
-
-## Design system
+## Design System
 
 Each mockup uses a CSS-variable-driven design system:
+- **Typography**: Inter (400/500/600) + JetBrains Mono for code
+- **Spacing**: 4px base grid (`--space-1` through `--space-8`)
+- **Colors**: Full palette per direction (`--bg`, `--surface`, `--accent`, etc.)
+- **Radii**: `--radius-sm` (6px) through `--radius-xl` (24px)
+- **Icons**: Inline SVGs, Lucide-style (1.5 stroke-width, round caps)
+- **Motion**: 180ms hover, 240ms menus, respects `prefers-reduced-motion`
 
-- **Typography**: `--fs-xs` through `--fs-3xl` (12px–40px)
-- **Spacing**: `--space-1` through `--space-8` (4px–64px, 4px base grid)
-- **Colors**: `--bg`, `--surface`, `--surface-2`, `--border`, `--text`, `--text-muted`, `--accent`, `--accent-fg`, `--success`, `--warning`, `--danger`
-- **Radii**: `--radius-sm` through `--radius-xl` (6px–24px)
-- **Shadows**: Layered, quiet (2+ stops)
-- **Icons**: Inline SVG, Lucide-style (stroke-based, 1.5 width, round caps/joins)
-- **Motion**: 180ms hover, 240ms menus/modals, ease-out (respects `prefers-reduced-motion`)
+## Screenshots
+
+Pre-rendered at 360px, 768px, 1024px, and 1280px for each mockup, plus the landing page at 360px, 768px, and 1280px. See `screenshots/` folder.
