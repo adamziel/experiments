@@ -111,11 +111,19 @@ $PHP \
     > "$PHP_LOG" 2>&1 &
 PHP_PID=$!
 
+# Port-listening probe (don't send an HTTP request — cold WordPress through
+# branchfs can take a while on the first hit, so a /-hitting probe races with
+# the real first request).
 for i in $(seq 1 30); do
-    if curl -s --max-time 5 "http://127.0.0.1:$PHP_PORT/" 2>/dev/null | grep -qi '<html'; then
+    if $PHP_BIN -r "\$s=@fsockopen('127.0.0.1',$PHP_PORT,\$e,\$m,0.5); if(\$s){fclose(\$s);exit(0);} exit(1);" 2>/dev/null; then
         break
     fi
-    [ "$i" -eq 30 ] && { echo "FAILED"; tail -20 "$PHP_LOG"; exit 1; }
+    if ! kill -0 "$PHP_PID" 2>/dev/null; then
+        echo "FAILED (php -S died)"
+        tail -20 "$PHP_LOG"
+        exit 1
+    fi
+    [ "$i" -eq 30 ] && { echo "FAILED (port never opened)"; tail -20 "$PHP_LOG"; exit 1; }
     sleep 1
 done
 echo "ok (pid=$PHP_PID)"
