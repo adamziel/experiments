@@ -52,17 +52,47 @@ therefore does two things:
 The PHP stat cache is cleared on every mutation so stale `stat()` results don't
 leak between branches.
 
-## Building & running locally
+## Quickest path: Docker (works on Mac)
+
+A `Dockerfile` and `docker-compose.yml` are included. They build PHP 8.2 with
+the extension, install Dolt, fetch WordPress 6.5, and run the 8-step e2e by
+default. Works on Apple Silicon (arm64) and Linux (amd64) — `TARGETARCH`
+selects the right Dolt binary.
+
+```bash
+docker compose build
+docker compose run --rm e2e       # runs bash e2e/run_e2e.sh; exit code is pass/fail
+```
+
+Expected output ends with `E2E RESULT: 8/8 steps pass`.
+
+For an interactive shell inside the container (with port 18080 exposed so you
+can curl the PHP server from the host):
+
+```bash
+docker compose run --rm --service-ports shell
+# inside:
+bash e2e/run_e2e.sh           # or
+make test-all                 # the 92-assertion unit suite
+```
+
+## Building & running natively
 
 Requires PHP 8.2 dev headers and SQLite 3 dev headers. On Debian/Ubuntu:
 
 ```bash
-sudo apt-get install php8.2-dev libsqlite3-dev build-essential
+sudo apt-get install php8.2-dev libsqlite3-dev build-essential pkg-config
 ```
 
-Edit `Makefile` and set `PHP_DEV_DIR` / `SQLITE_INC` / `SQLITE_LIB` to match
-your system (the committed values are the Nix store paths from the machine
-this was developed on — they will not work as-is elsewhere).
+The `Makefile` auto-detects includes via `php-config` and `pkg-config`, so
+`make` should just work. On Nix or other non-standard setups you can still
+override:
+
+```bash
+make PHP_DEV_DIR=/nix/.../php-8.2-dev \
+     SQLITE_INC=/nix/.../sqlite-dev/include \
+     SQLITE_LIB=/nix/.../sqlite/lib
+```
 
 Then:
 

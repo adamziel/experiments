@@ -1,0 +1,13 @@
+.adversarial-loop
+.claude
+.git
+ext/branchfs.so
+e2e/wp-src
+e2e/wp.zip
+e2e/*.log
+e2e/dolt-data
+e2e/*.db
+/tmp
+*.o
+*.lo
+*.la

@@ -1,0 +1,19 @@
+services:
+  e2e:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: branched-wp:latest
+    # Default command runs the 8-step e2e test and exits non-zero on failure.
+    command: ["bash", "/app/e2e/run_e2e.sh"]
+    tty: true
+
+  shell:
+    image: branched-wp:latest
+    entrypoint: ["/bin/bash"]
+    working_dir: /app
+    tty: true
+    stdin_open: true
+    # Expose the php -S port if you want to poke at WP from the host.
+    ports:
+      - "18080:18080"

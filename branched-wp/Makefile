@@ -1,25 +1,52 @@
-PHP_DEV_DIR := /nix/store/d2blqhg7hmpsyj91bjl9bkphdksfwidw-php-8.2.29-dev
-SQLITE_INC  := /nix/store/x8r21k5xskd7647wzb625g3gfxrj97w8-sqlite-3.48.0-dev/include
-SQLITE_LIB  := /nix/store/ks3slx52c0jmfgg717n0jq9lp354mlnw-sqlite-3.48.0/lib
+# Portable by default: detect PHP + SQLite via php-config and pkg-config.
+# Override PHP_DEV_DIR / SQLITE_INC / SQLITE_LIB on the command line if needed.
 
-PHP_INCLUDES := -I$(PHP_DEV_DIR)/include/php \
-                -I$(PHP_DEV_DIR)/include/php/main \
-                -I$(PHP_DEV_DIR)/include/php/TSRM \
-                -I$(PHP_DEV_DIR)/include/php/Zend \
-                -I$(PHP_DEV_DIR)/include/php/ext \
-                -I$(PHP_DEV_DIR)/include/php/ext/date/lib \
-                -I$(SQLITE_INC)
+PHP_CONFIG ?= php-config
+PKG_CONFIG ?= pkg-config
 
-CC      := gcc
-CFLAGS  := -fPIC -shared -O2 -Wall -DCOMPILE_DL_BRANCHFS -DHAVE_CONFIG_H=0
-LDFLAGS := -L$(SQLITE_LIB) -lsqlite3 -Wl,-rpath,$(SQLITE_LIB)
+PHP_INCLUDE_DIR ?= $(shell $(PHP_CONFIG) --include-dir)
+PHP_EXTRA_INCS  := -I$(PHP_INCLUDE_DIR) \
+                   -I$(PHP_INCLUDE_DIR)/main \
+                   -I$(PHP_INCLUDE_DIR)/TSRM \
+                   -I$(PHP_INCLUDE_DIR)/Zend \
+                   -I$(PHP_INCLUDE_DIR)/ext \
+                   -I$(PHP_INCLUDE_DIR)/ext/date/lib
 
-.PHONY: all clean test test-compat init-db
+SQLITE_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sqlite3 2>/dev/null)
+SQLITE_LIBS   ?= $(shell $(PKG_CONFIG) --libs sqlite3 2>/dev/null)
+
+# Fallback if pkg-config has no sqlite3.pc
+ifeq ($(strip $(SQLITE_LIBS)),)
+SQLITE_LIBS := -lsqlite3
+endif
+
+# Nix-style override: setting PHP_DEV_DIR / SQLITE_INC / SQLITE_LIB still works
+ifdef PHP_DEV_DIR
+PHP_EXTRA_INCS := -I$(PHP_DEV_DIR)/include/php \
+                  -I$(PHP_DEV_DIR)/include/php/main \
+                  -I$(PHP_DEV_DIR)/include/php/TSRM \
+                  -I$(PHP_DEV_DIR)/include/php/Zend \
+                  -I$(PHP_DEV_DIR)/include/php/ext \
+                  -I$(PHP_DEV_DIR)/include/php/ext/date/lib
+endif
+ifdef SQLITE_INC
+SQLITE_CFLAGS := -I$(SQLITE_INC)
+endif
+ifdef SQLITE_LIB
+SQLITE_LIBS := -L$(SQLITE_LIB) -lsqlite3 -Wl,-rpath,$(SQLITE_LIB)
+endif
+
+CC      ?= gcc
+CFLAGS  := -fPIC -shared -O2 -Wall -DCOMPILE_DL_BRANCHFS -DHAVE_CONFIG_H=0 $(SQLITE_CFLAGS)
+INCLUDES := $(PHP_EXTRA_INCS)
+LDFLAGS := $(SQLITE_LIBS)
+
+.PHONY: all clean test test-compat init-db test-all
 
 all: ext/branchfs.so
 
 ext/branchfs.so: ext/branchfs.c ext/branchfs.h
-	$(CC) $(CFLAGS) $(PHP_INCLUDES) -o $@ ext/branchfs.c $(LDFLAGS)
+	$(CC) $(CFLAGS) $(INCLUDES) -o $@ ext/branchfs.c $(LDFLAGS)
 
 init-db: ext/branchfs.so
 	php -d "extension=$(CURDIR)/ext/branchfs.so" scripts/init_db.php
