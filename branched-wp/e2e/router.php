@@ -1,44 +1,54 @@
 <?php
 /**
- * BranchFS E2E Router for PHP built-in server.
+ * BranchFS router for PHP built-in server.
  *
- * Resolves branch from cookie/header, sets up branchfs interception,
- * and routes requests to WordPress files in the SQLite store.
+ * Branch resolution:
+ *   - <root-domain>      -> main
+ *   - <sub>.<root-domain> -> branch "<sub>"
+ *
+ * The root domain is BRANCHFS_ROOT_HOST (default: wp.localhost).
+ * No cookies, no signed tokens: the subdomain IS the branch.
+ *
+ * To try it on a Mac add a wildcard entry to /etc/hosts, e.g.
+ *     127.0.0.1   wp.localhost feature.wp.localhost marketing.wp.localhost
+ * (or use dnsmasq for true wildcarding) and visit
+ *     http://wp.localhost:18080/            -> main
+ *     http://feature.wp.localhost:18080/    -> branch "feature"
  */
 
 error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED);
 
-$db_path = getenv('BRANCHFS_DB');
-$wp_root = getenv('BRANCHFS_WP_ROOT');
-$secret  = getenv('BRANCHFS_SECRET') ?: 'e2e-test-secret';
+$db_path   = getenv('BRANCHFS_DB');
+$wp_root   = getenv('BRANCHFS_WP_ROOT');
+$root_host = getenv('BRANCHFS_ROOT_HOST') ?: 'wp.localhost';
 
 if (!$db_path || !$wp_root) {
     http_response_code(500);
     echo "BRANCHFS_DB and BRANCHFS_WP_ROOT env vars required\n";
     return true;
 }
-
 if (!extension_loaded('branchfs')) {
     http_response_code(500);
     echo "branchfs extension not loaded\n";
     return true;
 }
 
-// --- Branch resolution ---
-$branch = 'main';
+// --- Branch resolution from HTTP Host header ---
 
-if (!empty($_SERVER['HTTP_X_BRANCH'])) {
-    $h = $_SERVER['HTTP_X_BRANCH'];
-    if (preg_match('/^[a-zA-Z0-9_\-\/\.]{1,128}$/', $h)) {
-        $branch = $h;
-    }
-} elseif (!empty($_COOKIE['wp_branch'])) {
-    $parts = explode(':', $_COOKIE['wp_branch'], 2);
-    if (count($parts) === 2) {
-        $expected = hash_hmac('sha256', $parts[0], $secret);
-        if (hash_equals($expected, $parts[1])) {
-            $branch = $parts[0];
-        }
+$host = $_SERVER['HTTP_HOST'] ?? '';
+// Strip :port
+$host_noport = preg_replace('/:\d+$/', '', $host);
+$host_noport = strtolower($host_noport);
+$root_host_lc = strtolower($root_host);
+
+$branch = 'main';
+if ($host_noport === $root_host_lc || $host_noport === '' || $host_noport === '127.0.0.1' || $host_noport === 'localhost') {
+    $branch = 'main';
+} elseif (substr($host_noport, -strlen('.' . $root_host_lc)) === '.' . $root_host_lc) {
+    $sub = substr($host_noport, 0, -strlen('.' . $root_host_lc));
+    // sub must be a single label (no further dots) and match our name regex
+    if (strpos($sub, '.') === false && preg_match('/^[a-zA-Z0-9_\-]{1,63}$/', $sub)) {
+        $branch = $sub;
     }
 }
 
@@ -49,6 +59,10 @@ branchfs_set_branch($branch);
 branchfs_activate();
 
 chdir($wp_root);
+
+// Expose branch for mu-plugin / debugging
+$_SERVER['BRANCHFS_BRANCH'] = $branch;
+header('X-BranchFS-Branch: ' . $branch);
 
 // --- Route request ---
 $uri  = $_SERVER['REQUEST_URI'];
@@ -99,7 +113,6 @@ if (file_exists($file) && !is_dir($file)) {
     return true;
 }
 
-// If path is a directory, try index.php inside it
 if (is_dir($file)) {
     $index = rtrim($file, '/') . '/index.php';
     if (file_exists($index)) {
@@ -110,7 +123,6 @@ if (is_dir($file)) {
     }
 }
 
-// WP front controller for pretty URLs
 $_SERVER['DOCUMENT_ROOT']   = $wp_root;
 $_SERVER['SCRIPT_FILENAME'] = $wp_root . '/index.php';
 require $wp_root . '/wp-blog-header.php';

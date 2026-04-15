@@ -1,0 +1,326 @@
+<?php
+/**
+ * branchctl — manage branchfs + Dolt branches from the command line.
+ *
+ * Usage:
+ *   branchctl list
+ *   branchctl create <name> [--from <parent>]
+ *   branchctl commit <name> [-m "message"]
+ *   branchctl delete <name>
+ *   branchctl show <name>
+ *
+ * Environment (all optional; defaults match e2e/dev.sh defaults):
+ *   BRANCHFS_DB      path to the branchfs SQLite file    (/tmp/branchfs-dev/branchfs.db)
+ *   DOLT_HOST        Dolt MySQL host                      (127.0.0.1)
+ *   DOLT_PORT        Dolt MySQL port                      (13306)
+ *   DOLT_USER        Dolt MySQL user                      (root)
+ *   DOLT_PASSWORD    Dolt MySQL password                  (empty)
+ *   DOLT_DB          Dolt database name                   (wordpress)
+ */
+
+error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE);
+
+if (!extension_loaded('branchfs')) {
+    fwrite(STDERR, "branchctl: branchfs extension not loaded. Run with `php -d extension=/app/ext/branchfs.so ...` or use bin/branchctl.\n");
+    exit(2);
+}
+
+function env_or(string $name, string $default): string {
+    $v = getenv($name);
+    return ($v === false || $v === '') ? $default : $v;
+}
+
+$DB_PATH  = env_or('BRANCHFS_DB', '/tmp/branchfs-dev/branchfs.db');
+$HOST     = env_or('DOLT_HOST', '127.0.0.1');
+$PORT     = (int)env_or('DOLT_PORT', '13306');
+$USER     = env_or('DOLT_USER', 'root');
+$PASS     = env_or('DOLT_PASSWORD', '');
+$DOLTDB   = env_or('DOLT_DB', 'wordpress');
+
+function die_usage(?string $msg = null, int $code = 1): void {
+    if ($msg !== null) fwrite(STDERR, "branchctl: $msg\n\n");
+    fwrite(STDERR, <<<USAGE
+Usage:
+  branchctl list
+  branchctl create <name> [--from <parent>]
+  branchctl commit <name> [-m "message"]
+  branchctl delete <name>
+  branchctl show <name>
+
+Flags:
+  --db <path>          override BRANCHFS_DB (default: /tmp/branchfs-dev/branchfs.db)
+  --dolt-host <host>   override DOLT_HOST (default: 127.0.0.1)
+  --dolt-port <port>   override DOLT_PORT (default: 13306)
+
+Notes:
+  - "create" forks BOTH the branchfs filesystem overlay and the Dolt branch.
+  - "commit" records a Dolt commit on the given branch (file-store is
+    committed implicitly on every write; this is for the DB side).
+  - "delete" removes the branchfs overlay and the Dolt branch.
+
+USAGE);
+    exit($code);
+}
+
+function parse_args(array $argv): array {
+    $pos = [];
+    $flags = [];
+    for ($i = 1; $i < count($argv); $i++) {
+        $a = $argv[$i];
+        if (str_starts_with($a, '--')) {
+            $name = substr($a, 2);
+            $next = $argv[$i + 1] ?? null;
+            if ($next !== null && !str_starts_with($next, '-')) {
+                $flags[$name] = $next;
+                $i++;
+            } else {
+                $flags[$name] = true;
+            }
+        } elseif ($a === '-m') {
+            $flags['message'] = $argv[++$i] ?? '';
+        } else {
+            $pos[] = $a;
+        }
+    }
+    return [$pos, $flags];
+}
+
+[$pos, $flags] = parse_args($argv);
+$cmd = $pos[0] ?? null;
+if ($cmd === null || $cmd === 'help' || $cmd === '-h' || $cmd === '--help') die_usage(null, 0);
+
+if (isset($flags['db']))        $DB_PATH = (string)$flags['db'];
+if (isset($flags['dolt-host'])) $HOST    = (string)$flags['dolt-host'];
+if (isset($flags['dolt-port'])) $PORT    = (int)$flags['dolt-port'];
+
+if (!file_exists($DB_PATH)) {
+    fwrite(STDERR, "branchctl: branchfs DB not found: $DB_PATH\n");
+    fwrite(STDERR, "           Run `bash e2e/dev.sh` first, or set BRANCHFS_DB.\n");
+    exit(2);
+}
+
+function connect_dolt(string $host, int $port, string $user, string $pass, string $db): mysqli {
+    $c = @new mysqli($host, $user, $pass, $db, $port);
+    if ($c->connect_error) {
+        fwrite(STDERR, "branchctl: cannot connect to Dolt at $host:$port as $user: {$c->connect_error}\n");
+        fwrite(STDERR, "           Is `dolt sql-server` running? (e2e/dev.sh starts one.)\n");
+        exit(3);
+    }
+    return $c;
+}
+
+function drain(mysqli $c): void {
+    while ($c->next_result()) {
+        $r = $c->store_result();
+        if ($r instanceof mysqli_result) $r->free();
+    }
+}
+
+function dolt_query(mysqli $c, string $sql): mysqli_result|bool {
+    $r = $c->query($sql);
+    if ($r === false) {
+        fwrite(STDERR, "branchctl: Dolt SQL failed: " . $c->error . "\n  query: $sql\n");
+        exit(4);
+    }
+    return $r;
+}
+
+function sqlite_open(string $path): SQLite3 {
+    return new SQLite3($path, SQLITE3_OPEN_READWRITE);
+}
+
+function branchfs_list(SQLite3 $db): array {
+    $rows = [];
+    $r = $db->query(
+        "SELECT id, name, parent_branch, created_at "
+      . "FROM branches ORDER BY name"
+    );
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $rows[] = $row;
+    }
+    return $rows;
+}
+
+function branchfs_file_count(SQLite3 $db, int $branch_id): int {
+    $s = $db->prepare("SELECT COUNT(*) FROM files WHERE branch_id = :bid");
+    $s->bindValue(':bid', $branch_id, SQLITE3_INTEGER);
+    $r = $s->execute();
+    $row = $r->fetchArray(SQLITE3_NUM);
+    return (int)($row[0] ?? 0);
+}
+
+function valid_branch_name(string $name): bool {
+    return (bool)preg_match('/^[a-zA-Z0-9_\-]{1,63}$/', $name);
+}
+
+switch ($cmd) {
+
+case 'list': {
+    branchfs_set_db($DB_PATH);
+    $db = sqlite_open($DB_PATH);
+    $branches = branchfs_list($db);
+
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $doltset = [];
+    $r = dolt_query($c, "SELECT name FROM dolt_branches");
+    if ($r instanceof mysqli_result) {
+        while ($row = $r->fetch_assoc()) $doltset[$row['name']] = true;
+        $r->free();
+    }
+    drain($c);
+    $c->close();
+
+    printf("%-20s  %-20s  %-8s  %-6s  %s\n", "BRANCH", "PARENT", "FILES", "DOLT", "CREATED");
+    printf("%s\n", str_repeat('-', 80));
+    foreach ($branches as $b) {
+        $files = branchfs_file_count($db, (int)$b['id']);
+        $dolt = isset($doltset[$b['name']]) ? 'yes' : 'NO';
+        printf("%-20s  %-20s  %-8d  %-6s  %s\n",
+            $b['name'],
+            $b['parent_branch'] ?? '(root)',
+            $files,
+            $dolt,
+            $b['created_at'] ?? ''
+        );
+    }
+    // Dolt-only branches
+    $bfs_names = array_column($branches, 'name');
+    foreach ($doltset as $name => $_) {
+        if (!in_array($name, $bfs_names, true)) {
+            printf("%-20s  %-20s  %-8s  %-6s  %s\n", $name, '(dolt only)', '—', 'yes', '');
+        }
+    }
+    break;
+}
+
+case 'create': {
+    $name = $pos[1] ?? die_usage("`create` needs a branch name");
+    $from = (string)($flags['from'] ?? 'main');
+    if (!valid_branch_name($name)) die_usage("invalid branch name: $name");
+    if ($name === 'main') die_usage("'main' is reserved");
+
+    branchfs_set_db($DB_PATH);
+    branchfs_create_branch($name, $from);
+    echo "branchfs: forked '$from' -> '$name'\n";
+
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $esc_name = $c->real_escape_string($name);
+    $esc_from = $c->real_escape_string($from);
+    dolt_query($c, "CALL DOLT_BRANCH('$esc_name', '$esc_from')");
+    drain($c);
+    echo "dolt:     forked '$from' -> '$name'\n";
+    $c->close();
+    echo "\n";
+    echo "Visit http://$name.\$BRANCHFS_ROOT_HOST:\$PORT/ to see this branch.\n";
+    break;
+}
+
+case 'commit': {
+    $name = $pos[1] ?? die_usage("`commit` needs a branch name");
+    if (!valid_branch_name($name)) die_usage("invalid branch name: $name");
+    $msg  = (string)($flags['message'] ?? ("branchctl commit on " . date('c')));
+
+    // Branchfs writes are auto-committed on disk; here we just commit Dolt.
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $esc_name = $c->real_escape_string($name);
+    $esc_msg  = $c->real_escape_string($msg);
+    dolt_query($c, "CALL DOLT_CHECKOUT('$esc_name')"); drain($c);
+    dolt_query($c, "CALL DOLT_ADD('-A')"); drain($c);
+    $r = $c->query("CALL DOLT_COMMIT('-am', '$esc_msg')");
+    if ($r === false) {
+        // nothing to commit is fine
+        if (strpos($c->error, 'nothing to commit') !== false) {
+            echo "dolt:     nothing to commit on '$name'\n";
+        } else {
+            fwrite(STDERR, "branchctl: DOLT_COMMIT failed: " . $c->error . "\n");
+            exit(4);
+        }
+    } else {
+        if ($r instanceof mysqli_result) $r->free();
+        drain($c);
+        echo "dolt:     committed on '$name': $msg\n";
+    }
+    $c->close();
+    break;
+}
+
+case 'delete': {
+    $name = $pos[1] ?? die_usage("`delete` needs a branch name");
+    if (!valid_branch_name($name)) die_usage("invalid branch name: $name");
+    if ($name === 'main') die_usage("'main' cannot be deleted");
+
+    branchfs_set_db($DB_PATH);
+    $db = sqlite_open($DB_PATH);
+    $s = $db->prepare("SELECT id FROM branches WHERE name = :n");
+    $s->bindValue(':n', $name, SQLITE3_TEXT);
+    $r = $s->execute();
+    $row = $r->fetchArray(SQLITE3_NUM);
+    if ($row) {
+        $bid = (int)$row[0];
+        $db->exec("DELETE FROM files    WHERE branch_id = $bid");
+        $db->exec("DELETE FROM branches WHERE id        = $bid");
+        echo "branchfs: deleted overlay '$name'\n";
+    } else {
+        echo "branchfs: no overlay named '$name'\n";
+    }
+
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $esc = $c->real_escape_string($name);
+    // Safe to attempt even if the Dolt branch is missing.
+    $c->query("CALL DOLT_CHECKOUT('main')"); drain($c);
+    $r = $c->query("CALL DOLT_BRANCH('-D', '$esc')");
+    if ($r === false) {
+        echo "dolt:     no branch named '$name' (or already deleted)\n";
+    } else {
+        if ($r instanceof mysqli_result) $r->free();
+        drain($c);
+        echo "dolt:     deleted branch '$name'\n";
+    }
+    $c->close();
+    break;
+}
+
+case 'show': {
+    $name = $pos[1] ?? die_usage("`show` needs a branch name");
+    if (!valid_branch_name($name) && $name !== 'main') die_usage("invalid branch name: $name");
+
+    branchfs_set_db($DB_PATH);
+    $db = sqlite_open($DB_PATH);
+    $s = $db->prepare("SELECT id, name, parent_branch, created_at FROM branches WHERE name = :n");
+    $s->bindValue(':n', $name, SQLITE3_TEXT);
+    $r = $s->execute();
+    $row = $r->fetchArray(SQLITE3_ASSOC);
+    if (!$row) {
+        echo "branchfs: no overlay named '$name'\n";
+    } else {
+        $n = branchfs_file_count($db, (int)$row['id']);
+        echo "branchfs: $name\n";
+        echo "  parent : " . ($row['parent_branch'] ?? '(root)') . "\n";
+        echo "  files  : $n\n";
+        echo "  created: " . ($row['created_at'] ?? '') . "\n";
+    }
+
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $esc = $c->real_escape_string($name);
+    $r = $c->query("SELECT hash, latest_committer, latest_commit_date, latest_commit_message FROM dolt_branches WHERE name = '$esc'");
+    if ($r instanceof mysqli_result) {
+        $dr = $r->fetch_assoc();
+        $r->free();
+        if ($dr) {
+            echo "dolt: $name\n";
+            echo "  head   : " . substr($dr['hash'] ?? '', 0, 12) . "\n";
+            echo "  author : " . ($dr['latest_committer'] ?? '') . "\n";
+            echo "  when   : " . ($dr['latest_commit_date'] ?? '') . "\n";
+            echo "  message: " . ($dr['latest_commit_message'] ?? '') . "\n";
+        } else {
+            echo "dolt: no branch named '$name'\n";
+        }
+    }
+    drain($c);
+    $c->close();
+    break;
+}
+
+default:
+    die_usage("unknown command: $cmd");
+}

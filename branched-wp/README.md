@@ -92,37 +92,76 @@ docker compose run --rm e2e       # expect: E2E RESULT: 8/8 steps pass
 docker compose run --rm --service-ports shell
 ```
 
-### Create a preview branch, hit it, merge it
+### Subdomain-based branch routing
 
-While `dev` is running, from a second host shell:
+No cookies — **the subdomain IS the branch**:
 
-```bash
-docker compose exec dev bash
-# inside the container:
+| URL                                        | Branch       |
+| ------------------------------------------ | ------------ |
+| `http://wp.localhost:18080/`               | `main`       |
+| `http://marketing.wp.localhost:18080/`     | `marketing`  |
+| `http://feature.wp.localhost:18080/`       | `feature`    |
 
-# 1. Fork the Dolt branch and the branchfs overlay
-php -r '$c=new mysqli("127.0.0.1","root","","wordpress",13306); $c->query("CALL DOLT_BRANCH(\"feature-x\",\"main\")");'
-php -d extension=/app/ext/branchfs.so -r \
-    'branchfs_set_db("/tmp/branchfs-dev/branchfs.db"); branchfs_create_branch("feature-x","main");'
+The router reads `Host:` and picks the first dot-label as the branch name. The
+root host is controlled by `BRANCHFS_ROOT_HOST` (default `wp.localhost`).
 
-# 2. Mint a signed preview cookie for that branch
-COOKIE=$(php -r "echo 'wp_branch=feature-x:'.hash_hmac('sha256','feature-x','dev-secret');")
-echo "$COOKIE"
+On your Mac add the hosts once — `/etc/hosts` doesn't do wildcards, so list
+each subdomain you plan to use:
+
+```
+# /etc/hosts
+127.0.0.1   wp.localhost  marketing.wp.localhost  feature.wp.localhost
 ```
 
-Then from your Mac:
+(Or run dnsmasq for true wildcarding.) Then `docker compose up dev` and visit
+the URLs above in a browser.
+
+### Managing branches: `bin/branchctl`
 
 ```bash
-curl -b "$COOKIE" http://localhost:18080/
-# or paste the cookie into browser devtools for localhost
+docker compose exec dev bin/branchctl list
+# BRANCH      PARENT   FILES  DOLT  CREATED
+# main        (root)   3309   yes   2026-04-15 16:21:34
+
+docker compose exec dev bin/branchctl create marketing
+# branchfs: forked 'main' -> 'marketing'
+# dolt:     forked 'main' -> 'marketing'
+
+docker compose exec dev bin/branchctl create feature --from main
+
+# Make a change on the feature branch (e.g. via the admin on
+# http://feature.wp.localhost:18080/wp-admin/) and commit it on Dolt:
+docker compose exec dev bin/branchctl commit feature -m "homepage tweak"
+
+docker compose exec dev bin/branchctl show feature
+# branchfs: feature
+#   parent : main
+#   files  : 12
+#   created: ...
+# dolt: feature
+#   head   : s81jukpeb9j0
+#   message: homepage tweak
+
+docker compose exec dev bin/branchctl delete marketing
+# branchfs: deleted overlay 'marketing'
+# dolt:     deleted branch 'marketing'
 ```
 
-Edits made while the cookie is active only show on requests carrying it —
-strip the cookie to see production unchanged. Merge back with:
+Deleting a branch removes both the SQLite overlay rows and the Dolt branch.
+`main` cannot be deleted. There's no branch-*switching* for the current
+session — the subdomain in the URL is the source of truth.
 
-```bash
-php /app/scripts/merge.php /tmp/branchfs-dev/branchfs.db feature-x main 127.0.0.1 13306
-```
+### How it works end-to-end
+
+1. Request arrives at `php -S`. Router reads `Host:` → picks branch name.
+2. Router calls `branchfs_set_branch($name); branchfs_activate()`. All
+   filesystem calls (including `realpath`, `is_file`, etc.) now resolve
+   against the branch's copy-on-write overlay in the SQLite store.
+3. WP's `wp-config.php` reads `branchfs_get_branch()` and sets
+   `DB_NAME = "wordpress/$branch"`, so MySQL connects Dolt on that branch.
+4. WP boots, sees branch-specific files + branch-specific DB rows,
+   renders the page. The response includes an `X-BranchFS-Branch:` header
+   for debugging.
 
 ## Building & running natively
 
