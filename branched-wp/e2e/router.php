@@ -64,9 +64,20 @@ chdir($wp_root);
 $_SERVER['BRANCHFS_BRANCH'] = $branch;
 header('X-BranchFS-Branch: ' . $branch);
 
-// --- Route request ---
+// --- Git smart-HTTP endpoints ---
 $uri  = $_SERVER['REQUEST_URI'];
 $path = parse_url($uri, PHP_URL_PATH) ?: '/';
+$query = parse_url($uri, PHP_URL_QUERY) ?: '';
+
+if (preg_match('|^/([a-zA-Z0-9_\-]+)\.git(/.*)?$|', $path, $git_match)) {
+    $git_site = $git_match[1]; // unused for now; single store
+    $git_path = $git_match[2] ?? '/';
+    require_once __DIR__ . '/../scripts/git_server/server.php';
+    git_server_handle($db_path, $wp_root, $git_path, $query);
+    return true;
+}
+
+// --- Route request ---
 $file = $wp_root . $path;
 
 if (substr($path, -1) === '/') {

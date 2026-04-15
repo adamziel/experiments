@@ -105,6 +105,8 @@ BRANCHFS_SECRET="$BRANCHFS_SECRET" \
 $PHP \
     -d log_errors=On \
     -d "error_log=$ERR_LOG" \
+    -d post_max_size=100M \
+    -d upload_max_filesize=100M \
     -S "$PHP_HOST:$PHP_PORT" \
     -t "$WP_ROOT" \
     "$E2E_DIR/router.php" \

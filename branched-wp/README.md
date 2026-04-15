@@ -52,6 +52,100 @@ therefore does two things:
 The PHP stat cache is cleared on every mutation so stale `stat()` results don't
 leak between branches.
 
+## Git Smart-HTTP: clone/pull/push an entire WordPress site
+
+Developers can `git clone http://wp.localhost:18080/site.git` to get BOTH the
+file tree and the DB state, edit locally, then `git push` changes back. One
+git branch per branchfs+Dolt branch; each git commit is paired with an
+`fs_commits` snapshot + a Dolt commit.
+
+### Endpoints (served by `scripts/git_server/server.php`, mounted in `e2e/router.php`)
+
+```
+GET  /<site>.git/info/refs?service=git-upload-pack    # clone/fetch discovery
+POST /<site>.git/git-upload-pack                      # serve clone/fetch
+GET  /<site>.git/info/refs?service=git-receive-pack   # push discovery
+POST /<site>.git/git-receive-pack                     # accept push (HTTP basic auth)
+```
+
+### Usage
+
+```bash
+# Clone the full site (files + DB as NDJSON)
+git clone http://wp.localhost:18080/site.git
+
+# Push changes back (requires basic auth)
+git push http://admin:admin@wp.localhost:18080/site.git main
+
+# Push to a new branch — creates it on branchfs + Dolt + the live subdomain
+git push http://admin:admin@wp.localhost:18080/site.git main:marketing
+```
+
+### Repository layout inside the clone
+
+```
+site.git/
+  wordpress/          # full WP file tree (sourced from branchfs overlay)
+    wp-admin/ wp-content/ wp-includes/ index.php ...
+  db/                 # Dolt tables, NDJSON sorted by primary key
+    schema.sql        # DDL dump
+    wp_options.ndjson wp_posts.ndjson wp_postmeta.ndjson
+    wp_users.ndjson wp_usermeta.ndjson
+    wp_comments.ndjson wp_commentmeta.ndjson
+    wp_terms.ndjson wp_termmeta.ndjson
+    wp_term_relationships.ndjson wp_term_taxonomy.ndjson
+    wp_links.ndjson
+```
+
+Binary column values (`bytes` type) are base64-encoded in NDJSON.
+
+### How it flows
+
+**Clone/pull:** if the branch's overlay has diverged from the last `fs_commits`
+row, auto-snapshot + auto-`DOLT_COMMIT` first so nothing transient gets
+missed. Then build the virtual tree from `fs_commit_files` + live Dolt
+SELECTs and serve it through php-toolkit's Git endpoint.
+
+**Push:** parse the incoming packfile, diff each commit's tree against its
+parent, apply file changes to the branchfs overlay and DB changes as
+INSERT/UPDATE/DELETE against the target Dolt branch. Record a paired
+`fs_commits` + `DOLT_COMMIT`. `schema.sql` changes apply as `ALTER TABLE`
+before row changes. Auth is HTTP basic; username becomes the Dolt commit
+author.
+
+### Library
+
+Built on [WordPress/php-toolkit](https://github.com/wordpress/php-toolkit)'s
+Git component, vendored at `vendor/wordpress-php-toolkit/`. Four root-commit
+/ initial-clone bugs needed fixing in the toolkit; fixes are upstream via
+**[WordPress/php-toolkit#235](https://github.com/WordPress/php-toolkit/pull/235)**:
+
+1. `GitEndpoint::handle_fetch_request` used `isset($parsed_commit->parents)`,
+   which is always true because `ParsedCommit::$parents` is initialised to
+   `[]` — the root-commit branch never fired. Switched to `empty()`.
+2. `GitEndpoint::handle_fetch_request` called `find_objects_added_in()` with
+   an ancestor hash as the second argument, but that parameter is `$options`.
+   Changed to `find_objects_added_since()`.
+3. `GitRepository::find_objects_added_in` dereferenced
+   `get_first_parent_hash()` unconditionally, which returns `null` for root
+   commits. Falls back to `Commit::NULL_HASH` when `parents` is empty.
+4. `GitRepository::get_commits_range` threw on `NULL_HASH` ancestor (initial
+   clone case). Added an explicit branch that walks the full reachable set.
+
+Until the PR merges, changes live in `vendor/wordpress-php-toolkit/`.
+
+### Testing
+
+`e2e/test_git_protocol.sh` runs 13 acceptance steps against a live dev stack,
+covering clone, log inspection, file edits, DB row edits, push, new-branch
+push, and subdomain verification.
+
+```bash
+bash e2e/dev.sh &                  # in one shell
+bash e2e/test_git_protocol.sh      # in another
+# -> RESULTS: 13 passed, 0 failed out of 13
+```
+
 ## Quickest path: Docker (works on Mac)
 
 A `Dockerfile` and `docker-compose.yml` are included. The image contains the
