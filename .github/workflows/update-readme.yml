@@ -1,0 +1,86 @@
+name: Update README
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  update-readme:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build experiment listing
+        id: listing
+        run: |
+          listing=""
+          for dir in */; do
+            dir="${dir%/}"
+            if [ -f "$dir/README.md" ]; then
+              # Grab the first heading line
+              title=$(head -5 "$dir/README.md" | grep -m1 '^#' | sed 's/^#\+ *//')
+              # Grab the first non-empty, non-heading line before any code block as a summary
+              summary=$(awk '/^```/{exit} /^[^#]/ && NF{print; exit}' "$dir/README.md")
+              listing="${listing}- **${dir}** — ${title}: ${summary}"$'\n'
+            fi
+          done
+          # Write to file so we can read it in the next step
+          echo "$listing" > /tmp/experiments.txt
+
+      - name: Create issue for Copilot
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const listing = fs.readFileSync('/tmp/experiments.txt', 'utf8');
+
+            // Close any previous "Update README.md" issues opened by this workflow
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              labels: 'auto-readme',
+              per_page: 100,
+            });
+            for (const issue of existing.data) {
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+                state_reason: 'not_planned',
+              });
+            }
+
+            const body = [
+              "This issue was automatically created by the **Update README** workflow after a merge to `main`.",
+              "",
+              "Please regenerate the root `README.md` so it accurately reflects every experiment in the repository.",
+              "",
+              "## Instructions",
+              "",
+              "1. Read each subdirectory's `README.md` to understand what the experiment is about.",
+              "2. Rewrite the root `README.md` with:",
+              "   - A short repo-level title and one-liner description.",
+              "   - A table (or list) of every experiment with its name, a one-sentence summary, and a link to its directory.",
+              "   - Keep it concise — no more than a few sentences per experiment.",
+              "3. Do **not** modify any files other than the root `README.md`.",
+              "",
+              "## Current experiments detected",
+              "",
+              listing,
+              "",
+              "---",
+              `Triggered by commit ${context.sha.slice(0, 7)} on \`main\`.`,
+            ].join("\n");
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'Update README.md',
+              body,
+              labels: ['auto-readme'],
+              assignees: ['copilot'],
+            });
