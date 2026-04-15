@@ -54,37 +54,52 @@ leak between branches.
 
 ## Quickest path: Docker (works on Mac)
 
-A `Dockerfile` and `docker-compose.yml` are included. They build PHP 8.2 with
-the extension, install Dolt, fetch WordPress 6.5, and either run the 8-step
-e2e or start a live WordPress you can click around in. Works on Apple Silicon
-(arm64) and Linux (amd64) — `TARGETARCH` selects the right Dolt binary.
+A `Dockerfile` and `docker-compose.yml` are included. The image contains the
+build toolchain (PHP 8.2, libsqlite3-dev, Dolt, pre-fetched WordPress 6.5)
+and **bind-mounts this repo at `/app`** — so editing files on your Mac takes
+effect immediately, no image rebuild. When `ext/branchfs.c` changes, the
+container entrypoint re-runs `make` before starting. Works on Apple Silicon
+(arm64) and Linux (amd64) — `TARGETARCH` picks the right Dolt binary.
 
-### Run the automated e2e (8 steps, ~45 s)
+Build the image once (only needs to be redone if the Dockerfile changes):
 
 ```bash
 docker compose build
+```
+
+### Live WordPress you can click around in
+
+```bash
+docker compose up dev
+```
+
+Then from your Mac browser:
+
+- **Main site**: <http://localhost:18080/>
+- **Admin** (`admin` / `admin`): <http://localhost:18080/wp-login.php>
+
+Ctrl+C to stop. The script prints a recipe for creating a preview branch.
+
+### Run the automated 8-step e2e
+
+```bash
 docker compose run --rm e2e       # expect: E2E RESULT: 8/8 steps pass
 ```
 
-### Try it manually (live WordPress on `http://localhost:18080`)
+### Interactive shell (with ports forwarded)
 
 ```bash
 docker compose run --rm --service-ports shell
-# inside the container:
-bash e2e/dev.sh
 ```
 
-`dev.sh` bootstraps the same stack as the e2e (Dolt sql-server + branchfs
-SQLite store + real WordPress install + php -S router) and stays running so
-you can poke at it. From your Mac browser:
+### Create a preview branch, hit it, merge it
 
-- **Main site**: <http://localhost:18080/>
-- **Admin** (user `admin`, password `admin`): <http://localhost:18080/wp-login.php>
-
-The script prints a recipe for creating a preview branch. Open a **second**
-terminal to the same container (`docker exec -it <container> bash`) and run:
+While `dev` is running, from a second host shell:
 
 ```bash
+docker compose exec dev bash
+# inside the container:
+
 # 1. Fork the Dolt branch and the branchfs overlay
 php -r '$c=new mysqli("127.0.0.1","root","","wordpress",13306); $c->query("CALL DOLT_BRANCH(\"feature-x\",\"main\")");'
 php -d extension=/app/ext/branchfs.so -r \
@@ -93,15 +108,17 @@ php -d extension=/app/ext/branchfs.so -r \
 # 2. Mint a signed preview cookie for that branch
 COOKIE=$(php -r "echo 'wp_branch=feature-x:'.hash_hmac('sha256','feature-x','dev-secret');")
 echo "$COOKIE"
-
-# 3. From your Mac, request the preview:
-#    curl -b "$COOKIE" http://localhost:18080/
-#    or paste the cookie into your browser's devtools for 127.0.0.1
 ```
 
-Change something on the preview branch (edit a theme file, update an option)
-and it will show up only on requests carrying the matching cookie. Merge back
-with:
+Then from your Mac:
+
+```bash
+curl -b "$COOKIE" http://localhost:18080/
+# or paste the cookie into browser devtools for localhost
+```
+
+Edits made while the cookie is active only show on requests carrying it —
+strip the cookie to see production unchanged. Merge back with:
 
 ```bash
 php /app/scripts/merge.php /tmp/branchfs-dev/branchfs.db feature-x main 127.0.0.1 13306

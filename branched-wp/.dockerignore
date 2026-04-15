@@ -1,13 +1,6 @@
-.adversarial-loop
-.claude
-.git
-ext/branchfs.so
-e2e/wp-src
-e2e/wp.zip
-e2e/*.log
-e2e/dolt-data
-e2e/*.db
-/tmp
-*.o
-*.lo
-*.la
+# Build context only needs Dockerfile + entrypoint.sh — source is bind-mounted
+# at runtime, not baked into the image. Keep this list tight.
+*
+!Dockerfile
+!entrypoint.sh
+!.dockerignore

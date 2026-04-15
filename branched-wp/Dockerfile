@@ -1,5 +1,7 @@
-# Portable image for running the branched-wp e2e test.
-# Works on Mac (arm64) and Linux (amd64) via TARGETARCH.
+# Build environment only — no source is baked in.
+# The repo is bind-mounted at /app at runtime, so editing files on the host
+# takes effect immediately; rebuilds are only needed when ext/branchfs.c
+# (the C extension) changes, and that's a 2-second `make`.
 FROM debian:bookworm-slim
 
 ARG TARGETARCH
@@ -7,7 +9,8 @@ ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive \
     LANG=C.UTF-8 \
     PATH="/usr/local/bin:${PATH}" \
-    PHP_CONFIG=php-config8.2
+    PHP_CONFIG=php-config8.2 \
+    WP_SRC=/opt/wordpress-src
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
@@ -40,22 +43,19 @@ RUN set -eux; \
 RUN dolt config --global --add user.name "branched-wp" \
  && dolt config --global --add user.email "branched-wp@example.com"
 
+# Pre-fetch a pinned WordPress into a neutral path so it's not on the
+# bind-mount (avoids slow Docker-Desktop-on-Mac I/O for ~2400 WP files).
+RUN curl -sL https://wordpress.org/wordpress-6.5.tar.gz -o /tmp/wp.tgz \
+ && tar -C /opt -xzf /tmp/wp.tgz \
+ && mv /opt/wordpress /opt/wordpress-src \
+ && rm /tmp/wp.tgz
+
 WORKDIR /app
 
-# Copy source. The host .gitignore excludes wp-src/, *.so, *.db, logs.
-COPY . /app/
+# Entry script: builds the .so if missing or stale, then execs the command
+# (defaults to dev.sh — live server — but overridable via `docker compose run`).
+COPY entrypoint.sh /usr/local/bin/branched-wp-entrypoint
+RUN chmod +x /usr/local/bin/branched-wp-entrypoint
 
-# Fetch a pinned WordPress into e2e/wp-src/ if it's not already vendored.
-RUN set -eux; \
-    if [ ! -d /app/e2e/wp-src ]; then \
-        curl -sL https://wordpress.org/wordpress-6.5.tar.gz -o /tmp/wp.tgz; \
-        tar -C /tmp -xzf /tmp/wp.tgz; \
-        mv /tmp/wordpress /app/e2e/wp-src; \
-        rm /tmp/wp.tgz; \
-    fi
-
-# Build the extension against the distro's PHP 8.2
-RUN make
-
-# Default: run the 8-step e2e test
-CMD ["bash", "/app/e2e/run_e2e.sh"]
+ENTRYPOINT ["/usr/local/bin/branched-wp-entrypoint"]
+CMD ["bash", "e2e/dev.sh"]
