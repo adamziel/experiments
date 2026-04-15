@@ -19,13 +19,20 @@ add_filter('pre_move_uploaded_file', function ($move_new_file, $file, $new_file,
         return $move_new_file;
     }
 
-    $content = file_get_contents($file);
+    // WP 6.5+ passes the full $_FILES entry as arg 2; older versions sometimes
+    // pass the tmp_name string directly. Accept either.
+    $src = is_array($file) ? ($file['tmp_name'] ?? '') : (string) $file;
+    if ($src === '' || !is_uploaded_file($src) && !file_exists($src)) {
+        return $move_new_file;
+    }
+
+    $content = file_get_contents($src);
     if ($content === false) {
         return $move_new_file;
     }
 
     $dir = dirname($new_file);
-    if (!file_exists($dir)) {
+    if (!is_dir($dir)) {
         mkdir($dir, 0755, true);
     }
 
@@ -34,8 +41,11 @@ add_filter('pre_move_uploaded_file', function ($move_new_file, $file, $new_file,
         return $move_new_file;
     }
 
-    // Return new path to signal we handled the move
-    return $new_file;
+    @unlink($src);
+
+    // Return true to signal we handled the move (non-null short-circuits
+    // WP's default @move_uploaded_file / @copy+unlink block).
+    return true;
 }, 10, 4);
 
 /**
