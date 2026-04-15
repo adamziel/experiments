@@ -270,11 +270,20 @@ function git_build_repository(string $repo_dir, SQLite3 $sqlite, mysqli $dolt, s
                 $commit_options['commit']['parents'] = [];
             }
 
-            // Checkout this branch before committing
-            $repo->checkout("refs/heads/$branch_name");
+            // Checkout this branch before committing. If the ref doesn't
+            // exist yet (every non-default branch), initialize it to
+            // NULL_HASH first — get_branch_tip('HEAD') throws on unborn
+            // refs, and GitRepository only auto-initializes the default
+            // branch. Without this, the second branch in the loop
+            // (alphabetically after the default) blows up info/refs with
+            // "Branch file not found: refs/heads/<name>".
+            $ref_path = "refs/heads/$branch_name";
             if ($parent_git_hash !== null) {
-                $repo->set_branch_tip("refs/heads/$branch_name", $parent_git_hash);
+                $repo->set_branch_tip($ref_path, $parent_git_hash);
+            } elseif (!$fs->is_file($ref_path)) {
+                $repo->set_branch_tip($ref_path, Commit::NULL_HASH);
             }
+            $repo->checkout($ref_path);
 
             $git_hash = $repo->commit($commit_options);
             $parent_git_hash = $git_hash;
