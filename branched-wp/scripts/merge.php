@@ -109,24 +109,38 @@ $db->close();
 if ($dolt_db) {
     echo "\nPhase 2: Merging Dolt database '$dolt_db'...\n";
 
-    try {
-        $dolt = new PDO("mysql:host=127.0.0.1;port=3306;dbname=$dolt_db/$target");
-        $dolt->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $host = getenv('DOLT_HOST') ?: '127.0.0.1';
+    $port = (int)(getenv('DOLT_PORT') ?: '13306');
+    $user = getenv('DOLT_USER') ?: 'root';
+    $pass = getenv('DOLT_PASSWORD') ?: '';
 
-        $dolt->exec("CALL DOLT_MERGE('$source')");
+    try {
+        /* Use mysqli so we can walk DOLT_MERGE's multi-result-set output
+         * cleanly — that was tripping up PDO's "other unbuffered queries
+         * are active" check. */
+        $dolt = @new mysqli($host, $user, $pass, "$dolt_db/$target", $port);
+        if ($dolt->connect_error) {
+            throw new RuntimeException($dolt->connect_error);
+        }
+        $r = $dolt->query("CALL DOLT_MERGE('$source')");
+        if ($r === false) throw new RuntimeException($dolt->error);
+        if ($r instanceof mysqli_result) $r->free();
+        while ($dolt->next_result()) { $r2 = $dolt->store_result(); if ($r2) $r2->free(); }
         echo "  Dolt merge complete.\n";
 
-        // Check for merge conflicts
-        $conflicts_result = $dolt->query("SELECT * FROM dolt_conflicts");
-        $dolt_conflicts = $conflicts_result->fetchAll();
-
-        if ($dolt_conflicts) {
-            echo "  WARNING: Dolt merge conflicts detected!\n";
-            foreach ($dolt_conflicts as $dc) {
-                echo "    Table: {$dc['table']}, Num conflicts: {$dc['num_conflicts']}\n";
+        $r = $dolt->query("SELECT \"table\", num_conflicts FROM dolt_conflicts");
+        if ($r instanceof mysqli_result) {
+            $any = false;
+            while ($row = $r->fetch_assoc()) {
+                $any = true;
+                echo "  WARNING: conflict on table '{$row['table']}': {$row['num_conflicts']}\n";
             }
+            $r->free();
+            if (!$any) echo "  No Dolt conflicts.\n";
         }
-    } catch (PDOException $e) {
+        while ($dolt->next_result()) { $r2 = $dolt->store_result(); if ($r2) $r2->free(); }
+        $dolt->close();
+    } catch (Throwable $e) {
         echo "  Dolt merge error: " . $e->getMessage() . "\n";
         echo "  (Dolt integration requires a running Dolt SQL server)\n";
     }

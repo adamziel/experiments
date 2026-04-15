@@ -118,38 +118,72 @@ the URLs above in a browser.
 
 ### Managing branches: `bin/branchctl`
 
-```bash
-docker compose exec dev bin/branchctl list
-# BRANCH      PARENT   FILES  DOLT  CREATED
-# main        (root)   3309   yes   2026-04-15 16:21:34
+Every command targets both the branchfs filesystem overlay and the Dolt
+branch in one shot. Lookups default to `BRANCHFS_DB=/tmp/branchfs-dev/branchfs.db`
+and Dolt on `127.0.0.1:13306` (override via `--db`, `--dolt-host`,
+`--dolt-port`).
 
-docker compose exec dev bin/branchctl create marketing
-# branchfs: forked 'main' -> 'marketing'
-# dolt:     forked 'main' -> 'marketing'
+```
+list                      # all branches: overlay file count + Dolt presence
+show    <name>            # overlay metadata + Dolt HEAD (hash, author, msg)
+create  <name> [--from P] # fork overlay + Dolt branch in one step
+delete  <name>            # drop overlay + Dolt branch (main is protected)
 
-docker compose exec dev bin/branchctl create feature --from main
-
-# Make a change on the feature branch (e.g. via the admin on
-# http://feature.wp.localhost:18080/wp-admin/) and commit it on Dolt:
-docker compose exec dev bin/branchctl commit feature -m "homepage tweak"
-
-docker compose exec dev bin/branchctl show feature
-# branchfs: feature
-#   parent : main
-#   files  : 12
-#   created: ...
-# dolt: feature
-#   head   : s81jukpeb9j0
-#   message: homepage tweak
-
-docker compose exec dev bin/branchctl delete marketing
-# branchfs: deleted overlay 'marketing'
-# dolt:     deleted branch 'marketing'
+commit  <name> [-m "msg"] # DOLT_ADD -A + DOLT_COMMIT on <name>
+log     <name> [-n N]     # full commit history on that branch (Dolt)
+diff    <a> <b>           # per-table row adds/dels/mods + overlay file counts
+merge   <from> --into <to># 3-way file merge + DOLT_MERGE; lands on <to>
+reset   <name> <commit>   # DOLT_RESET --hard on that branch (DB only)
+rollback <name>           # shortcut: reset <name> HEAD~1
 ```
 
-Deleting a branch removes both the SQLite overlay rows and the Dolt branch.
-`main` cannot be deleted. There's no branch-*switching* for the current
-session — the subdomain in the URL is the source of truth.
+**Typical flow**:
+
+```bash
+docker compose exec dev bin/branchctl create feature --from main
+
+# Edit things on http://feature.wp.localhost:18080/wp-admin/ ...
+docker compose exec dev bin/branchctl commit feature -m "homepage tweak"
+
+# Inspect history
+docker compose exec dev bin/branchctl log feature -n 5
+# COMMIT                              WHEN                 AUTHOR  MESSAGE
+# u1j1lsajrf03350rquo7egm7vjjt7479    2026-04-15 18:40:56  root    homepage tweak
+# hbolljopqf13h0a1ph21vjup5hn9ubla    2026-04-15 18:37:52  root    Initial WordPress install
+
+# Compare against main
+docker compose exec dev bin/branchctl diff main feature
+# dolt: rows changed 'main' -> 'feature'
+# TABLE       ADDED  DELETED  MOD
+# wp_options      0        0    1
+# branchfs: overlay file counts
+#   'main' overlay       3309 files
+#   'feature' overlay      12 files
+
+# Ship it
+docker compose exec dev bin/branchctl merge feature --into main
+
+# Or back out the last commit
+docker compose exec dev bin/branchctl rollback feature
+
+# Or jump to a specific historical commit
+docker compose exec dev bin/branchctl reset feature u1j1lsajrf03350rquo7egm7vjjt7479
+docker compose exec dev bin/branchctl delete feature
+```
+
+**Caveats**:
+
+- `reset` and `rollback` only rewind Dolt. The filesystem overlay has no
+  per-file history yet, so files you wrote on the branch stay as they
+  were. If that matters for your use case, re-import them or merge from a
+  known-good branch.
+- `merge` conflicts: Dolt surfaces them through `dolt_conflicts`. `merge.php`
+  prints "WARNING: conflict on table X" when any are detected; resolve via
+  standard Dolt SQL (update/delete from the conflict tables) before the
+  next commit. File-side conflicts (same path modified on both branches
+  with different bytes) currently resolve "source wins".
+- No branch *switching* — the subdomain in the URL is the source of truth.
+  `main` is protected from deletion.
 
 ### How it works end-to-end
 

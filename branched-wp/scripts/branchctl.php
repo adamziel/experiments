@@ -42,21 +42,35 @@ function die_usage(?string $msg = null, int $code = 1): void {
     fwrite(STDERR, <<<USAGE
 Usage:
   branchctl list
-  branchctl create <name> [--from <parent>]
-  branchctl commit <name> [-m "message"]
-  branchctl delete <name>
-  branchctl show <name>
+  branchctl show    <name>
+  branchctl create  <name>  [--from <parent>]
+  branchctl delete  <name>
+
+  branchctl commit  <name>  [-m "message"]
+  branchctl log     <name>  [-n <count>]
+  branchctl diff    <a> <b>
+  branchctl merge   <from>  --into <target>
+  branchctl reset   <name>  <commit-hash-or-ref>
+  branchctl rollback <name>
 
 Flags:
   --db <path>          override BRANCHFS_DB (default: /tmp/branchfs-dev/branchfs.db)
   --dolt-host <host>   override DOLT_HOST (default: 127.0.0.1)
   --dolt-port <port>   override DOLT_PORT (default: 13306)
 
-Notes:
-  - "create" forks BOTH the branchfs filesystem overlay and the Dolt branch.
-  - "commit" records a Dolt commit on the given branch (file-store is
-    committed implicitly on every write; this is for the DB side).
-  - "delete" removes the branchfs overlay and the Dolt branch.
+Workflow:
+  create   forks BOTH the branchfs overlay and the Dolt branch.
+  commit   commits any pending DB writes on <name> (files are committed
+             implicitly on each write).
+  log      shows the Dolt commit history of <name>.
+  diff     summarises row differences between two branches.
+  merge    runs scripts/merge.php: 3-way file merge + DOLT_MERGE, result
+             lands on <target>.
+  reset    hard-resets <name> to <commit> (DOLT_RESET --hard). Files are
+             NOT rewound — we don't have per-file history yet; treat
+             reset as "DB side only".
+  rollback shortcut for `reset <name> HEAD~1`.
+  delete   drops the overlay and the Dolt branch. Main is protected.
 
 USAGE);
     exit($code);
@@ -78,6 +92,8 @@ function parse_args(array $argv): array {
             }
         } elseif ($a === '-m') {
             $flags['message'] = $argv[++$i] ?? '';
+        } elseif ($a === '-n') {
+            $flags['n'] = $argv[++$i] ?? '';
         } else {
             $pos[] = $a;
         }
@@ -266,9 +282,11 @@ case 'delete': {
 
     $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
     $esc = $c->real_escape_string($name);
-    // Safe to attempt even if the Dolt branch is missing.
-    $c->query("CALL DOLT_CHECKOUT('main')"); drain($c);
-    $r = $c->query("CALL DOLT_BRANCH('-D', '$esc')");
+    // Idempotent: tolerate a missing Dolt branch.
+    mysqli_report(MYSQLI_REPORT_OFF);
+    @$c->query("CALL DOLT_CHECKOUT('main')"); drain($c);
+    $r = @$c->query("CALL DOLT_BRANCH('-D', '$esc')");
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
     if ($r === false) {
         echo "dolt:     no branch named '$name' (or already deleted)\n";
     } else {
@@ -317,6 +335,163 @@ case 'show': {
         }
     }
     drain($c);
+    $c->close();
+    break;
+}
+
+case 'log': {
+    $name = $pos[1] ?? die_usage("`log` needs a branch name");
+    if (!valid_branch_name($name) && $name !== 'main') die_usage("invalid branch name: $name");
+    $limit = (int)($flags['n'] ?? $flags['limit'] ?? 20);
+    if ($limit < 1) $limit = 20;
+    if ($limit > 500) $limit = 500;
+
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $esc = $c->real_escape_string($name);
+    /* DOLT_LOG takes a branch or revspec; use the --branch flag form via
+     * the system-table alias for safety and easy output.
+     * Columns: commit_hash, committer, email, date, message. */
+    $sql = "SELECT commit_hash, committer, date, message "
+         . "FROM dolt_log('$esc') LIMIT $limit";
+    $r = dolt_query($c, $sql);
+    if ($r instanceof mysqli_result) {
+        /* Full 32-char hash: branchctl reset requires the full hash, not a
+         * prefix. Keep copy-pasteable. */
+        printf("%-34s  %-19s  %-12s  %s\n", "COMMIT", "WHEN", "AUTHOR", "MESSAGE");
+        printf("%s\n", str_repeat('-', 100));
+        while ($row = $r->fetch_assoc()) {
+            printf("%-34s  %-19s  %-12s  %s\n",
+                $row['commit_hash'] ?? '',
+                substr($row['date'] ?? '', 0, 19),
+                substr($row['committer'] ?? '', 0, 12),
+                trim($row['message'] ?? '')
+            );
+        }
+        $r->free();
+    }
+    drain($c);
+    $c->close();
+    break;
+}
+
+case 'diff': {
+    $a = $pos[1] ?? die_usage("`diff` needs two branch names");
+    $b = $pos[2] ?? die_usage("`diff` needs two branch names");
+    if (!valid_branch_name($a) && $a !== 'main') die_usage("invalid branch: $a");
+    if (!valid_branch_name($b) && $b !== 'main') die_usage("invalid branch: $b");
+
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $ea = $c->real_escape_string($a);
+    $eb = $c->real_escape_string($b);
+    /* Per-table summary (row counts of adds/modifications/deletions). */
+    $sql = "SELECT table_name, rows_added, rows_deleted, rows_modified "
+         . "FROM dolt_diff_stat('$ea', '$eb')";
+    $r = dolt_query($c, $sql);
+    $any = false;
+    if ($r instanceof mysqli_result) {
+        printf("dolt: rows changed '%s' -> '%s'\n", $a, $b);
+        printf("%-30s  %-7s  %-7s  %-7s\n", "TABLE", "ADDED", "DELETED", "MOD");
+        printf("%s\n", str_repeat('-', 60));
+        while ($row = $r->fetch_assoc()) {
+            $add = (int)($row['rows_added'] ?? 0);
+            $del = (int)($row['rows_deleted'] ?? 0);
+            $mod = (int)($row['rows_modified'] ?? 0);
+            if ($add + $del + $mod === 0) continue;
+            $any = true;
+            printf("%-30s  %-7d  %-7d  %-7d\n", $row['table_name'] ?? '', $add, $del, $mod);
+        }
+        $r->free();
+    }
+    if (!$any) echo "  (no row-level differences)\n";
+    drain($c);
+    $c->close();
+
+    /* File-side: summarise via branchfs overlay. */
+    $db = sqlite_open($DB_PATH);
+    $aid = (int)$db->querySingle("SELECT id FROM branches WHERE name = '" . $db->escapeString($a) . "'");
+    $bid = (int)$db->querySingle("SELECT id FROM branches WHERE name = '" . $db->escapeString($b) . "'");
+    echo "\nbranchfs: overlay file counts\n";
+    if ($aid) printf("  %-40s  %d files\n", "'$a' overlay", branchfs_file_count($db, $aid));
+    if ($bid) printf("  %-40s  %d files\n", "'$b' overlay", branchfs_file_count($db, $bid));
+    break;
+}
+
+case 'merge': {
+    $from = $pos[1] ?? die_usage("`merge` needs a source branch");
+    $into = $flags['into'] ?? null;
+    if (!$into) die_usage("`merge` needs --into <target>");
+    if (!valid_branch_name($from)) die_usage("invalid source: $from");
+    if (!valid_branch_name($into) && $into !== 'main') die_usage("invalid target: $into");
+
+    $merge_script = __DIR__ . '/merge.php';
+    if (!file_exists($merge_script)) {
+        fwrite(STDERR, "branchctl: scripts/merge.php not found next to branchctl.php\n");
+        exit(5);
+    }
+    /* Reuse the existing merge implementation so we have one code path.
+     * merge.php signature: php merge.php <from> <into> [db-path] [dolt-db] */
+    echo "branchctl: invoking scripts/merge.php ...\n";
+    $argv_forward = [
+        escapeshellarg($from),
+        escapeshellarg($into),
+        escapeshellarg($DB_PATH),
+        escapeshellarg("$DOLTDB"),
+    ];
+    $ext = ini_get('extension_dir') ?? '';
+    $so = realpath(__DIR__ . '/../ext/branchfs.so');
+    $php_bin = PHP_BINARY;
+    $cmdline = sprintf(
+        'DOLT_HOST=%s DOLT_PORT=%d DOLT_USER=%s DOLT_PASSWORD=%s '
+        . '%s -d extension=%s -d display_errors=Off -d display_startup_errors=Off %s %s',
+        escapeshellarg($HOST),
+        $PORT,
+        escapeshellarg($USER),
+        escapeshellarg($PASS),
+        escapeshellarg($php_bin),
+        escapeshellarg($so ?: 'branchfs.so'),
+        escapeshellarg($merge_script),
+        implode(' ', $argv_forward)
+    );
+    passthru($cmdline, $rc);
+    if ($rc !== 0) {
+        fwrite(STDERR, "branchctl: merge exited with status $rc\n");
+        exit($rc);
+    }
+    break;
+}
+
+case 'reset': {
+    $name = $pos[1] ?? die_usage("`reset` needs a branch name");
+    $commit = $pos[2] ?? die_usage("`reset` needs a commit hash or ref (e.g. HEAD~1)");
+    if (!valid_branch_name($name) && $name !== 'main') die_usage("invalid branch: $name");
+    /* Allow a restricted set of Dolt-friendly refspecs.
+     * Accept: hex hashes, HEAD, HEAD^, HEAD~N, branchname. */
+    if (!preg_match('/^[A-Za-z0-9_\-\^~\/]{1,128}$/', $commit)) {
+        die_usage("invalid commit ref: $commit");
+    }
+
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $esc_name = $c->real_escape_string($name);
+    $esc_commit = $c->real_escape_string($commit);
+    dolt_query($c, "CALL DOLT_CHECKOUT('$esc_name')"); drain($c);
+    dolt_query($c, "CALL DOLT_RESET('--hard', '$esc_commit')"); drain($c);
+    echo "dolt:     '$name' hard-reset to '$commit'\n";
+    echo "branchfs: file-side overlay NOT rewound (no per-file history yet)\n";
+    echo "          if you need files restored, re-import them or merge from a known-good branch.\n";
+    $c->close();
+    break;
+}
+
+case 'rollback': {
+    $name = $pos[1] ?? die_usage("`rollback` needs a branch name");
+    if (!valid_branch_name($name) && $name !== 'main') die_usage("invalid branch: $name");
+
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+    $esc = $c->real_escape_string($name);
+    dolt_query($c, "CALL DOLT_CHECKOUT('$esc')"); drain($c);
+    dolt_query($c, "CALL DOLT_RESET('--hard', 'HEAD~1')"); drain($c);
+    echo "dolt:     '$name' rolled back one commit (HEAD~1)\n";
+    echo "branchfs: file-side overlay NOT rewound.\n";
     $c->close();
     break;
 }
