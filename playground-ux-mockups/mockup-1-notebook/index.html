@@ -681,84 +681,67 @@ body{
 }
 .search-box input::placeholder{color:var(--text-muted);}
 
-.plugin-card{
+/* ===== Address Bar ===== */
+.address-bar{
   display:flex;
   align-items:center;
-  gap:var(--space-3);
-  padding:var(--space-3);
-  border:1px solid var(--border);
-  border-radius:var(--radius-md);
-  margin-bottom:var(--space-2);
-  transition:border-color .15s ease;
-  background:var(--surface);
-}
-.plugin-card:hover{border-color:var(--accent);}
-
-.plugin-icon{
-  width:36px;height:36px;
-  border-radius:var(--radius-sm);
-  display:flex;align-items:center;justify-content:center;
-  font-size:var(--fs-lg);
-  font-weight:600;
-  color:var(--accent-fg);
-  flex-shrink:0;
-}
-
-.plugin-info{flex:1;min-width:0;}
-.plugin-name{font-size:var(--fs-sm);font-weight:500;}
-.plugin-desc{font-size:var(--fs-xs);color:var(--text-muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-
-.plugin-action{
-  padding:var(--space-1) var(--space-3);
-  border:1px solid var(--border);
-  border-radius:var(--radius-sm);
-  background:var(--surface);
-  font-size:var(--fs-xs);
-  font-weight:500;
-  cursor:pointer;
-  white-space:nowrap;
-  transition:all .15s ease;
-}
-.plugin-action:hover{border-color:var(--accent);color:var(--accent);}
-.plugin-action.installed{
-  background:rgba(91,122,107,.08);
-  border-color:var(--accent);
-  color:var(--accent);
-}
-
-.theme-grid{
-  display:grid;
-  grid-template-columns:1fr 1fr;
-  gap:var(--space-3);
-}
-
-.theme-card{
-  border:1px solid var(--border);
-  border-radius:var(--radius-md);
-  overflow:hidden;
-  cursor:pointer;
-  transition:all .15s ease;
-}
-.theme-card:hover{border-color:var(--accent);box-shadow:var(--shadow-sm);}
-.theme-card.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent);}
-
-.theme-preview{
-  height:80px;
-  display:flex;align-items:center;justify-content:center;
-  font-size:var(--fs-xs);font-weight:500;color:var(--surface);
-}
-.theme-card-name{
+  gap:var(--space-2);
   padding:var(--space-2) var(--space-3);
-  font-size:var(--fs-xs);
-  font-weight:500;
+  margin-bottom:var(--space-4);
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:999px;
+  max-width:960px;
+  margin-left:auto;
+  margin-right:auto;
+}
+.address-bar-nav{
   display:flex;
   align-items:center;
-  justify-content:space-between;
+  gap:var(--space-1);
 }
-.theme-active-badge{
-  font-size:10px;
-  color:var(--accent);
-  font-weight:600;
+.address-bar-nav button{
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  border-radius:var(--radius-sm);
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all .15s;
+  padding:0;
+}
+.address-bar-nav button:hover{background:var(--surface-2);color:var(--text);}
+.address-bar-nav button svg{width:16px;height:16px;}
+.address-bar-input{
+  flex:1;min-width:0;
+  border:none;background:transparent;
+  font-family:var(--font-mono);
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+  outline:none;
+  padding:var(--space-1) 0;
+}
+.address-bar-input:focus{color:var(--text);}
+.address-bar-copy{
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  border-radius:var(--radius-sm);
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all .15s;
+  padding:0;
+}
+.address-bar-copy:hover{background:var(--surface-2);color:var(--text);}
+.address-bar-copy svg{width:14px;height:14px;}
+@media(max-width:600px){
+  .address-bar{margin-bottom:var(--space-3);padding:var(--space-1) var(--space-2);}
+  .address-bar-nav button{width:24px;height:24px;}
+  .address-bar-nav button svg{width:14px;height:14px;}
+  .address-bar-input{font-size:11px;}
+}
+@media(max-width:400px){
+  .address-bar-nav .ab-back,.address-bar-nav .ab-fwd{display:none;}
 }
 
 /* Blueprint */
@@ -790,25 +773,6 @@ body{
 .btn.danger:hover{border-color:var(--danger);}
 .btn.full{width:100%;}
 .btn.sm{padding:var(--space-1) var(--space-3);font-size:var(--fs-xs);}
-
-/* Installed plugins section */
-.installed-section{
-  margin-top:var(--space-4);
-  padding-top:var(--space-4);
-  border-top:1px solid var(--border);
-}
-.installed-plugin{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  padding:var(--space-2) 0;
-  border-bottom:1px solid var(--border);
-}
-.installed-plugin:last-child{border-bottom:none;}
-.installed-plugin-name{font-size:var(--fs-sm);font-weight:500;}
-.installed-plugin-actions{
-  display:flex;gap:var(--space-2);
-}
 
 /* ===== Command Palette (Cmd+K) ===== */
 .cmd-overlay{
@@ -1131,7 +1095,6 @@ body{
 @media(max-width:480px){
   .site-title{max-width:120px;}
   .new-site-grid{grid-template-columns:1fr;}
-  .theme-grid{grid-template-columns:1fr;}
 }
 
 /* ===== Reduced motion ===== */
@@ -1327,6 +1290,24 @@ body{
 
   <!-- Preview Area -->
   <main class="preview-area" role="main">
+    <!-- Address Bar -->
+    <div class="address-bar" id="addressBar">
+      <div class="address-bar-nav">
+        <button class="ab-back" aria-label="Back" onclick="navBack()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l-6 6 6 6"/></svg>
+        </button>
+        <button class="ab-fwd" aria-label="Forward" onclick="navForward()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4l6 6-6 6"/></svg>
+        </button>
+        <button aria-label="Refresh" onclick="navRefresh()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a7 7 0 0112.9-3.7M17 10a7 7 0 01-12.9 3.7"/><path d="M17 3v4h-4M3 17v-4h4"/></svg>
+        </button>
+      </div>
+      <input class="address-bar-input" id="addressInput" type="text" value="playground.wordpress.net/scope:abc123/" spellcheck="false" aria-label="Site URL">
+      <button class="address-bar-copy" aria-label="Copy URL" onclick="copyAddressUrl()">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="10" height="10" rx="2"/><path d="M6 14H5a2 2 0 01-2-2V5a2 2 0 012-2h7a2 2 0 012 2v1"/></svg>
+      </button>
+    </div>
     <div class="preview-frame" id="previewFrame">
       <div class="wp-mock" id="wpMock">
         <header class="wp-mock-header">
@@ -1436,8 +1417,6 @@ body{
   <aside class="side-panel" id="sidePanel" role="complementary">
     <nav class="panel-tabs" aria-label="Panel tabs">
       <button class="panel-tab active" data-tab="settings" aria-label="Settings tab">Settings</button>
-      <button class="panel-tab" data-tab="plugins" aria-label="Plugins tab">Plugins</button>
-      <button class="panel-tab" data-tab="themes" aria-label="Themes tab">Themes</button>
       <button class="panel-tab" data-tab="blueprint" aria-label="Blueprint tab">Blueprint</button>
       <button class="panel-tab" data-tab="export" aria-label="Export tab">Export</button>
     </nav>
@@ -1493,99 +1472,6 @@ body{
         <div class="toggle-row">
           <span class="toggle-label">Multisite</span>
           <button class="toggle" id="toggleMulti" aria-label="Toggle multisite" onclick="toggleSwitch(this,'Multisite')"></button>
-        </div>
-      </div>
-
-      <!-- Plugins -->
-      <div class="panel-section" id="tab-plugins">
-        <div class="panel-section-title">Browse Plugins</div>
-        <div class="search-box">
-          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="5.5"/><line x1="13.5" y1="13.5" x2="17" y2="17"/></svg>
-          <input type="text" placeholder="Search plugins..." id="pluginSearch" oninput="filterPlugins()">
-        </div>
-
-        <div class="upload-area" onclick="showToast('Upload area opened. Select a ZIP file to install.','info')">
-          <p><span class="upload-label">Upload ZIP</span></p>
-          <p>Drop a plugin .zip here or click to browse</p>
-        </div>
-
-        <div id="pluginList">
-          <div class="plugin-card" data-name="jetpack">
-            <div class="plugin-icon" style="background:#069e08;">JP</div>
-            <div class="plugin-info">
-              <div class="plugin-name">Jetpack</div>
-              <div class="plugin-desc">Security, performance, and marketing tools</div>
-            </div>
-            <button class="plugin-action" onclick="installPlugin(this,'Jetpack')">Install</button>
-          </div>
-          <div class="plugin-card" data-name="yoast seo">
-            <div class="plugin-icon" style="background:#a4286a;">YS</div>
-            <div class="plugin-info">
-              <div class="plugin-name">Yoast SEO</div>
-              <div class="plugin-desc">The #1 WordPress SEO plugin</div>
-            </div>
-            <button class="plugin-action" onclick="installPlugin(this,'Yoast SEO')">Install</button>
-          </div>
-          <div class="plugin-card" data-name="woocommerce">
-            <div class="plugin-icon" style="background:#7f54b3;">WC</div>
-            <div class="plugin-info">
-              <div class="plugin-name">WooCommerce</div>
-              <div class="plugin-desc">Open-source eCommerce solution</div>
-            </div>
-            <button class="plugin-action" onclick="installPlugin(this,'WooCommerce')">Install</button>
-          </div>
-          <div class="plugin-card" data-name="contact form 7">
-            <div class="plugin-icon" style="background:#0073aa;">CF</div>
-            <div class="plugin-info">
-              <div class="plugin-name">Contact Form 7</div>
-              <div class="plugin-desc">Flexible contact form management</div>
-            </div>
-            <button class="plugin-action" onclick="installPlugin(this,'Contact Form 7')">Install</button>
-          </div>
-          <div class="plugin-card" data-name="elementor">
-            <div class="plugin-icon" style="background:#d30c5c;">EL</div>
-            <div class="plugin-info">
-              <div class="plugin-name">Elementor</div>
-              <div class="plugin-desc">Drag-and-drop page builder</div>
-            </div>
-            <button class="plugin-action" onclick="installPlugin(this,'Elementor')">Install</button>
-          </div>
-          <div class="plugin-card" data-name="wp super cache">
-            <div class="plugin-icon" style="background:#2e86c1;">SC</div>
-            <div class="plugin-info">
-              <div class="plugin-name">WP Super Cache</div>
-              <div class="plugin-desc">Fast caching engine for WordPress</div>
-            </div>
-            <button class="plugin-action" onclick="installPlugin(this,'WP Super Cache')">Install</button>
-          </div>
-        </div>
-
-        <div class="installed-section" id="installedPlugins" style="display:none;">
-          <div class="panel-section-title">Installed</div>
-          <div id="installedPluginList"></div>
-        </div>
-      </div>
-
-      <!-- Themes -->
-      <div class="panel-section" id="tab-themes">
-        <div class="panel-section-title">Choose a Theme</div>
-        <div class="theme-grid">
-          <div class="theme-card active" onclick="activateTheme(this,'Twenty Twenty-Five')">
-            <div class="theme-preview" style="background:linear-gradient(135deg,#1a3a2a,#5B7A6B);">Twenty Twenty-Five</div>
-            <div class="theme-card-name">Twenty Twenty-Five <span class="theme-active-badge">Active</span></div>
-          </div>
-          <div class="theme-card" onclick="activateTheme(this,'Blockbase')">
-            <div class="theme-preview" style="background:linear-gradient(135deg,#3a3a5c,#7a7a9c);">Blockbase</div>
-            <div class="theme-card-name">Blockbase</div>
-          </div>
-          <div class="theme-card" onclick="activateTheme(this,'Astra')">
-            <div class="theme-preview" style="background:linear-gradient(135deg,#5b2d8e,#9b59b6);">Astra</div>
-            <div class="theme-card-name">Astra</div>
-          </div>
-          <div class="theme-card" onclick="activateTheme(this,'Twenty Twenty-Four')">
-            <div class="theme-preview" style="background:linear-gradient(135deg,#2c3e50,#4a6741);">Twenty Twenty-Four</div>
-            <div class="theme-card-name">Twenty Twenty-Four</div>
-          </div>
         </div>
       </div>
 
@@ -1768,10 +1654,6 @@ body{
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 2v2m0 12v2m-6-8H2m16 0h-2m-1.17-4.83l1.41-1.41M4.76 15.24l1.41-1.41m0-7.66L4.76 4.76m10.48 10.48l-1.41-1.41"/></svg>
       Settings
     </button>
-    <button class="mobile-tab" data-mobile-tab="plugins" onclick="mobileTabSwitch('plugins')">
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 3v4h4"/><path d="M5 3h7l4 4v9a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"/></svg>
-      Plugins
-    </button>
     <button class="mobile-tab" data-mobile-tab="more" onclick="mobileTabSwitch('more')">
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="5" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="10" cy="15" r="1.5"/></svg>
       More
@@ -1795,8 +1677,6 @@ const state = {
   currentSiteId: 0,
   siteTitle: 'Spring Cafe Blog',
   storageState: 'browser',
-  installedPlugins: [],
-  activeTheme: 'Twenty Twenty-Five',
   sites: [
     { id: 0, name: 'Spring Cafe Blog', storage: 'browser', tagline: 'Seasonal flavors, edge-first performance' },
     { id: 1, name: 'Edge Rendering Demo', storage: 'temporary', tagline: 'Performance testing sandbox' },
@@ -1826,6 +1706,68 @@ function showToast(message, type = 'info') {
     setTimeout(() => toast.remove(), 200);
   }, 3000);
 }
+
+// ===== Address Bar Navigation =====
+const addressPages = {
+  '/': 'frontPage',
+  '/wp-admin/': 'adminPage',
+  '/?p=1': 'singlePost',
+  '/sample-page/': 'samplePage'
+};
+
+let navHistory = ['playground.wordpress.net/scope:abc123/'];
+let navIndex = 0;
+
+function navigatePreview(path) {
+  const frame = document.getElementById('previewFrame');
+  frame.style.opacity = '0.4';
+  frame.style.transition = 'opacity .2s';
+  setTimeout(() => {
+    frame.style.opacity = '1';
+  }, 400);
+}
+
+function navBack() {
+  if (navIndex > 0) {
+    navIndex--;
+    document.getElementById('addressInput').value = navHistory[navIndex];
+    navigatePreview(navHistory[navIndex]);
+  }
+}
+
+function navForward() {
+  if (navIndex < navHistory.length - 1) {
+    navIndex++;
+    document.getElementById('addressInput').value = navHistory[navIndex];
+    navigatePreview(navHistory[navIndex]);
+  }
+}
+
+function navRefresh() {
+  navigatePreview(document.getElementById('addressInput').value);
+}
+
+function copyAddressUrl() {
+  const url = 'https://' + document.getElementById('addressInput').value;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => showToast('Link copied', 'success')).catch(() => showToast('Link copied', 'success'));
+  } else {
+    showToast('Link copied', 'success');
+  }
+}
+
+document.getElementById('addressInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const val = this.value.trim();
+    if (val) {
+      navIndex++;
+      navHistory = navHistory.slice(0, navIndex);
+      navHistory.push(val);
+      navigatePreview(val);
+    }
+  }
+});
 
 // ===== Inline-Editable Title =====
 const siteTitle = document.getElementById('siteTitle');
@@ -2010,84 +1952,6 @@ function toggleSwitch(btn, name) {
   showToast(`${name} ${isOn ? 'enabled' : 'disabled'}`, 'success');
 }
 
-// ===== Plugins =====
-function filterPlugins() {
-  const query = document.getElementById('pluginSearch').value.toLowerCase();
-  document.querySelectorAll('.plugin-card').forEach(card => {
-    card.style.display = card.dataset.name.includes(query) ? '' : 'none';
-  });
-}
-
-function installPlugin(btn, name) {
-  if (btn.classList.contains('installed')) return;
-  btn.textContent = 'Installing...';
-  btn.disabled = true;
-  setTimeout(() => {
-    btn.textContent = 'Installed';
-    btn.classList.add('installed');
-    btn.disabled = false;
-    state.installedPlugins.push(name);
-    updateInstalledList();
-    showToast(`${name} installed and activated`, 'success');
-  }, 1000);
-}
-
-function updateInstalledList() {
-  const section = document.getElementById('installedPlugins');
-  const list = document.getElementById('installedPluginList');
-  if (state.installedPlugins.length === 0) {
-    section.style.display = 'none';
-    return;
-  }
-  section.style.display = 'block';
-  list.innerHTML = state.installedPlugins.map(name => `
-    <div class="installed-plugin">
-      <span class="installed-plugin-name">${name}</span>
-      <div class="installed-plugin-actions">
-        <button class="btn sm" onclick="deactivatePlugin(this,'${name}')">Deactivate</button>
-        <button class="btn sm danger" onclick="removePlugin(this,'${name}')">Remove</button>
-      </div>
-    </div>
-  `).join('');
-}
-
-function deactivatePlugin(btn, name) {
-  showToast(`${name} deactivated`, 'info');
-  btn.textContent = 'Activate';
-  btn.onclick = () => {
-    showToast(`${name} activated`, 'success');
-    btn.textContent = 'Deactivate';
-    btn.onclick = () => deactivatePlugin(btn, name);
-  };
-}
-
-function removePlugin(btn, name) {
-  state.installedPlugins = state.installedPlugins.filter(p => p !== name);
-  updateInstalledList();
-  // Reset the install button
-  document.querySelectorAll('.plugin-action.installed').forEach(b => {
-    if (b.closest('.plugin-card')?.querySelector('.plugin-name')?.textContent === name) {
-      b.textContent = 'Install';
-      b.classList.remove('installed');
-    }
-  });
-  showToast(`${name} removed`, 'info');
-}
-
-// ===== Themes =====
-function activateTheme(card, name) {
-  document.querySelectorAll('.theme-card').forEach(c => {
-    c.classList.remove('active');
-    const badge = c.querySelector('.theme-active-badge');
-    if (badge) badge.remove();
-  });
-  card.classList.add('active');
-  const nameEl = card.querySelector('.theme-card-name');
-  nameEl.innerHTML = `${name} <span class="theme-active-badge">Active</span>`;
-  state.activeTheme = name;
-  showToast(`${name} theme activated`, 'success');
-}
-
 // ===== Blueprint =====
 function importBlueprint() {
   const url = document.getElementById('blueprintUrl').value.trim();
@@ -2130,28 +1994,9 @@ function exportBlueprint() {
           blogname: state.siteTitle,
           blogdescription: "Seasonal flavors, edge-first performance"
         }
-      },
-      {
-        step: "installTheme",
-        themeZipFile: {
-          resource: "wordpress.org/themes",
-          slug: state.activeTheme.toLowerCase().replace(/\s+/g, '-')
-        }
       }
     ]
   };
-
-  if (state.installedPlugins.length > 0) {
-    state.installedPlugins.forEach(plugin => {
-      blueprint.steps.push({
-        step: "installPlugin",
-        pluginZipFile: {
-          resource: "wordpress.org/plugins",
-          slug: plugin.toLowerCase().replace(/\s+/g, '-')
-        }
-      });
-    });
-  }
 
   document.getElementById('blueprintPreviewContent').textContent = JSON.stringify(blueprint, null, 2);
   openModal('blueprintModal');
@@ -2268,7 +2113,6 @@ function createNewSite(type) {
     state.currentSiteId = newId;
     state.siteTitle = newName;
     state.storageState = 'temporary';
-    state.installedPlugins = [];
 
     siteTitle.textContent = newName;
     document.getElementById('wpSiteName').textContent = newName;
@@ -2365,8 +2209,6 @@ const cmdActions = [
 
   // Panel tabs
   { group: 'Navigate', label: 'Open Settings panel', icon: 'panel', action: () => switchPanelTab('settings') },
-  { group: 'Navigate', label: 'Open Plugins panel', icon: 'panel', action: () => switchPanelTab('plugins') },
-  { group: 'Navigate', label: 'Open Themes panel', icon: 'panel', action: () => switchPanelTab('themes') },
   { group: 'Navigate', label: 'Open Blueprint panel', icon: 'panel', action: () => switchPanelTab('blueprint') },
   { group: 'Navigate', label: 'Open Export panel', icon: 'panel', action: () => switchPanelTab('export') },
 ];
@@ -2578,8 +2420,6 @@ function mobileTabSwitch(tab) {
       const name = btn.closest('.toggle-row')?.querySelector('.toggle-label')?.textContent || 'Feature';
       btn.addEventListener('click', () => toggleSwitch(btn, name));
     });
-  } else if (tab === 'plugins') {
-    content.innerHTML = document.getElementById('tab-plugins').innerHTML;
   } else if (tab === 'more') {
     content.innerHTML = `
       <div style="padding:var(--space-2) 0;">
@@ -2600,12 +2440,8 @@ function mobileTabSwitch(tab) {
           <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l-4 3 4 3"/><path d="M13 7l4 3-4 3"/></svg>
           <span class="cmd-item-label">Export as Blueprint</span>
         </button>
-        <div class="cmd-group-label">Themes</div>
       </div>
     `;
-    // Add theme cards
-    const themeHtml = document.getElementById('tab-themes').innerHTML;
-    content.innerHTML += `<div style="padding:0 var(--space-2);">${themeHtml}</div>`;
   }
 
   sheet.classList.add('open');

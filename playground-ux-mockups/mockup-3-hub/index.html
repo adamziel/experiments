@@ -547,6 +547,49 @@ a {
   height: 14px;
 }
 
+.address-bar-nav{
+  display:flex;
+  align-items:center;
+  gap:2px;
+}
+.address-bar-nav button{
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  border-radius:var(--radius-sm);
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all .15s;
+  padding:0;
+}
+.address-bar-nav button:hover{background:rgba(0,0,0,.05);color:var(--text);}
+.address-bar-nav button svg{width:16px;height:16px;}
+.address-bar-input{
+  flex:1;min-width:0;
+  border:none;background:transparent;
+  font-family:var(--font-mono);
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+  outline:none;
+}
+.address-bar-input:focus{color:var(--text);}
+.address-bar-copy{
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  border-radius:var(--radius-sm);
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all .15s;
+  padding:0;
+  flex-shrink:0;
+}
+.address-bar-copy:hover{color:var(--text);}
+.address-bar-copy svg{width:14px;height:14px;}
+@media(max-width:400px){
+  .address-bar-nav .ab-back,.address-bar-nav .ab-fwd{display:none;}
+}
+
 .preview-viewport {
   height: 50vh;
   min-height: 360px;
@@ -675,7 +718,7 @@ a {
   margin: 0 auto;
   padding: 0 var(--space-5) var(--space-8);
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr;
   gap: var(--space-5);
 }
 
@@ -829,227 +872,7 @@ a {
 }
 
 /* =========================================
-   PANEL 2: EXTEND
-   ========================================= */
-.extend-sub-header {
-  font-size: var(--fs-sm);
-  font-weight: 600;
-  margin-bottom: var(--space-3);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.extend-search {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  padding-left: var(--space-7);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-sm);
-  transition: border-color 0.15s;
-  margin-bottom: var(--space-3);
-  position: relative;
-}
-
-.extend-search:focus { outline: none; border-color: var(--accent); }
-
-.extend-search-wrap {
-  position: relative;
-  margin-bottom: var(--space-3);
-}
-
-.extend-search-wrap svg {
-  position: absolute;
-  left: var(--space-3);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 14px;
-  height: 14px;
-  color: var(--text-muted);
-  pointer-events: none;
-}
-
-.extend-search-wrap input {
-  width: 100%;
-  padding: var(--space-2) var(--space-3);
-  padding-left: calc(var(--space-3) + 14px + var(--space-2));
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-sm);
-  transition: border-color 0.15s;
-}
-
-.extend-search-wrap input:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-.plugin-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin-bottom: var(--space-4);
-}
-
-.plugin-item {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.plugin-item:hover {
-  border-color: var(--accent);
-  background: #FFF8F5;
-}
-
-.plugin-icon {
-  width: 32px;
-  height: 32px;
-  border-radius: var(--radius-sm);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: 600;
-  font-size: var(--fs-xs);
-  flex-shrink: 0;
-}
-
-.plugin-info { flex: 1; min-width: 0; }
-
-.plugin-name {
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.plugin-meta {
-  font-size: var(--fs-xs);
-  color: var(--text-muted);
-}
-
-.plugin-action {
-  padding: var(--space-1) var(--space-2);
-  border-radius: var(--radius-sm);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  transition: all 0.15s;
-}
-
-.plugin-action.install {
-  color: var(--accent);
-  border: 1px solid var(--accent);
-}
-
-.plugin-action.install:hover {
-  background: var(--accent);
-  color: var(--accent-fg);
-}
-
-.plugin-action.installed {
-  color: var(--success);
-  background: #E8F5E9;
-  border: 1px solid transparent;
-}
-
-.plugin-action.remove {
-  color: var(--danger);
-  border: 1px solid transparent;
-}
-
-.plugin-action.remove:hover {
-  background: #FDECEA;
-}
-
-.theme-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: var(--space-2);
-}
-
-.theme-card {
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.theme-card:hover {
-  border-color: var(--accent);
-  box-shadow: var(--shadow-sm);
-}
-
-.theme-card.active {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent);
-}
-
-.theme-thumb {
-  height: 60px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  letter-spacing: 0.5px;
-}
-
-.theme-card-name {
-  padding: var(--space-2);
-  font-size: var(--fs-xs);
-  font-weight: 500;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.theme-active-badge {
-  font-size: 9px;
-  font-weight: 600;
-  text-transform: uppercase;
-  color: var(--accent);
-}
-
-.upload-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-2);
-  padding: var(--space-2);
-  border: 1px dashed var(--border);
-  border-radius: var(--radius-sm);
-  color: var(--text-muted);
-  font-size: var(--fs-xs);
-  transition: all 0.15s;
-  margin-bottom: var(--space-4);
-  width: 100%;
-}
-
-.upload-btn:hover {
-  border-color: var(--accent);
-  color: var(--accent);
-}
-
-.upload-btn svg { width: 14px; height: 14px; }
-
-.extend-divider {
-  height: 1px;
-  background: var(--border);
-  margin: var(--space-4) 0;
-}
-
-/* =========================================
-   PANEL 3: EXPORT & SHARE
+   PANEL 2: EXPORT & SHARE
    ========================================= */
 .export-group {
   margin-bottom: var(--space-4);
@@ -1680,10 +1503,6 @@ a {
     width: 150px;
   }
 
-  .theme-grid {
-    grid-template-columns: 1fr;
-  }
-
   .toast-container {
     right: var(--space-3);
     left: var(--space-3);
@@ -1801,15 +1620,15 @@ a {
         <span>Yesterday</span>
       </div>
     </div>
-    <div class="site-card" role="listitem" tabindex="0" aria-label="Theme Testing" onclick="switchSite(this, 'Theme Testing', 'browser')">
-      <div class="site-card-name">Theme Testing</div>
+    <div class="site-card" role="listitem" tabindex="0" aria-label="API Testing" onclick="switchSite(this, 'API Testing', 'browser')">
+      <div class="site-card-name">API Testing</div>
       <div class="site-card-meta">
         <span class="site-card-badge browser">Browser</span>
         <span>3 days ago</span>
       </div>
     </div>
-    <div class="site-card" role="listitem" tabindex="0" aria-label="Plugin Sandbox" onclick="switchSite(this, 'Plugin Sandbox', 'memory')">
-      <div class="site-card-name">Plugin Sandbox</div>
+    <div class="site-card" role="listitem" tabindex="0" aria-label="Dev Sandbox" onclick="switchSite(this, 'Dev Sandbox', 'memory')">
+      <div class="site-card-name">Dev Sandbox</div>
       <div class="site-card-meta">
         <span class="site-card-badge memory">Memory</span>
         <span>1 week ago</span>
@@ -1831,11 +1650,22 @@ a {
         <div class="preview-dot"></div>
         <div class="preview-dot"></div>
       </div>
+      <div class="address-bar-nav">
+        <button class="ab-back" aria-label="Back" onclick="navBack()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l-6 6 6 6"/></svg>
+        </button>
+        <button class="ab-fwd" aria-label="Forward" onclick="navForward()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4l6 6-6 6"/></svg>
+        </button>
+      </div>
       <div class="preview-address">
         <svg class="preview-address-lock" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="9" width="10" height="8" rx="2"/><path d="M7 9V6a3 3 0 016 0v3"/></svg>
-        <span>playground.wordpress.net/scope/abc-123/</span>
+        <input class="address-bar-input" id="addressInput" type="text" value="playground.wordpress.net/scope:abc123/" spellcheck="false" aria-label="Site URL">
       </div>
-      <button class="preview-refresh" aria-label="Refresh preview">
+      <button class="address-bar-copy" aria-label="Copy URL" onclick="copyAddressUrl()">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="10" height="10" rx="2"/><path d="M6 14H5a2 2 0 01-2-2V5a2 2 0 012-2h7a2 2 0 012 2v1"/></svg>
+      </button>
+      <button class="preview-refresh" aria-label="Refresh preview" onclick="navRefresh()">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a7 7 0 0112.9-3.7M17 10a7 7 0 01-12.9 3.7"/><path d="M17 3v4h-4M3 17v-4h4"/></svg>
       </button>
     </div>
@@ -1942,102 +1772,7 @@ a {
     </div>
   </section>
 
-  <!-- PANEL 2: EXTEND -->
-  <section class="panel" aria-label="Plugins and themes">
-    <div class="panel-header">
-      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 3H7v4H3v6h4v4h6v-4h4V7h-4V3z"/></svg>
-      <h2 class="panel-title">Extend</h2>
-    </div>
-    <div class="panel-body">
-      <div class="extend-sub-header">
-        <span>Plugins</span>
-      </div>
-      <div class="extend-search-wrap">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>
-        <input type="text" placeholder="Search plugins..." aria-label="Search plugins">
-      </div>
-      <div class="plugin-list">
-        <div class="plugin-item">
-          <div class="plugin-icon" style="background:#E3F2FD;color:#1976D2">JP</div>
-          <div class="plugin-info">
-            <div class="plugin-name">Jetpack</div>
-            <div class="plugin-meta">5M+ installs</div>
-          </div>
-          <button class="plugin-action installed" aria-label="Jetpack installed">Active</button>
-        </div>
-        <div class="plugin-item">
-          <div class="plugin-icon" style="background:#E8F5E9;color:#388E3C">YS</div>
-          <div class="plugin-info">
-            <div class="plugin-name">Yoast SEO</div>
-            <div class="plugin-meta">5M+ installs</div>
-          </div>
-          <button class="plugin-action install" aria-label="Install Yoast SEO" onclick="installPlugin(this)">Install</button>
-        </div>
-        <div class="plugin-item">
-          <div class="plugin-icon" style="background:#F3E5F5;color:#7B1FA2">WC</div>
-          <div class="plugin-info">
-            <div class="plugin-name">WooCommerce</div>
-            <div class="plugin-meta">5M+ installs</div>
-          </div>
-          <button class="plugin-action install" aria-label="Install WooCommerce" onclick="installPlugin(this)">Install</button>
-        </div>
-        <div class="plugin-item">
-          <div class="plugin-icon" style="background:#FFF3E0;color:#E65100">CF</div>
-          <div class="plugin-info">
-            <div class="plugin-name">Contact Form 7</div>
-            <div class="plugin-meta">5M+ installs</div>
-          </div>
-          <button class="plugin-action install" aria-label="Install Contact Form 7" onclick="installPlugin(this)">Install</button>
-        </div>
-        <div class="plugin-item">
-          <div class="plugin-icon" style="background:#FCE4EC;color:#C62828">EL</div>
-          <div class="plugin-info">
-            <div class="plugin-name">Elementor</div>
-            <div class="plugin-meta">5M+ installs</div>
-          </div>
-          <button class="plugin-action install" aria-label="Install Elementor" onclick="installPlugin(this)">Install</button>
-        </div>
-        <div class="plugin-item">
-          <div class="plugin-icon" style="background:#E0F7FA;color:#00838F">SC</div>
-          <div class="plugin-info">
-            <div class="plugin-name">WP Super Cache</div>
-            <div class="plugin-meta">2M+ installs</div>
-          </div>
-          <button class="plugin-action install" aria-label="Install WP Super Cache" onclick="installPlugin(this)">Install</button>
-        </div>
-      </div>
-      <button class="upload-btn" aria-label="Upload plugin ZIP file">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v4a2 2 0 002 2h8a2 2 0 002-2v-4M13 5l-3-3-3 3M10 2v10"/></svg>
-        Upload ZIP
-      </button>
-
-      <div class="extend-divider"></div>
-
-      <div class="extend-sub-header">
-        <span>Themes</span>
-      </div>
-      <div class="theme-grid">
-        <div class="theme-card active" tabindex="0" aria-label="Twenty Twenty-Five theme, currently active">
-          <div class="theme-thumb" style="background:linear-gradient(135deg,#1a1a2e,#16213e);color:#fff">2025</div>
-          <div class="theme-card-name">Twenty Twenty-Five <span class="theme-active-badge">Active</span></div>
-        </div>
-        <div class="theme-card" tabindex="0" aria-label="Blockbase theme" onclick="activateTheme(this)">
-          <div class="theme-thumb" style="background:linear-gradient(135deg,#667eea,#764ba2);color:#fff">BB</div>
-          <div class="theme-card-name">Blockbase</div>
-        </div>
-        <div class="theme-card" tabindex="0" aria-label="Astra theme" onclick="activateTheme(this)">
-          <div class="theme-thumb" style="background:linear-gradient(135deg,#f093fb,#f5576c);color:#fff">AS</div>
-          <div class="theme-card-name">Astra</div>
-        </div>
-        <div class="theme-card" tabindex="0" aria-label="Twenty Twenty-Four theme" onclick="activateTheme(this)">
-          <div class="theme-thumb" style="background:linear-gradient(135deg,#a8edea,#fed6e3);color:#333">2024</div>
-          <div class="theme-card-name">Twenty Twenty-Four</div>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <!-- PANEL 3: EXPORT & SHARE -->
+  <!-- PANEL 2: EXPORT & SHARE -->
   <section class="panel" aria-label="Export and share options">
     <div class="panel-header">
       <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 12v4a2 2 0 002 2h8a2 2 0 002-2v-4M13 5l-3-3-3 3M10 2v10"/></svg>
@@ -2220,17 +1955,9 @@ a {
   },
   <span class="json-key">"steps"</span>: [
     {
-      <span class="json-key">"step"</span>: <span class="json-string">"installPlugin"</span>,
-      <span class="json-key">"pluginData"</span>: {
-        <span class="json-key">"resource"</span>: <span class="json-string">"wordpress.org/plugins"</span>,
-        <span class="json-key">"slug"</span>: <span class="json-string">"jetpack"</span>
-      }
-    },
-    {
-      <span class="json-key">"step"</span>: <span class="json-string">"installTheme"</span>,
-      <span class="json-key">"themeData"</span>: {
-        <span class="json-key">"resource"</span>: <span class="json-string">"wordpress.org/themes"</span>,
-        <span class="json-key">"slug"</span>: <span class="json-string">"twentytwentyfive"</span>
+      <span class="json-key">"step"</span>: <span class="json-string">"setSiteOptions"</span>,
+      <span class="json-key">"options"</span>: {
+        <span class="json-key">"blogname"</span>: <span class="json-string">"My Spring Blog"</span>
       }
     }
   ]
@@ -2313,7 +2040,7 @@ a {
 <!-- ===================== GLOBAL SEARCH BAR ===================== -->
 <div class="global-search-bar" id="globalSearchBar" role="search">
   <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5"/><path d="M13 13l4 4"/></svg>
-  <input type="text" placeholder="Search settings, plugins, themes, actions..." aria-label="Search everything" id="globalSearchInput">
+  <input type="text" placeholder="Search settings, actions..." aria-label="Search everything" id="globalSearchInput">
   <span class="search-esc">ESC</span>
 </div>
 
@@ -2426,45 +2153,59 @@ function showConfigStatusGlobal() {
 }
 
 /* =========================================
-   PLUGIN INSTALL
+   ADDRESS BAR NAVIGATION
    ========================================= */
-function installPlugin(btn) {
-  btn.textContent = 'Installing...';
-  btn.classList.remove('install');
-  btn.classList.add('installed');
-  btn.style.color = 'var(--warning)';
-  btn.style.background = '#FFF3E0';
-  btn.style.borderColor = 'transparent';
+let navHistory = ['playground.wordpress.net/scope:abc123/'];
+let navIndex = 0;
 
-  setTimeout(() => {
-    btn.textContent = 'Active';
-    btn.style.color = '';
-    btn.style.background = '';
-    btn.style.borderColor = '';
-    btn.onclick = null;
-    const name = btn.closest('.plugin-item').querySelector('.plugin-name').textContent;
-    showToast('success', `${name} installed and activated`);
-  }, 1200);
+function navigatePreview(path) {
+  const viewport = document.querySelector('.preview-viewport');
+  viewport.style.opacity = '0.4';
+  viewport.style.transition = 'opacity .2s';
+  setTimeout(() => { viewport.style.opacity = '1'; }, 400);
 }
 
-/* =========================================
-   THEME ACTIVATION
-   ========================================= */
-function activateTheme(card) {
-  document.querySelectorAll('.theme-card').forEach(c => {
-    c.classList.remove('active');
-    const badge = c.querySelector('.theme-active-badge');
-    if (badge) badge.remove();
-  });
-  card.classList.add('active');
-  const nameEl = card.querySelector('.theme-card-name');
-  const badge = document.createElement('span');
-  badge.className = 'theme-active-badge';
-  badge.textContent = 'Active';
-  nameEl.appendChild(badge);
-  const name = nameEl.childNodes[0].textContent.trim();
-  showToast('success', `${name} theme activated`);
+function navBack() {
+  if (navIndex > 0) {
+    navIndex--;
+    document.getElementById('addressInput').value = navHistory[navIndex];
+    navigatePreview(navHistory[navIndex]);
+  }
 }
+
+function navForward() {
+  if (navIndex < navHistory.length - 1) {
+    navIndex++;
+    document.getElementById('addressInput').value = navHistory[navIndex];
+    navigatePreview(navHistory[navIndex]);
+  }
+}
+
+function navRefresh() {
+  navigatePreview(document.getElementById('addressInput').value);
+}
+
+function copyAddressUrl() {
+  const url = 'https://' + document.getElementById('addressInput').value;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => showToast('success', 'Link copied')).catch(() => showToast('success', 'Link copied'));
+  } else {
+    showToast('success', 'Link copied');
+  }
+}
+
+document.getElementById('addressInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const val = this.value.trim();
+    if (val) {
+      navIndex++;
+      navHistory = navHistory.slice(0, navIndex);
+      navHistory.push(val);
+      navigatePreview(val);
+    }
+  }
+});
 
 /* =========================================
    MODALS

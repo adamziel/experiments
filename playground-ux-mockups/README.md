@@ -23,11 +23,11 @@ A document-centric layout where the preview is the canvas and the chrome is quie
 Multi-site-first: users land on a grid of their sites. Click a card to open an editor view. A left rail groups Drafts, Saved, and Cloned sites. Cool neutrals with a violet accent. Inspired by Linear, Arc, and Raycast.
 
 ### Direction 3: "Playground is a Hub" → [mockup-3-hub/](mockup-3-hub/index.html)
-Everything on one scrolling page. Live preview pinned at top, three panels below for Configure, Extend, and Export & Share. A floating mini-preview appears on scroll. Warm off-white with a coral accent. Inspired by Stripe's settings pages and GitHub Project overviews.
+Everything on one scrolling page. Live preview pinned at top, two panels below for Configure and Export & Share. A floating mini-preview appears on scroll. Warm off-white with a coral accent. Inspired by Stripe's settings pages and GitHub Project overviews.
 
 ## Critical Flow Coverage (all three mockups)
 
-All 12 critical flows are interactive in every mockup:
+All 10 critical flows are interactive in every mockup:
 
 | # | Flow | Interaction |
 |---|------|-------------|
@@ -35,14 +35,12 @@ All 12 critical flows are interactive in every mockup:
 | 2 | Create site | Template picker (Blank, Blog, Portfolio, Store, Docs, Blueprint) |
 | 3 | Switch sites | Site switcher with saved site list |
 | 4 | Change PHP/WP version | Settings panel with version dropdowns |
-| 5 | Install plugin | Search 6 real plugins + ZIP upload |
-| 6 | Install theme | Gallery with 4 real themes |
-| 7 | Import/export blueprint | URL import, JSON paste, export with copy |
-| 8 | Persist site | 3-option menu (Memory / Browser / Device) |
-| 9 | Download as ZIP | Button with toast confirmation |
-| 10 | Push to GitHub | Modal with repo/branch/PR fields |
-| 11 | Share site | Copy URL to clipboard + blueprint URL |
-| 12 | Keyboard shortcuts | ⌘S (save), ⌘K (command palette / search) |
+| 5 | Navigate preview | Address bar with back/forward/refresh and editable URL |
+| 6 | Import/export blueprint | URL import, JSON paste, export with copy |
+| 7 | Persist site | 3-option menu (Memory / Browser / Device) |
+| 8 | Download as ZIP | Button with toast confirmation |
+| 9 | Push to GitHub | Modal with repo/branch/PR fields |
+| 10 | Share site | Copy URL to clipboard + blueprint URL + ⌘S / ⌘K shortcuts |
 
 ## How to View
 
