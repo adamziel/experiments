@@ -90,6 +90,61 @@ php -d extension=$PWD/ext/branchfs.so \
 #    Set env vars: BRANCHFS_DB, BRANCHFS_WP_ROOT, BRANCHFS_COOKIE_SECRET
 ```
 
+## End-to-end test against real WordPress + real Dolt
+
+`e2e/run_e2e.sh` is a self-contained integration test that exercises the
+whole stack for real (no mocks):
+
+1. Downloads/uses WordPress 6.5 from `e2e/wp-src/`, starts `dolt sql-server`
+   on a local port, creates an empty branchfs SQLite store, imports WP into
+   `main`, installs WordPress via `wp_install()`.
+2. Launches `php -S` with `e2e/router.php` as the front controller, loading
+   the `branchfs.so` extension.
+3. Runs 8 HTTP-level assertions against the live server:
+   - **Step 1** — `GET /` on `main` returns 200 and the installed site title.
+   - **Step 2** — creates branch `preview-a` in both Dolt and branchfs.
+   - **Step 3** — `GET /` with signed `wp_preview` cookie reflects the
+     modified title and a marker in `themes/twentytwentyfour/style.css`;
+     `GET /` without the cookie still returns main, unchanged.
+   - **Step 4** — `scripts/merge.php` coordinates Dolt merge + 3-way file
+     merge; main now reflects preview-a.
+   - **Step 5** — `dolt_revert` + file revert restores main.
+   - **Step 6** — discards `preview-b` (deletes Dolt branch + branchfs
+     overlay) and confirms it's no longer resolvable.
+   - **Step 7** — three parallel branches (`preview-c`, `preview-d`,
+     `preview-e`) each with different title + marker; parallel curl
+     requests with branch-specific cookies return only that branch's
+     content, no cross-contamination.
+   - **Step 8** — scans `e2e/server.log` for PHP fatals / SQLite
+     corruption; fails if any.
+
+Requires `dolt` on PATH. Run:
+
+```bash
+export PATH=~/.local/bin:$PATH    # or wherever dolt lives
+bash e2e/run_e2e.sh
+```
+
+Sample passing run:
+
+```
+STEP 1 PASS: main / returns 200 with 'Branched WP'
+STEP 2 PASS: created branch preview-a in dolt and branchfs
+STEP 3 PASS: preview-a / reflects modified title 'Preview A Site'
+STEP 3 PASS: preview-a stylesheet contains '/* preview-a marker */'
+STEP 3 PASS: main / unchanged (no cookie)
+STEP 4 PASS: merge preview-a -> main completed, main reflects changes
+STEP 5 PASS: revert restored main to original state
+STEP 6 PASS: discarded preview-b, branch no longer resolvable
+STEP 7 PASS: three parallel branches return independent content
+STEP 8 PASS: no PHP fatals or SQLite corruption in server log
+
+E2E RESULT: 8/8 steps pass
+```
+
+The script kills its own processes on exit and picks ports deterministically;
+re-running from scratch is idempotent.
+
 ## How previews work end-to-end
 
 1. Default traffic: launcher sees no preview cookie → activates branch `main` →

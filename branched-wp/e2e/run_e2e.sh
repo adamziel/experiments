@@ -1,0 +1,482 @@
+#!/bin/bash
+# ============================================================
+# BranchFS End-to-End Test
+#
+# Exercises the full HTTP path: branchfs extension + Dolt database
+# + real WordPress, with branch creation, preview, merge, revert,
+# discard, and parallel-branch isolation.
+#
+# Usage: bash e2e/run_e2e.sh
+# ============================================================
+
+set -euo pipefail
+
+# ---- Configuration ----
+BASE_DIR="/home/claude/single-dir-container"
+E2E_DIR="$BASE_DIR/e2e"
+WP_SRC="$E2E_DIR/wp-src"
+WORK_DIR="/tmp/branchfs-e2e-$$"
+DOLT_PORT=13306
+PHP_PORT=18080
+BRANCHFS_SECRET="e2e-test-secret"
+SITE_TITLE="Branched WP"
+
+PHP_BIN="/run/current-system/sw/bin/php"
+PHP="$PHP_BIN -d extension=$BASE_DIR/ext/branchfs.so -d display_errors=Off -d display_startup_errors=Off"
+DOLT="$HOME/.local/bin/dolt"
+
+DB_PATH="$WORK_DIR/branchfs.db"
+WP_ROOT="$WORK_DIR/wproot"
+DOLT_DATA="$WORK_DIR/dolt-data"
+DOLT_LOG="$WORK_DIR/dolt-server.log"
+PHP_LOG="$WORK_DIR/php-server.log"
+DEBUG_LOG="$WORK_DIR/wp-debug.log"
+ERR_LOG="$WORK_DIR/php-errors.log"
+
+TOTAL_STEPS=8
+DOLT_PID=""
+PHP_PID=""
+
+S1=0; S2=0; S3=0; S4=0; S5=0; S6=0; S7=0; S8=0
+
+# ---- Helper functions ----
+
+cleanup() {
+    echo ""
+    echo "[cleanup] stopping servers..."
+    [ -n "$PHP_PID" ]  && kill "$PHP_PID"  2>/dev/null && wait "$PHP_PID"  2>/dev/null || true
+    [ -n "$DOLT_PID" ] && kill "$DOLT_PID" 2>/dev/null && wait "$DOLT_PID" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+mint_cookie() {
+    local branch="$1"
+    local sig
+    sig=$($PHP_BIN -r "echo hash_hmac('sha256', '$branch', '$BRANCHFS_SECRET');")
+    echo "wp_branch=${branch}:${sig}"
+}
+
+# Run a single SQL statement against Dolt
+dolt_sql() {
+    $PHP_BIN -r '
+        $c = new mysqli("127.0.0.1", "root", "", "wordpress", '"$DOLT_PORT"');
+        if ($c->connect_error) { fwrite(STDERR, "CONNECT_ERROR: " . $c->connect_error . "\n"); exit(1); }
+        $r = $c->query($argv[1]);
+        if ($r === false) { fwrite(STDERR, "SQL_ERROR: " . $c->error . "\n"); exit(1); }
+        if ($r instanceof mysqli_result) {
+            while ($row = $r->fetch_assoc()) echo implode("\t", $row) . "\n";
+            $r->free();
+        }
+        while ($c->next_result()) { $r2 = $c->store_result(); if ($r2 instanceof mysqli_result) $r2->free(); }
+        $c->close();
+    ' -- "$1"
+}
+
+# Run multiple SQL statements in a SINGLE Dolt session (preserves DOLT_CHECKOUT)
+dolt_session() {
+    $PHP_BIN -r '
+        $c = new mysqli("127.0.0.1", "root", "", "wordpress", '"$DOLT_PORT"');
+        if ($c->connect_error) { fwrite(STDERR, "CONNECT_ERROR: " . $c->connect_error . "\n"); exit(1); }
+        foreach (array_slice($argv, 1) as $sql) {
+            $r = $c->query($sql);
+            if ($r === false) { fwrite(STDERR, "SQL_ERROR [$sql]: " . $c->error . "\n"); exit(1); }
+            if ($r instanceof mysqli_result) {
+                while ($row = $r->fetch_assoc()) echo implode("\t", $row) . "\n";
+                $r->free();
+            }
+            while ($c->next_result()) { $r2 = $c->store_result(); if ($r2 instanceof mysqli_result) $r2->free(); }
+        }
+        $c->close();
+    ' -- "$@"
+}
+
+bfs_php() {
+    $PHP "$@"
+}
+
+fetch() {
+    curl -sL --max-time 15 "$@" 2>/dev/null
+}
+
+# ---- Kill old processes ----
+echo "[setup] cleaning up old processes..."
+pkill -f "dolt sql-server.*--port=$DOLT_PORT" 2>/dev/null || true
+pkill -f "php.*127.0.0.1:$PHP_PORT" 2>/dev/null || true
+sleep 1
+
+rm -rf "$WORK_DIR"
+mkdir -p "$WORK_DIR" "$WP_ROOT" "$DOLT_DATA/wordpress"
+
+# ============================================================
+# BOOTSTRAP
+# ============================================================
+
+echo ""
+echo "=== BOOTSTRAP ==="
+echo ""
+
+echo -n "[bootstrap] starting dolt sql-server on port $DOLT_PORT ... "
+(cd "$DOLT_DATA/wordpress" && "$DOLT" init --name "e2e" --email "test@test.com" > /dev/null 2>&1)
+(cd "$DOLT_DATA" && exec "$DOLT" sql-server --host=127.0.0.1 --port="$DOLT_PORT" \
+    --data-dir="$DOLT_DATA" > "$DOLT_LOG" 2>&1) &
+DOLT_PID=$!
+
+for i in $(seq 1 30); do
+    if $PHP_BIN -r "@\$c = new mysqli('127.0.0.1','root','','wordpress',$DOLT_PORT); if(\$c->connect_error) exit(1); \$c->close();" 2>/dev/null; then
+        break
+    fi
+    [ "$i" -eq 30 ] && { echo "FAILED"; cat "$DOLT_LOG"; exit 1; }
+    sleep 1
+done
+echo "ok (pid=$DOLT_PID)"
+
+echo -n "[bootstrap] creating branchfs store ... "
+bfs_php "$BASE_DIR/scripts/init_db.php" "$DB_PATH" > /dev/null 2>&1
+echo "ok"
+
+echo -n "[bootstrap] importing WP 6.5 to main ... "
+IMPORT_OUT=$(bfs_php "$BASE_DIR/scripts/import_wp.php" "$WP_SRC" "$DB_PATH" main 2>/dev/null)
+FILE_COUNT=$(echo "$IMPORT_OUT" | grep -oP '\d+ files' | head -1 || echo "? files")
+echo "ok ($FILE_COUNT)"
+
+echo "[bootstrap] installing WordPress ..."
+bfs_php "$E2E_DIR/bootstrap_wp.php" \
+    "$DB_PATH" "$WP_ROOT" "$DOLT_PORT" "$SITE_TITLE" \
+    "$BASE_DIR/wp-plugin/branchfs-wp.php" "$DEBUG_LOG" 2>&1 \
+    | grep -v 'Missing arginfo\|sendmail' | sed 's/^/  /'
+echo "[bootstrap] WordPress installed (admin=admin site=$SITE_TITLE)"
+
+echo -n "[bootstrap] starting php -S on port $PHP_PORT ... "
+BRANCHFS_DB="$DB_PATH" \
+BRANCHFS_WP_ROOT="$WP_ROOT" \
+BRANCHFS_SECRET="$BRANCHFS_SECRET" \
+$PHP \
+    -d log_errors=On \
+    -d "error_log=$ERR_LOG" \
+    -S "127.0.0.1:$PHP_PORT" \
+    -t "$WP_ROOT" \
+    "$E2E_DIR/router.php" \
+    > "$PHP_LOG" 2>&1 &
+PHP_PID=$!
+
+for i in $(seq 1 30); do
+    STARTUP_BODY=$(fetch "http://127.0.0.1:$PHP_PORT/" || true)
+    if echo "$STARTUP_BODY" | grep -qi '<html' 2>/dev/null; then
+        break
+    fi
+    [ "$i" -eq 30 ] && { echo "FAILED"; tail -20 "$PHP_LOG"; tail -5 "$ERR_LOG" 2>/dev/null; exit 1; }
+    sleep 1
+done
+echo "ok (pid=$PHP_PID)"
+
+echo ""
+echo "=== RUNNING TESTS ==="
+echo ""
+
+set +e
+
+# ============================================================
+# STEP 1: Main branch request
+# ============================================================
+
+BODY=$(fetch "http://127.0.0.1:$PHP_PORT/")
+
+HAS_TITLE=$(echo "$BODY" | grep -qi "$SITE_TITLE" && echo y || echo n)
+HAS_HELLO=$(echo "$BODY" | grep -qi "Hello world" && echo y || echo n)
+HAS_HTML=$(echo "$BODY" | grep -qi '<html' && echo y || echo n)
+
+if [ "$HAS_TITLE" = "y" ] && [ "$HAS_HTML" = "y" ]; then
+    if [ "$HAS_HELLO" = "y" ]; then
+        echo "STEP 1 PASS: main / returns 200 with '$SITE_TITLE' and 'Hello world!'"
+    else
+        echo "STEP 1 PASS: main / returns 200 with '$SITE_TITLE' (valid WordPress HTML)"
+    fi
+    S1=1
+else
+    echo "STEP 1 FAIL: main / did not return expected content"
+    echo "  Body length: ${#BODY}"
+    echo "  Title: $(echo "$BODY" | grep -oiP '<title>[^<]+' | head -1)"
+    echo "  Has HTML: $HAS_HTML"
+fi
+
+# ============================================================
+# STEP 2: Create preview branch (preview-a)
+# ============================================================
+
+STEP2_OK=true
+
+BRANCH_ID=$(bfs_php -r "
+    branchfs_set_db('$DB_PATH');
+    \$id = branchfs_create_branch('preview-a', 'main');
+    echo \$id;
+" 2>/dev/null)
+[ -z "$BRANCH_ID" ] || [ "$BRANCH_ID" = "false" ] && STEP2_OK=false
+
+# All Dolt operations for preview-a in ONE session
+dolt_session \
+    "CALL DOLT_BRANCH('preview-a', 'main')" \
+    "CALL DOLT_CHECKOUT('preview-a')" \
+    "UPDATE wp_options SET option_value = 'Preview A Site' WHERE option_name = 'blogname'" \
+    "CALL DOLT_COMMIT('-am', 'Change site title to Preview A Site')" \
+    "CALL DOLT_CHECKOUT('main')" \
+    > /dev/null 2>&1 || STEP2_OK=false
+
+bfs_php -r "
+    branchfs_set_db('$DB_PATH');
+    \$css = file_get_contents('branchfs://main/wp-content/themes/twentytwentyfour/style.css');
+    if (\$css === false) exit(1);
+    file_put_contents('branchfs://preview-a/wp-content/themes/twentytwentyfour/style.css',
+        \"/* preview-a marker */\n\" . \$css);
+" 2>/dev/null || STEP2_OK=false
+
+if $STEP2_OK; then
+    echo "STEP 2 PASS: created branch preview-a in dolt and branchfs"
+    S2=1
+else
+    echo "STEP 2 FAIL: failed to create or configure preview-a"
+fi
+
+# ============================================================
+# STEP 3: Preview branch request
+# ============================================================
+
+COOKIE_A=$(mint_cookie "preview-a")
+S3_OK=true
+
+PREVIEW_BODY=$(fetch -b "$COOKIE_A" "http://127.0.0.1:$PHP_PORT/")
+if echo "$PREVIEW_BODY" | grep -qi "Preview A Site"; then
+    echo "STEP 3 PASS: preview-a / reflects modified title 'Preview A Site'"
+else
+    echo "STEP 3 FAIL: preview-a / did not show 'Preview A Site'"
+    echo "  Title: $(echo "$PREVIEW_BODY" | grep -oiP '<title>[^<]+' | head -1)"
+    S3_OK=false
+fi
+
+PREVIEW_CSS=$(fetch -b "$COOKIE_A" "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
+if echo "$PREVIEW_CSS" | grep -q "preview-a marker"; then
+    echo "STEP 3 PASS: preview-a stylesheet contains '/* preview-a marker */'"
+else
+    echo "STEP 3 FAIL: preview-a stylesheet missing marker"
+    S3_OK=false
+fi
+
+MAIN_BODY2=$(fetch "http://127.0.0.1:$PHP_PORT/")
+if echo "$MAIN_BODY2" | grep -qi "$SITE_TITLE" && ! echo "$MAIN_BODY2" | grep -qi "Preview A Site"; then
+    echo "STEP 3 PASS: main / unchanged (no cookie)"
+else
+    echo "STEP 3 FAIL: main / was contaminated or missing title"
+    echo "  Title: $(echo "$MAIN_BODY2" | grep -oiP '<title>[^<]+' | head -1)"
+    S3_OK=false
+fi
+
+$S3_OK && S3=1
+
+# ============================================================
+# STEP 4: Merge preview-a into main
+# ============================================================
+
+PRE_MERGE_HASH=$(dolt_sql "SELECT HASHOF('HEAD') as h" 2>/dev/null | tr -d '[:space:]')
+
+# WordPress may have modified wp_options (transients, cron) during prior requests.
+# Dolt requires a clean working set before merge, so commit any pending changes.
+bfs_php "$BASE_DIR/scripts/merge.php" preview-a main "$DB_PATH" > /dev/null 2>&1
+dolt_session \
+    "CALL DOLT_ADD('-A')" \
+    "CALL DOLT_COMMIT('--allow-empty', '-am', 'Auto-commit before merge')" \
+    "CALL DOLT_MERGE('preview-a')" > /dev/null 2>&1
+
+MERGED_BODY=$(fetch "http://127.0.0.1:$PHP_PORT/")
+MERGED_CSS=$(fetch "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
+
+if echo "$MERGED_BODY" | grep -qi "Preview A Site" && echo "$MERGED_CSS" | grep -q "preview-a marker"; then
+    echo "STEP 4 PASS: merge preview-a -> main completed, main reflects changes"
+    S4=1
+else
+    echo "STEP 4 FAIL: merge did not propagate changes to main"
+    echo "  Title: $(echo "$MERGED_BODY" | grep -oiP '<title>[^<]+' | head -1)"
+    echo "  CSS marker: $(echo "$MERGED_CSS" | grep 'preview-a marker' | head -1)"
+fi
+
+# ============================================================
+# STEP 5: Undo the merge (revert)
+# ============================================================
+
+if [ -n "$PRE_MERGE_HASH" ]; then
+    dolt_sql "CALL DOLT_RESET('--hard', '$PRE_MERGE_HASH')" > /dev/null 2>&1
+else
+    dolt_session \
+        "UPDATE wp_options SET option_value = '$SITE_TITLE' WHERE option_name = 'blogname'" \
+        "CALL DOLT_COMMIT('-am', 'Revert')" \
+        > /dev/null 2>&1
+fi
+
+bfs_php -r "
+    branchfs_set_db('$DB_PATH');
+    branchfs_import_file(
+        '$WP_SRC/wp-content/themes/twentytwentyfour/style.css',
+        'main',
+        'wp-content/themes/twentytwentyfour/style.css'
+    );
+" 2>/dev/null
+
+REVERTED_BODY=$(fetch "http://127.0.0.1:$PHP_PORT/")
+REVERTED_CSS=$(fetch "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
+
+if echo "$REVERTED_BODY" | grep -qi "$SITE_TITLE" && \
+   ! echo "$REVERTED_BODY" | grep -qi "Preview A Site" && \
+   ! echo "$REVERTED_CSS" | grep -q "preview-a marker"; then
+    echo "STEP 5 PASS: revert restored main to original state"
+    S5=1
+else
+    echo "STEP 5 FAIL: revert did not restore original state"
+    echo "  Title: $(echo "$REVERTED_BODY" | grep -oiP '<title>[^<]+' | head -1)"
+fi
+
+# ============================================================
+# STEP 6: Discard a branch (preview-b)
+# ============================================================
+
+bfs_php -r "branchfs_set_db('$DB_PATH'); branchfs_create_branch('preview-b', 'main');" 2>/dev/null
+
+dolt_session \
+    "CALL DOLT_BRANCH('preview-b', 'main')" \
+    "CALL DOLT_CHECKOUT('preview-b')" \
+    "UPDATE wp_options SET option_value = 'Preview B Site' WHERE option_name = 'blogname'" \
+    "CALL DOLT_COMMIT('-am', 'Preview B changes')" \
+    "CALL DOLT_CHECKOUT('main')" \
+    > /dev/null 2>&1
+
+bfs_php -r "
+    branchfs_set_db('$DB_PATH');
+    \$css = file_get_contents('branchfs://main/wp-content/themes/twentytwentyfour/style.css');
+    file_put_contents('branchfs://preview-b/wp-content/themes/twentytwentyfour/style.css',
+        \"/* preview-b marker */\n\" . \$css);
+" 2>/dev/null
+
+dolt_sql "CALL DOLT_BRANCH('-D', 'preview-b')" > /dev/null 2>&1
+
+bfs_php -r "
+    branchfs_set_db('$DB_PATH');
+    \$db = new SQLite3('$DB_PATH');
+    \$db->exec(\"DELETE FROM files WHERE branch_id = (SELECT id FROM branches WHERE name = 'preview-b')\");
+    \$db->exec(\"DELETE FROM branches WHERE name = 'preview-b'\");
+    \$db->close();
+" 2>/dev/null
+
+DOLT_CHECK=$(dolt_sql "SELECT COUNT(*) as c FROM dolt_branches WHERE name = 'preview-b'" 2>/dev/null | tr -d '[:space:]')
+BFS_CHECK=$(bfs_php -r "
+    branchfs_set_db('$DB_PATH');
+    \$db = new SQLite3('$DB_PATH');
+    echo \$db->querySingle(\"SELECT COUNT(*) FROM branches WHERE name = 'preview-b'\");
+    \$db->close();
+" 2>/dev/null | tr -d '[:space:]')
+
+if [ "${DOLT_CHECK:-1}" = "0" ] && [ "${BFS_CHECK:-1}" = "0" ]; then
+    echo "STEP 6 PASS: discarded preview-b, branch no longer resolvable"
+    S6=1
+else
+    echo "STEP 6 FAIL: preview-b still exists (dolt=$DOLT_CHECK, branchfs=$BFS_CHECK)"
+fi
+
+# ============================================================
+# STEP 7: Three parallel branches
+# ============================================================
+
+for BNAME in preview-c preview-d preview-e; do
+    bfs_php -r "branchfs_set_db('$DB_PATH'); branchfs_create_branch('$BNAME', 'main');" 2>/dev/null
+
+    BTITLE="Branch ${BNAME##preview-} Title"
+    dolt_session \
+        "CALL DOLT_BRANCH('$BNAME', 'main')" \
+        "CALL DOLT_CHECKOUT('$BNAME')" \
+        "UPDATE wp_options SET option_value = '$BTITLE' WHERE option_name = 'blogname'" \
+        "CALL DOLT_COMMIT('-am', 'Set title for $BNAME')" \
+        "CALL DOLT_CHECKOUT('main')" \
+        > /dev/null 2>&1
+
+    bfs_php -r "
+        branchfs_set_db('$DB_PATH');
+        \$css = file_get_contents('branchfs://main/wp-content/themes/twentytwentyfour/style.css');
+        file_put_contents('branchfs://$BNAME/wp-content/themes/twentytwentyfour/style.css',
+            \"/* $BNAME marker */\n\" . \$css);
+    " 2>/dev/null
+done
+
+COOKIE_C=$(mint_cookie "preview-c")
+COOKIE_D=$(mint_cookie "preview-d")
+COOKIE_E=$(mint_cookie "preview-e")
+
+fetch -b "$COOKIE_C" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-c.txt" &
+PID_C=$!
+fetch -b "$COOKIE_D" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-d.txt" &
+PID_D=$!
+fetch -b "$COOKIE_E" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-e.txt" &
+PID_E=$!
+
+wait $PID_C $PID_D $PID_E 2>/dev/null || true
+
+BODY_C=$(cat "$WORK_DIR/body-c.txt" 2>/dev/null)
+BODY_D=$(cat "$WORK_DIR/body-d.txt" 2>/dev/null)
+BODY_E=$(cat "$WORK_DIR/body-e.txt" 2>/dev/null)
+
+S7_OK=true
+
+echo "$BODY_C" | grep -qi "Branch c Title" || { echo "  preview-c did not show 'Branch c Title'"; S7_OK=false; }
+echo "$BODY_D" | grep -qi "Branch d Title" || { echo "  preview-d did not show 'Branch d Title'"; S7_OK=false; }
+echo "$BODY_E" | grep -qi "Branch e Title" || { echo "  preview-e did not show 'Branch e Title'"; S7_OK=false; }
+
+echo "$BODY_C" | grep -qi "Branch d Title\|Branch e Title" && { echo "  preview-c contaminated"; S7_OK=false; } || true
+echo "$BODY_D" | grep -qi "Branch c Title\|Branch e Title" && { echo "  preview-d contaminated"; S7_OK=false; } || true
+echo "$BODY_E" | grep -qi "Branch c Title\|Branch d Title" && { echo "  preview-e contaminated"; S7_OK=false; } || true
+
+if $S7_OK; then
+    echo "STEP 7 PASS: three parallel branches return independent content"
+    S7=1
+else
+    echo "STEP 7 FAIL: parallel branch isolation failed"
+    echo "  C title: $(echo "$BODY_C" | grep -oiP '<title>[^<]+' | head -1)"
+    echo "  D title: $(echo "$BODY_D" | grep -oiP '<title>[^<]+' | head -1)"
+    echo "  E title: $(echo "$BODY_E" | grep -oiP '<title>[^<]+' | head -1)"
+fi
+
+# ============================================================
+# STEP 8: No errors in server logs
+# ============================================================
+
+PHP_FATALS=$(grep -c -iE 'PHP Fatal|PHP Parse|Segmentation fault' "$ERR_LOG" 2>/dev/null || true)
+SQLITE_ERRORS=$(grep -c -iE 'SQLite.*corrupt|database is locked' "$ERR_LOG" 2>/dev/null || true)
+PHP_FATALS=$(echo "${PHP_FATALS:-0}" | tr -d '[:space:]')
+SQLITE_ERRORS=$(echo "${SQLITE_ERRORS:-0}" | tr -d '[:space:]')
+[ -z "$PHP_FATALS" ] && PHP_FATALS=0
+[ -z "$SQLITE_ERRORS" ] && SQLITE_ERRORS=0
+
+if [ "$PHP_FATALS" = "0" ] && [ "$SQLITE_ERRORS" = "0" ]; then
+    echo "STEP 8 PASS: no PHP fatals or SQLite corruption in server log"
+    S8=1
+else
+    echo "STEP 8 FAIL: server log contains errors (fatals=$PHP_FATALS, sqlite=$SQLITE_ERRORS)"
+    grep -iE 'Fatal|Parse|Segmentation|corrupt|locked' "$ERR_LOG" 2>/dev/null | tail -5
+fi
+
+# ============================================================
+# SUMMARY
+# ============================================================
+
+echo ""
+
+TOTAL_PASS=$((S1 + S2 + S3 + S4 + S5 + S6 + S7 + S8))
+
+echo "E2E RESULT: $TOTAL_PASS/$TOTAL_STEPS steps pass"
+echo ""
+
+if [ "$TOTAL_PASS" -eq "$TOTAL_STEPS" ]; then
+    echo "All tests passed!"
+    exit 0
+else
+    echo "Some tests failed. Check output above."
+    echo "PHP server log: $PHP_LOG"
+    echo "Dolt server log: $DOLT_LOG"
+    echo "WP debug log: $DEBUG_LOG"
+    echo "PHP error log: $ERR_LOG"
+    exit 1
+fi

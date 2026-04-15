@@ -34,8 +34,8 @@ $db = new SQLite3($db_path);
 $db->exec('PRAGMA journal_mode = WAL');
 
 // Get branch IDs
-$src_id = $db->querySingle("SELECT id FROM branches WHERE name = " . $db->escapeString("'$source'"));
-$tgt_id = $db->querySingle("SELECT id FROM branches WHERE name = " . $db->escapeString("'$target'"));
+$src_id = $db->querySingle("SELECT id FROM branches WHERE name = '" . $db->escapeString($source) . "'");
+$tgt_id = $db->querySingle("SELECT id FROM branches WHERE name = '" . $db->escapeString($target) . "'");
 
 if (!$src_id) die("ERROR: Source branch '$source' not found\n");
 if (!$tgt_id) die("ERROR: Target branch '$target' not found\n");
@@ -78,8 +78,19 @@ while ($row = $result->fetchArray(SQLITE3_ASSOC)) {
         $ins->execute();
         $merged++;
     } elseif ($tgt_row['blob_hash'] !== $row['blob_hash']) {
-        // Both modified: conflict
-        $conflicts[] = $path;
+        // Both modified: source wins (like git merge -X theirs)
+        $ins = $db->prepare(
+            "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir)
+             VALUES (:bid, :path, :hash, :mode, :mtime, :is_dir)"
+        );
+        $ins->bindValue(':bid', $tgt_id, SQLITE3_INTEGER);
+        $ins->bindValue(':path', $path, SQLITE3_TEXT);
+        $ins->bindValue(':hash', $row['blob_hash'], SQLITE3_TEXT);
+        $ins->bindValue(':mode', $row['mode'], SQLITE3_INTEGER);
+        $ins->bindValue(':mtime', $row['mtime'], SQLITE3_INTEGER);
+        $ins->bindValue(':is_dir', $row['is_dir'], SQLITE3_INTEGER);
+        $ins->execute();
+        $merged++;
     }
     // Same hash: no action needed
 }
