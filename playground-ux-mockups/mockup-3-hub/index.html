@@ -1,0 +1,3120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WordPress Playground — One-Page Hub</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ================================================================
+   CSS VARIABLES
+   ================================================================ */
+:root {
+  /* Palette */
+  --color-bg: #FAF9F6;
+  --color-surface: #FFFFFF;
+  --color-surface-raised: #FFFFFF;
+  --color-border: #E7E5E0;
+  --color-border-subtle: #F0EEE9;
+  --color-text: #1C1917;
+  --color-text-secondary: #57534E;
+  --color-text-tertiary: #A8A29E;
+  --color-accent: #D97706;
+  --color-accent-hover: #B45309;
+  --color-accent-light: #FEF3C7;
+  --color-accent-bg: rgba(217, 119, 6, 0.08);
+  --color-success: #059669;
+  --color-success-light: #D1FAE5;
+  --color-danger: #DC2626;
+  --color-danger-light: #FEE2E2;
+  --color-info: #2563EB;
+  --color-info-light: #DBEAFE;
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 28px;
+  --fs-3xl: 40px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --lh-tight: 1.2;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.6;
+
+  /* Spacing (4px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Radii */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 24px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(28, 25, 23, 0.04), 0 1px 3px rgba(28, 25, 23, 0.06);
+  --shadow-md: 0 2px 4px rgba(28, 25, 23, 0.03), 0 4px 12px rgba(28, 25, 23, 0.06);
+  --shadow-lg: 0 4px 8px rgba(28, 25, 23, 0.03), 0 8px 24px rgba(28, 25, 23, 0.08);
+  --shadow-xl: 0 8px 16px rgba(28, 25, 23, 0.04), 0 16px 48px rgba(28, 25, 23, 0.1);
+  --shadow-float: 0 8px 24px rgba(28, 25, 23, 0.08), 0 24px 48px rgba(28, 25, 23, 0.12);
+
+  /* Motion */
+  --duration-fast: 180ms;
+  --duration-normal: 240ms;
+  --duration-slow: 320ms;
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --duration-fast: 0ms;
+    --duration-normal: 0ms;
+    --duration-slow: 0ms;
+  }
+}
+
+/* ================================================================
+   RESET & BASE
+   ================================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-regular);
+  line-height: var(--lh-normal);
+  color: var(--color-text);
+  background: var(--color-bg);
+  min-height: 100vh;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+  color: inherit;
+}
+
+input, select, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+/* Focus ring */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-text-tertiary); }
+
+/* ================================================================
+   UTILITY CLASSES
+   ================================================================ */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ================================================================
+   HEADER BAR (sticky)
+   ================================================================ */
+.header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  background: rgba(250, 249, 246, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 var(--space-5);
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.header-wordmark {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: var(--fw-semibold);
+  font-size: var(--fs-lg);
+  color: var(--color-text);
+  white-space: nowrap;
+}
+
+.header-wordmark svg {
+  flex-shrink: 0;
+}
+
+.header-center {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-width: 0;
+}
+
+.site-title-wrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: 300px;
+}
+
+.site-title {
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: var(--space-1) var(--space-2);
+  background: transparent;
+  cursor: text;
+  transition: border-color var(--duration-fast) var(--ease-out),
+              background var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 80px;
+  max-width: 260px;
+  text-align: center;
+}
+
+.site-title:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+
+.site-title:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  background: var(--color-surface);
+  box-shadow: 0 0 0 3px var(--color-accent-bg);
+}
+
+.site-title-edit-hint {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.site-title:focus ~ .site-title-edit-hint {
+  opacity: 1;
+}
+
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* Storage badge */
+.storage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 100px;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out),
+              background var(--duration-fast) var(--ease-out);
+  position: relative;
+  white-space: nowrap;
+}
+
+.storage-badge:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+}
+
+.storage-badge .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.storage-dropdown {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  width: 280px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-2);
+  z-index: 200;
+  display: none;
+  animation: dropdown-in var(--duration-normal) var(--ease-out);
+}
+
+.storage-dropdown.open {
+  display: block;
+}
+
+.storage-option {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+  width: 100%;
+  text-align: left;
+}
+
+.storage-option:hover {
+  background: var(--color-accent-bg);
+}
+
+.storage-option.active {
+  background: var(--color-accent-light);
+}
+
+.storage-option-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.storage-option-desc {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+  line-height: var(--lh-relaxed);
+}
+
+.storage-option .check-icon {
+  margin-left: auto;
+  color: var(--color-accent);
+}
+
+/* Share / New Site buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+  border: 1px solid transparent;
+  line-height: 1;
+  height: 34px;
+}
+
+.btn:active {
+  transform: scale(0.97);
+}
+
+.btn-secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-border);
+}
+
+.btn-secondary:hover {
+  border-color: var(--color-text-tertiary);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-primary {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--color-accent-hover);
+  box-shadow: var(--shadow-sm);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--color-text-secondary);
+}
+
+.btn-ghost:hover {
+  background: rgba(28, 25, 23, 0.04);
+  color: var(--color-text);
+}
+
+.btn-sm {
+  height: 28px;
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-xs);
+}
+
+.btn-icon {
+  width: 34px;
+  padding: 0;
+}
+
+.btn-icon.btn-sm {
+  width: 28px;
+}
+
+/* ================================================================
+   SECTION 2: LIVE PREVIEW
+   ================================================================ */
+.preview-section {
+  padding: var(--space-5);
+  padding-bottom: var(--space-4);
+}
+
+.preview-container {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.preview-frame {
+  height: 60vh;
+  min-height: 360px;
+  max-height: 700px;
+  background: #fff;
+  overflow: auto;
+  position: relative;
+}
+
+/* Mock WordPress site inside the preview */
+.wp-site {
+  font-family: var(--font-sans);
+  color: #1a1a1a;
+  min-height: 100%;
+}
+
+.wp-site-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 20px 40px;
+  border-bottom: 1px solid #f0f0f0;
+}
+
+.wp-site-logo {
+  font-size: 22px;
+  font-weight: var(--fw-semibold);
+  color: #1a1a1a;
+  letter-spacing: -0.5px;
+}
+
+.wp-site-nav {
+  display: flex;
+  gap: 28px;
+  list-style: none;
+}
+
+.wp-site-nav li {
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+  color: #666;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+
+.wp-site-nav li:hover { color: #1a1a1a; }
+
+.wp-site-hero {
+  padding: 80px 40px;
+  text-align: center;
+  background: linear-gradient(135deg, #fefce8 0%, #fef3c7 50%, #fed7aa 100%);
+}
+
+.wp-site-hero h1 {
+  font-size: 42px;
+  font-weight: var(--fw-semibold);
+  color: #1a1a1a;
+  line-height: 1.15;
+  max-width: 600px;
+  margin: 0 auto 16px;
+  letter-spacing: -1px;
+}
+
+.wp-site-hero p {
+  font-size: 17px;
+  color: #57534e;
+  max-width: 440px;
+  margin: 0 auto 28px;
+  line-height: 1.6;
+}
+
+.wp-site-hero-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 28px;
+  background: #1a1a1a;
+  color: #fff;
+  border-radius: 8px;
+  font-size: 14px;
+  font-weight: var(--fw-medium);
+  cursor: pointer;
+}
+
+.wp-site-services {
+  padding: 60px 40px;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 24px;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.wp-service-card {
+  padding: 28px;
+  border: 1px solid #f0f0f0;
+  border-radius: 12px;
+  text-align: left;
+}
+
+.wp-service-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 16px;
+  font-size: 18px;
+}
+
+.wp-service-card:nth-child(1) .wp-service-icon { background: #fef3c7; color: #d97706; }
+.wp-service-card:nth-child(2) .wp-service-icon { background: #dbeafe; color: #2563eb; }
+.wp-service-card:nth-child(3) .wp-service-icon { background: #d1fae5; color: #059669; }
+
+.wp-service-card h3 {
+  font-size: 16px;
+  font-weight: var(--fw-semibold);
+  margin-bottom: 8px;
+}
+
+.wp-service-card p {
+  font-size: 13px;
+  color: #78716c;
+  line-height: 1.6;
+}
+
+.wp-site-work {
+  padding: 48px 40px 60px;
+  background: #fafaf9;
+}
+
+.wp-site-work h2 {
+  font-size: 24px;
+  font-weight: var(--fw-semibold);
+  margin-bottom: 24px;
+  text-align: center;
+}
+
+.wp-work-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  max-width: 700px;
+  margin: 0 auto;
+}
+
+.wp-work-card {
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid #f0f0f0;
+  background: #fff;
+}
+
+.wp-work-thumb {
+  height: 140px;
+}
+
+.wp-work-card:nth-child(1) .wp-work-thumb {
+  background: linear-gradient(135deg, #818cf8, #6366f1);
+}
+
+.wp-work-card:nth-child(2) .wp-work-thumb {
+  background: linear-gradient(135deg, #fb923c, #f97316);
+}
+
+.wp-work-info {
+  padding: 16px;
+}
+
+.wp-work-info h4 {
+  font-size: 14px;
+  font-weight: var(--fw-semibold);
+  margin-bottom: 4px;
+}
+
+.wp-work-info p {
+  font-size: 12px;
+  color: #a8a29e;
+}
+
+/* Address bar below preview */
+.address-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--color-border);
+  background: var(--color-bg);
+}
+
+.address-bar-input {
+  flex: 1;
+  padding: var(--space-1) var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  height: 30px;
+}
+
+.address-bar-input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  color: var(--color-text);
+}
+
+/* ================================================================
+   FLOATING MINI-PREVIEW
+   ================================================================ */
+.mini-preview {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  width: 200px;
+  height: 120px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-float);
+  overflow: hidden;
+  cursor: pointer;
+  z-index: 90;
+  opacity: 0;
+  transform: translateY(20px) scale(0.9);
+  pointer-events: none;
+  transition: opacity var(--duration-normal) var(--ease-out),
+              transform var(--duration-normal) var(--ease-out);
+}
+
+.mini-preview.visible {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+.mini-preview:hover {
+  box-shadow: var(--shadow-xl);
+  border-color: var(--color-accent);
+}
+
+.mini-preview-content {
+  width: 1000px;
+  height: 600px;
+  transform: scale(0.2);
+  transform-origin: top left;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.mini-preview-label {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: var(--space-1) var(--space-2);
+  background: rgba(28, 25, 23, 0.75);
+  color: #fff;
+  font-size: 10px;
+  font-weight: var(--fw-medium);
+  text-align: center;
+  backdrop-filter: blur(4px);
+}
+
+/* ================================================================
+   SECTION 3: PANELS (3-column grid)
+   ================================================================ */
+.panels-section {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--space-4) var(--space-5) var(--space-8);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-5);
+  align-items: start;
+}
+
+.panel {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+  position: sticky;
+  top: 56px;
+  background: var(--color-surface);
+  z-index: 10;
+}
+
+.panel-header-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.panel-configure .panel-header-icon { background: #FEF3C7; color: #D97706; }
+.panel-extend .panel-header-icon { background: #DBEAFE; color: #2563EB; }
+.panel-export .panel-header-icon { background: #D1FAE5; color: #059669; }
+
+.panel-header h2 {
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: var(--color-text);
+}
+
+.panel-body {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+/* Panel sub-sections */
+.panel-subsection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.panel-subsection-title {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary);
+}
+
+/* Form fields */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.field-label {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+}
+
+.field-desc {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+}
+
+.field-select {
+  padding: var(--space-1) var(--space-3);
+  padding-right: var(--space-6);
+  font-size: var(--fs-sm);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  height: 32px;
+  min-width: 100px;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a8a29e' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.field-select:hover {
+  border-color: var(--color-text-tertiary);
+}
+
+.field-select:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-bg);
+}
+
+/* Toggle switch */
+.toggle-wrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.toggle {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  flex-shrink: 0;
+}
+
+.toggle input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+  position: absolute;
+}
+
+.toggle-track {
+  position: absolute;
+  inset: 0;
+  background: var(--color-border);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.toggle input:checked + .toggle-track {
+  background: var(--color-accent);
+}
+
+.toggle-track::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.toggle input:checked + .toggle-track::after {
+  transform: translateX(16px);
+}
+
+.toggle input:focus-visible + .toggle-track {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* Micro-state badge */
+.micro-state {
+  font-size: 11px;
+  font-weight: var(--fw-medium);
+  padding: 2px var(--space-2);
+  border-radius: 100px;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.micro-state.applying {
+  opacity: 1;
+  background: var(--color-accent-light);
+  color: var(--color-accent);
+}
+
+.micro-state.applied {
+  opacity: 1;
+  background: var(--color-success-light);
+  color: var(--color-success);
+}
+
+/* Checkbox list */
+.checkbox-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.checkbox-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 100px;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  user-select: none;
+}
+
+.checkbox-item:hover {
+  border-color: var(--color-text-tertiary);
+}
+
+.checkbox-item.checked {
+  background: var(--color-accent-light);
+  border-color: var(--color-accent);
+  color: var(--color-accent-hover);
+}
+
+.checkbox-item input {
+  display: none;
+}
+
+/* ================================================================
+   EXTEND PANEL — Plugins & Themes
+   ================================================================ */
+.search-box {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 0 var(--space-3);
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  height: 34px;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.search-box:focus-within {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-bg);
+}
+
+.search-box svg {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.search-box input {
+  border: none;
+  background: transparent;
+  flex: 1;
+  height: 100%;
+  font-size: var(--fs-sm);
+}
+
+.search-box input:focus { outline: none; }
+
+.search-box input::placeholder { color: var(--color-text-tertiary); }
+
+/* Plugin cards */
+.plugin-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.plugin-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  transition: border-color var(--duration-fast) var(--ease-out),
+              background var(--duration-fast) var(--ease-out);
+}
+
+.plugin-card:hover {
+  border-color: var(--color-border);
+  background: rgba(250, 249, 246, 0.5);
+}
+
+.plugin-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-semibold);
+  color: #fff;
+}
+
+.plugin-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.plugin-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+  line-height: var(--lh-tight);
+}
+
+.plugin-desc {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+  margin-top: 2px;
+  line-height: var(--lh-normal);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.plugin-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-1);
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+.plugin-meta .stars {
+  color: var(--color-accent);
+}
+
+.plugin-action {
+  flex-shrink: 0;
+  align-self: center;
+}
+
+/* Installed plugins */
+.installed-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.installed-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  background: var(--color-bg);
+}
+
+.installed-item-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.installed-item-name .active-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-success);
+}
+
+.installed-item-actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+/* Theme cards */
+.theme-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+
+.theme-card {
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  transition: border-color var(--duration-fast) var(--ease-out),
+              box-shadow var(--duration-fast) var(--ease-out);
+  cursor: pointer;
+}
+
+.theme-card:hover {
+  border-color: var(--color-border);
+  box-shadow: var(--shadow-sm);
+}
+
+.theme-card.active-theme {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 1px var(--color-accent);
+}
+
+.theme-thumb {
+  height: 80px;
+  position: relative;
+}
+
+.theme-card.active-theme .theme-thumb::after {
+  content: 'Active';
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  padding: 2px 8px;
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  background: var(--color-accent);
+  color: #fff;
+  border-radius: 100px;
+}
+
+.theme-info {
+  padding: var(--space-2) var(--space-3);
+}
+
+.theme-name {
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+.theme-actions {
+  display: flex;
+  gap: var(--space-1);
+  padding: 0 var(--space-3) var(--space-2);
+}
+
+/* ================================================================
+   EXPORT & SHARE PANEL
+   ================================================================ */
+.export-actions {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.export-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  text-align: left;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) var(--ease-out);
+  background: var(--color-surface);
+}
+
+.export-btn:hover {
+  border-color: var(--color-border);
+  background: rgba(250, 249, 246, 0.5);
+}
+
+.export-btn:active {
+  transform: scale(0.99);
+}
+
+.export-btn-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+}
+
+.export-btn-text {
+  flex: 1;
+}
+
+.export-btn-title {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  color: var(--color-text);
+}
+
+.export-btn-desc {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+}
+
+.export-btn-arrow {
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.export-btn.disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.coming-soon-badge {
+  font-size: 10px;
+  font-weight: var(--fw-semibold);
+  padding: 2px 8px;
+  background: var(--color-border-subtle);
+  color: var(--color-text-tertiary);
+  border-radius: 100px;
+}
+
+/* Blueprint import area */
+.blueprint-import {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.blueprint-url-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.blueprint-url-row input {
+  flex: 1;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  background: var(--color-surface);
+}
+
+.blueprint-url-row input:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-bg);
+}
+
+.blueprint-textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  resize: vertical;
+  background: var(--color-surface);
+  line-height: var(--lh-relaxed);
+}
+
+.blueprint-textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-bg);
+}
+
+.blueprint-textarea::placeholder {
+  color: var(--color-text-tertiary);
+}
+
+/* Divider */
+.divider {
+  height: 1px;
+  background: var(--color-border-subtle);
+}
+
+/* ================================================================
+   SECTION 4: FOOTER
+   ================================================================ */
+.footer {
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: var(--space-7) var(--space-5) var(--space-6);
+  border-top: 1px solid var(--color-border-subtle);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.footer-links {
+  display: flex;
+  gap: var(--space-5);
+}
+
+.footer-links a {
+  font-size: var(--fs-sm);
+  color: var(--color-text-tertiary);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+
+.footer-links a:hover {
+  color: var(--color-text);
+}
+
+.footer-powered {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+}
+
+/* ================================================================
+   MODAL
+   ================================================================ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(28, 25, 23, 0.4);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-normal) var(--ease-out);
+}
+
+.modal-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.modal {
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  width: 100%;
+  max-width: 560px;
+  max-height: 90vh;
+  overflow: auto;
+  transform: translateY(8px) scale(0.98);
+  transition: transform var(--duration-normal) var(--ease-out);
+}
+
+.modal-overlay.open .modal {
+  transform: translateY(0) scale(1);
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.modal-header h3 {
+  font-size: var(--fs-xl);
+  font-weight: var(--fw-semibold);
+}
+
+.modal-body {
+  padding: var(--space-5);
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+/* New site template grid */
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-3);
+}
+
+.template-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  text-align: center;
+}
+
+.template-card:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-bg);
+}
+
+.template-card.selected {
+  border-color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+
+.template-card.disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.template-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg);
+  color: var(--color-text-secondary);
+}
+
+.template-card.selected .template-icon {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.template-name {
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+}
+
+.template-desc {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+}
+
+/* Blueprint modal code block */
+.code-block {
+  background: #1C1917;
+  color: #e7e5e0;
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: var(--lh-relaxed);
+  overflow-x: auto;
+  position: relative;
+  white-space: pre;
+}
+
+.code-block .copy-btn {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  font-size: 11px;
+  background: rgba(255,255,255,0.1);
+  color: #e7e5e0;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+}
+
+.code-block .copy-btn:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+/* Push to GitHub modal */
+.github-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.github-form .field input,
+.github-form .field textarea {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  background: var(--color-surface);
+}
+
+.github-form .field input:focus,
+.github-form .field textarea:focus {
+  outline: none;
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 3px var(--color-accent-bg);
+}
+
+.github-form .field textarea {
+  min-height: 60px;
+  resize: vertical;
+}
+
+.link-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-3);
+  background: var(--color-info-light);
+  color: var(--color-info);
+  border-radius: 100px;
+  font-size: var(--fs-xs);
+  font-weight: var(--fw-medium);
+}
+
+/* ================================================================
+   TOAST SYSTEM
+   ================================================================ */
+.toast-container {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  z-index: 2000;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-text);
+  color: #fff;
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  font-weight: var(--fw-medium);
+  pointer-events: auto;
+  animation: toast-in var(--duration-normal) var(--ease-out);
+  max-width: 340px;
+}
+
+.toast.dismissing {
+  animation: toast-out var(--duration-fast) var(--ease-out) forwards;
+}
+
+.toast-icon {
+  flex-shrink: 0;
+}
+
+.toast-icon.success { color: #34d399; }
+.toast-icon.info { color: #60a5fa; }
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.95); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(-4px) scale(0.95); }
+}
+
+@keyframes dropdown-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ================================================================
+   GLOBAL SEARCH OVERLAY (Cmd+K)
+   ================================================================ */
+.search-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  background: rgba(28, 25, 23, 0.4);
+  backdrop-filter: blur(4px);
+  display: flex;
+  justify-content: center;
+  padding-top: 20vh;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--duration-normal) var(--ease-out);
+}
+
+.search-overlay.open {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.search-dialog {
+  width: 100%;
+  max-width: 540px;
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+  transform: translateY(8px) scale(0.98);
+  transition: transform var(--duration-normal) var(--ease-out);
+  height: fit-content;
+}
+
+.search-overlay.open .search-dialog {
+  transform: translateY(0) scale(1);
+}
+
+.search-dialog-input-wrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.search-dialog-input-wrapper svg {
+  flex-shrink: 0;
+  color: var(--color-text-tertiary);
+}
+
+.search-dialog-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-regular);
+}
+
+.search-dialog-input:focus { outline: none; }
+.search-dialog-input::placeholder { color: var(--color-text-tertiary); }
+
+.search-dialog-hint {
+  padding: var(--space-3) var(--space-5);
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+  display: flex;
+  justify-content: space-between;
+}
+
+.search-dialog-hint kbd {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  padding: 2px 6px;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+}
+
+/* ================================================================
+   RESPONSIVE: Tablet
+   ================================================================ */
+@media (max-width: 1024px) {
+  .panels-section {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .panel-export {
+    grid-column: 1 / -1;
+  }
+}
+
+/* ================================================================
+   RESPONSIVE: Mobile (360px target)
+   ================================================================ */
+@media (max-width: 768px) {
+  .header {
+    padding: 0 var(--space-3);
+    gap: var(--space-2);
+  }
+
+  .header-wordmark span {
+    display: none;
+  }
+
+  .header-center {
+    display: none;
+  }
+
+  .preview-section {
+    padding: var(--space-3);
+  }
+
+  .preview-frame {
+    height: 45vh;
+    min-height: 280px;
+  }
+
+  .wp-site-header {
+    padding: 12px 16px;
+  }
+
+  .wp-site-logo { font-size: 16px; }
+
+  .wp-site-nav { gap: 16px; }
+  .wp-site-nav li { font-size: 12px; }
+
+  .wp-site-hero {
+    padding: 40px 16px;
+  }
+
+  .wp-site-hero h1 {
+    font-size: 26px;
+  }
+
+  .wp-site-hero p {
+    font-size: 14px;
+  }
+
+  .wp-site-services {
+    grid-template-columns: 1fr;
+    padding: 30px 16px;
+    gap: 16px;
+  }
+
+  .wp-site-work {
+    padding: 30px 16px;
+  }
+
+  .wp-work-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .panels-section {
+    grid-template-columns: 1fr;
+    padding: var(--space-3);
+    gap: var(--space-3);
+  }
+
+  .panel-header {
+    position: sticky;
+    top: 56px;
+    z-index: 10;
+  }
+
+  .template-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .theme-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .footer {
+    flex-direction: column;
+    gap: var(--space-3);
+    text-align: center;
+    padding: var(--space-5) var(--space-3);
+  }
+
+  .footer-links {
+    gap: var(--space-4);
+  }
+
+  .mini-preview {
+    width: 140px;
+    height: 84px;
+    bottom: var(--space-3);
+    right: var(--space-3);
+  }
+
+  .mini-preview-content {
+    transform: scale(0.14);
+  }
+
+  .toast-container {
+    left: var(--space-3);
+    right: var(--space-3);
+    bottom: var(--space-3);
+  }
+
+  .toast {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 380px) {
+  .header-right .btn:not(.btn-icon) span {
+    display: none;
+  }
+}
+</style>
+</head>
+<body>
+
+<!-- ================================================================
+     SECTION 1: HEADER BAR (sticky)
+     ================================================================ -->
+<header class="header" role="banner">
+  <div class="header-left">
+    <div class="header-wordmark">
+      <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden="true">
+        <rect width="28" height="28" rx="6" fill="#D97706"/>
+        <path d="M7 14.5C7 10.5 10 7.5 14 7.5C18 7.5 21 10.5 21 14.5" stroke="white" stroke-width="1.8" stroke-linecap="round" fill="none"/>
+        <circle cx="10.5" cy="16" r="1.5" fill="white"/>
+        <circle cx="17.5" cy="16" r="1.5" fill="white"/>
+        <path d="M11.5 19.5C12.5 20.5 15.5 20.5 16.5 19.5" stroke="white" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+      </svg>
+      <span>Playground</span>
+    </div>
+  </div>
+
+  <div class="header-center">
+    <div class="site-title-wrapper">
+      <input
+        type="text"
+        class="site-title"
+        id="siteTitle"
+        value="Flavor Lab"
+        aria-label="Site title (click to edit)"
+        spellcheck="false"
+      />
+      <span class="site-title-edit-hint">Enter to save</span>
+    </div>
+  </div>
+
+  <div class="header-right">
+    <div class="storage-badge" id="storageBadge" tabindex="0" role="button" aria-label="Storage mode: In memory" aria-haspopup="true" aria-expanded="false">
+      <span class="dot"></span>
+      <span id="storageBadgeLabel">In memory</span>
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
+
+      <div class="storage-dropdown" id="storageDropdown" role="menu">
+        <button class="storage-option active" role="menuitem" data-storage="memory" aria-label="In memory storage">
+          <span class="storage-option-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
+            In memory
+            <svg class="check-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+          </span>
+          <span class="storage-option-desc">Temporary. Resets when you close the tab.</span>
+        </button>
+        <button class="storage-option" role="menuitem" data-storage="browser" aria-label="Browser storage">
+          <span class="storage-option-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            Browser storage
+          </span>
+          <span class="storage-option-desc">Persists across page reloads. Private to this browser.</span>
+        </button>
+        <button class="storage-option" role="menuitem" data-storage="device" aria-label="Device folder">
+          <span class="storage-option-title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+            Device folder
+          </span>
+          <span class="storage-option-desc">Saved to your filesystem. Survives browser data clears.</span>
+        </button>
+      </div>
+    </div>
+
+    <button class="btn btn-secondary" id="shareBtn" aria-label="Share site">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+      <span>Share</span>
+    </button>
+
+    <button class="btn btn-primary" id="newSiteBtn" aria-label="Create new site">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      <span>New Site</span>
+    </button>
+  </div>
+</header>
+
+<!-- ================================================================
+     SECTION 2: LIVE PREVIEW
+     ================================================================ -->
+<section class="preview-section" id="previewSection" aria-label="Site preview">
+  <div class="preview-container">
+    <div class="preview-frame" id="previewFrame">
+      <!-- Mock WordPress site -->
+      <div class="wp-site">
+        <header class="wp-site-header">
+          <div class="wp-site-logo">Flavor Lab</div>
+          <ul class="wp-site-nav">
+            <li>Work</li>
+            <li>Services</li>
+            <li>About</li>
+            <li>Contact</li>
+          </ul>
+        </header>
+
+        <section class="wp-site-hero">
+          <h1>We craft digital experiences that matter</h1>
+          <p>Strategy, design, and development for brands that want to stand out and connect with their audience.</p>
+          <div class="wp-site-hero-cta">See our work</div>
+        </section>
+
+        <section class="wp-site-services">
+          <div class="wp-service-card">
+            <div class="wp-service-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+            </div>
+            <h3>Strategy</h3>
+            <p>Market research, brand positioning, and digital roadmaps that set the foundation for success.</p>
+          </div>
+          <div class="wp-service-card">
+            <div class="wp-service-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19l7-7 3 3-7 7-3-3z"/><path d="M18 13l-1.5-7.5L2 2l3.5 14.5L13 18l5-5z"/><path d="M2 2l7.586 7.586"/><circle cx="11" cy="11" r="2"/></svg>
+            </div>
+            <h3>Design</h3>
+            <p>Visual identities, interfaces, and experiences that feel intuitive and look exceptional.</p>
+          </div>
+          <div class="wp-service-card">
+            <div class="wp-service-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            </div>
+            <h3>Development</h3>
+            <p>Clean, performant code. WordPress, headless, and custom builds tailored to your needs.</p>
+          </div>
+        </section>
+
+        <section class="wp-site-work">
+          <h2>Recent Work</h2>
+          <div class="wp-work-grid">
+            <div class="wp-work-card">
+              <div class="wp-work-thumb"></div>
+              <div class="wp-work-info">
+                <h4>Meridian Rebrand</h4>
+                <p>Brand identity, web design</p>
+              </div>
+            </div>
+            <div class="wp-work-card">
+              <div class="wp-work-thumb"></div>
+              <div class="wp-work-info">
+                <h4>Solstice E-Commerce</h4>
+                <p>WooCommerce, custom theme</p>
+              </div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </div>
+
+    <div class="address-bar">
+      <button class="btn btn-icon btn-sm btn-ghost" aria-label="Refresh preview" id="refreshBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      </button>
+      <input type="text" class="address-bar-input" value="playground.wordpress.net/" aria-label="Site URL" readonly />
+    </div>
+  </div>
+</section>
+
+<!-- ================================================================
+     FLOATING MINI-PREVIEW
+     ================================================================ -->
+<div class="mini-preview" id="miniPreview" role="button" aria-label="Back to preview" tabindex="0" title="Back to preview">
+  <div class="mini-preview-content">
+    <div class="wp-site" style="pointer-events:none;">
+      <header class="wp-site-header" style="padding:12px 24px;">
+        <div class="wp-site-logo" style="font-size:16px;">Flavor Lab</div>
+      </header>
+      <section class="wp-site-hero" style="padding:40px 24px;">
+        <h1 style="font-size:28px; max-width:400px;">We craft digital experiences that matter</h1>
+        <p style="font-size:12px; max-width:300px;">Strategy, design, and development for brands that want to stand out.</p>
+      </section>
+    </div>
+  </div>
+  <div class="mini-preview-label">Back to preview</div>
+</div>
+
+<!-- ================================================================
+     SECTION 3: THREE HORIZONTAL PANELS
+     ================================================================ -->
+<div class="panels-section">
+
+  <!-- PANEL A: Configure -->
+  <div class="panel panel-configure">
+    <div class="panel-header">
+      <div class="panel-header-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </div>
+      <h2>Configure</h2>
+    </div>
+    <div class="panel-body">
+      <!-- Site Settings -->
+      <div class="panel-subsection">
+        <div class="panel-subsection-title">Site Settings</div>
+
+        <div class="field">
+          <div class="field-row">
+            <label class="field-label" for="phpVersion">PHP version</label>
+            <div style="display:flex;align-items:center;gap:var(--space-2);">
+              <select class="field-select" id="phpVersion" data-setting="php">
+                <option>8.0</option>
+                <option>8.1</option>
+                <option selected>8.2</option>
+                <option>8.3</option>
+              </select>
+              <span class="micro-state" id="phpMicro"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-row">
+            <label class="field-label" for="wpVersion">WordPress version</label>
+            <div style="display:flex;align-items:center;gap:var(--space-2);">
+              <select class="field-select" id="wpVersion" data-setting="wp">
+                <option>6.3</option>
+                <option>6.4</option>
+                <option>6.5</option>
+                <option>6.6</option>
+                <option selected>6.7</option>
+              </select>
+              <span class="micro-state" id="wpMicro"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-row">
+            <label class="field-label" for="language">Language</label>
+            <div style="display:flex;align-items:center;gap:var(--space-2);">
+              <select class="field-select" id="language" data-setting="lang">
+                <option selected>English (US)</option>
+                <option>Espanol</option>
+                <option>Francais</option>
+                <option>Deutsch</option>
+                <option>Italiano</option>
+                <option>Japanese</option>
+              </select>
+              <span class="micro-state" id="langMicro"></span>
+            </div>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field-row">
+            <label class="field-label" for="networkToggle">Networking</label>
+            <div style="display:flex;align-items:center;gap:var(--space-2);">
+              <label class="toggle">
+                <input type="checkbox" id="networkToggle" data-setting="network" />
+                <span class="toggle-track"></span>
+              </label>
+              <span class="micro-state" id="networkMicro"></span>
+            </div>
+          </div>
+          <span class="field-desc">Allow HTTP requests from PHP</span>
+        </div>
+
+        <div class="field">
+          <div class="field-row">
+            <label class="field-label" for="multisiteToggle">Multisite</label>
+            <div style="display:flex;align-items:center;gap:var(--space-2);">
+              <label class="toggle">
+                <input type="checkbox" id="multisiteToggle" data-setting="multisite" />
+                <span class="toggle-track"></span>
+              </label>
+              <span class="micro-state" id="multisiteMicro"></span>
+            </div>
+          </div>
+          <span class="field-desc">Enable WordPress Multisite network</span>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- PHP Extensions -->
+      <div class="panel-subsection">
+        <div class="panel-subsection-title">PHP Extensions</div>
+        <div class="checkbox-list" id="phpExtensions">
+          <label class="checkbox-item checked"><input type="checkbox" checked data-setting="ext-gd" /> gd</label>
+          <label class="checkbox-item checked"><input type="checkbox" checked data-setting="ext-mbstring" /> mbstring</label>
+          <label class="checkbox-item"><input type="checkbox" data-setting="ext-xml" /> xml</label>
+          <label class="checkbox-item checked"><input type="checkbox" checked data-setting="ext-sqlite" /> sqlite3</label>
+          <label class="checkbox-item"><input type="checkbox" data-setting="ext-iconv" /> iconv</label>
+          <label class="checkbox-item"><input type="checkbox" data-setting="ext-openssl" /> openssl</label>
+          <label class="checkbox-item"><input type="checkbox" data-setting="ext-zip" /> zip</label>
+          <label class="checkbox-item"><input type="checkbox" data-setting="ext-libxml" /> libxml</label>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Storage -->
+      <div class="panel-subsection">
+        <div class="panel-subsection-title">Storage</div>
+        <div class="field">
+          <div class="field-row">
+            <div>
+              <span class="field-label" id="currentStorageLabel">In memory</span>
+              <span class="field-desc" style="display:block;">Temporary, resets when you close the tab</span>
+            </div>
+            <button class="btn btn-sm btn-secondary" id="changeStorageBtn">Change</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PANEL B: Extend -->
+  <div class="panel panel-extend">
+    <div class="panel-header">
+      <div class="panel-header-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
+      </div>
+      <h2>Extend</h2>
+    </div>
+    <div class="panel-body">
+      <!-- Plugins section -->
+      <div class="panel-subsection">
+        <div class="panel-subsection-title">Plugins</div>
+
+        <div class="search-box">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input type="text" id="pluginSearch" placeholder="Search plugins..." aria-label="Search plugins" />
+        </div>
+
+        <div class="plugin-list" id="pluginList">
+          <div class="plugin-card" data-plugin="jetpack">
+            <div class="plugin-icon" style="background: linear-gradient(135deg, #069e08, #04740b);">J</div>
+            <div class="plugin-info">
+              <div class="plugin-name">Jetpack</div>
+              <div class="plugin-desc">Security, performance, and marketing tools made by the WordPress experts.</div>
+              <div class="plugin-meta">
+                <span class="stars">4.1 / 5</span>
+                <span>5M+ installs</span>
+              </div>
+            </div>
+            <div class="plugin-action">
+              <button class="btn btn-sm btn-secondary install-plugin-btn">Install</button>
+            </div>
+          </div>
+          <div class="plugin-card" data-plugin="yoast">
+            <div class="plugin-icon" style="background: linear-gradient(135deg, #a4286a, #77155e);">Y</div>
+            <div class="plugin-info">
+              <div class="plugin-name">Yoast SEO</div>
+              <div class="plugin-desc">The #1 WordPress SEO plugin. Optimize your site for search engines.</div>
+              <div class="plugin-meta">
+                <span class="stars">4.6 / 5</span>
+                <span>5M+ installs</span>
+              </div>
+            </div>
+            <div class="plugin-action">
+              <button class="btn btn-sm btn-secondary install-plugin-btn">Install</button>
+            </div>
+          </div>
+          <div class="plugin-card" data-plugin="woocommerce">
+            <div class="plugin-icon" style="background: linear-gradient(135deg, #7f54b3, #674399);">W</div>
+            <div class="plugin-info">
+              <div class="plugin-name">WooCommerce</div>
+              <div class="plugin-desc">Everything you need to launch an online store on WordPress.</div>
+              <div class="plugin-meta">
+                <span class="stars">4.3 / 5</span>
+                <span>5M+ installs</span>
+              </div>
+            </div>
+            <div class="plugin-action">
+              <button class="btn btn-sm btn-secondary install-plugin-btn">Install</button>
+            </div>
+          </div>
+          <div class="plugin-card" data-plugin="cf7">
+            <div class="plugin-icon" style="background: linear-gradient(135deg, #2271b1, #135e96);">C</div>
+            <div class="plugin-info">
+              <div class="plugin-name">Contact Form 7</div>
+              <div class="plugin-desc">Simple but flexible contact form builder. Manages multiple forms.</div>
+              <div class="plugin-meta">
+                <span class="stars">4.0 / 5</span>
+                <span>5M+ installs</span>
+              </div>
+            </div>
+            <div class="plugin-action">
+              <button class="btn btn-sm btn-secondary install-plugin-btn">Install</button>
+            </div>
+          </div>
+          <div class="plugin-card" data-plugin="elementor">
+            <div class="plugin-icon" style="background: linear-gradient(135deg, #d30c5c, #a8084a);">E</div>
+            <div class="plugin-info">
+              <div class="plugin-name">Elementor</div>
+              <div class="plugin-desc">The leading website builder. Drag-and-drop visual editor with 100+ widgets.</div>
+              <div class="plugin-meta">
+                <span class="stars">4.5 / 5</span>
+                <span>5M+ installs</span>
+              </div>
+            </div>
+            <div class="plugin-action">
+              <button class="btn btn-sm btn-secondary install-plugin-btn">Install</button>
+            </div>
+          </div>
+          <div class="plugin-card" data-plugin="supercache">
+            <div class="plugin-icon" style="background: linear-gradient(135deg, #0073aa, #005177);">S</div>
+            <div class="plugin-info">
+              <div class="plugin-name">WP Super Cache</div>
+              <div class="plugin-desc">Fast caching plugin. Generates static HTML files from your dynamic blog.</div>
+              <div class="plugin-meta">
+                <span class="stars">4.2 / 5</span>
+                <span>2M+ installs</span>
+              </div>
+            </div>
+            <div class="plugin-action">
+              <button class="btn btn-sm btn-secondary install-plugin-btn">Install</button>
+            </div>
+          </div>
+        </div>
+
+        <button class="btn btn-secondary" id="uploadZipBtn" style="width:100%;">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          Upload ZIP
+        </button>
+
+        <!-- Installed plugins -->
+        <div style="margin-top: var(--space-2);">
+          <div class="panel-subsection-title" style="margin-bottom: var(--space-2);">Installed</div>
+          <div class="installed-list" id="installedPlugins">
+            <div class="installed-item">
+              <span class="installed-item-name">
+                <span class="active-dot"></span>
+                Akismet Anti-spam
+              </span>
+              <div class="installed-item-actions">
+                <button class="btn btn-sm btn-ghost deactivate-btn">Deactivate</button>
+                <button class="btn btn-sm btn-ghost" style="color:var(--color-danger);">Remove</button>
+              </div>
+            </div>
+            <div class="installed-item">
+              <span class="installed-item-name">
+                <span class="active-dot"></span>
+                Hello Dolly
+              </span>
+              <div class="installed-item-actions">
+                <button class="btn btn-sm btn-ghost deactivate-btn">Deactivate</button>
+                <button class="btn btn-sm btn-ghost" style="color:var(--color-danger);">Remove</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Themes section -->
+      <div class="panel-subsection">
+        <div class="panel-subsection-title">Themes</div>
+        <div class="theme-grid">
+          <div class="theme-card active-theme" data-theme="twentytwentyfive">
+            <div class="theme-thumb" style="background: linear-gradient(135deg, #1a1a2e, #16213e, #0f3460);"></div>
+            <div class="theme-info">
+              <div class="theme-name">Twenty Twenty-Five</div>
+            </div>
+            <div class="theme-actions">
+              <button class="btn btn-sm btn-ghost">Preview</button>
+            </div>
+          </div>
+          <div class="theme-card" data-theme="blockbase">
+            <div class="theme-thumb" style="background: linear-gradient(135deg, #f0fdf4, #bbf7d0, #86efac);"></div>
+            <div class="theme-info">
+              <div class="theme-name">Blockbase</div>
+            </div>
+            <div class="theme-actions">
+              <button class="btn btn-sm btn-primary activate-theme-btn">Activate</button>
+              <button class="btn btn-sm btn-ghost">Preview</button>
+            </div>
+          </div>
+          <div class="theme-card" data-theme="astra">
+            <div class="theme-thumb" style="background: linear-gradient(135deg, #5b21b6, #7c3aed, #a78bfa);"></div>
+            <div class="theme-info">
+              <div class="theme-name">Astra</div>
+            </div>
+            <div class="theme-actions">
+              <button class="btn btn-sm btn-primary activate-theme-btn">Activate</button>
+              <button class="btn btn-sm btn-ghost">Preview</button>
+            </div>
+          </div>
+          <div class="theme-card" data-theme="twentytwentyfour">
+            <div class="theme-thumb" style="background: linear-gradient(135deg, #fef3c7, #fde68a, #fbbf24);"></div>
+            <div class="theme-info">
+              <div class="theme-name">Twenty Twenty-Four</div>
+            </div>
+            <div class="theme-actions">
+              <button class="btn btn-sm btn-primary activate-theme-btn">Activate</button>
+              <button class="btn btn-sm btn-ghost">Preview</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- PANEL C: Export & Share -->
+  <div class="panel panel-export">
+    <div class="panel-header">
+      <div class="panel-header-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><polyline points="16 6 12 2 8 6"/><line x1="12" y1="2" x2="12" y2="15"/></svg>
+      </div>
+      <h2>Export &amp; Share</h2>
+    </div>
+    <div class="panel-body">
+      <!-- Export actions -->
+      <div class="panel-subsection">
+        <div class="panel-subsection-title">Export</div>
+        <div class="export-actions">
+          <button class="export-btn" id="downloadZipBtn">
+            <div class="export-btn-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            </div>
+            <div class="export-btn-text">
+              <div class="export-btn-title">Download as ZIP</div>
+              <div class="export-btn-desc">Full site archive including database</div>
+            </div>
+            <span class="export-btn-arrow">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </span>
+          </button>
+
+          <button class="export-btn" id="exportWxrBtn">
+            <div class="export-btn-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+            </div>
+            <div class="export-btn-text">
+              <div class="export-btn-title">Export as WXR</div>
+              <div class="export-btn-desc">WordPress eXtended RSS for content migration</div>
+            </div>
+            <span class="export-btn-arrow">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </span>
+          </button>
+
+          <button class="export-btn" id="exportBlueprintBtn">
+            <div class="export-btn-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+            </div>
+            <div class="export-btn-text">
+              <div class="export-btn-title">Export as blueprint</div>
+              <div class="export-btn-desc">Reproducible JSON configuration file</div>
+            </div>
+            <span class="export-btn-arrow">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </span>
+          </button>
+
+          <button class="export-btn" id="pushGithubBtn">
+            <div class="export-btn-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+            </div>
+            <div class="export-btn-text">
+              <div class="export-btn-title">Push to GitHub</div>
+              <div class="export-btn-desc">Create a pull request with your changes</div>
+            </div>
+            <span class="export-btn-arrow">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </span>
+          </button>
+
+          <button class="export-btn disabled">
+            <div class="export-btn-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+            </div>
+            <div class="export-btn-text">
+              <div class="export-btn-title">Clone site</div>
+              <div class="export-btn-desc">Duplicate this Playground instance</div>
+            </div>
+            <span class="coming-soon-badge">Coming soon</span>
+          </button>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Share actions -->
+      <div class="panel-subsection">
+        <div class="panel-subsection-title">Share</div>
+        <div class="export-actions">
+          <button class="export-btn" id="copyLinkBtn">
+            <div class="export-btn-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            </div>
+            <div class="export-btn-text">
+              <div class="export-btn-title">Copy shareable link</div>
+              <div class="export-btn-desc">Direct URL to this Playground</div>
+            </div>
+            <span class="export-btn-arrow">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </span>
+          </button>
+          <button class="export-btn" id="shareBlueprintBtn">
+            <div class="export-btn-icon">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+            </div>
+            <div class="export-btn-text">
+              <div class="export-btn-title">Share as blueprint URL</div>
+              <div class="export-btn-desc">Link that recreates this exact setup</div>
+            </div>
+            <span class="export-btn-arrow">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="9 18 15 12 9 6"/></svg>
+            </span>
+          </button>
+        </div>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Blueprint Import -->
+      <div class="panel-subsection">
+        <div class="panel-subsection-title">Import Blueprint</div>
+        <div class="blueprint-import">
+          <div class="blueprint-url-row">
+            <input type="url" placeholder="https://example.com/blueprint.json" aria-label="Blueprint URL" id="blueprintUrlInput" />
+            <button class="btn btn-sm btn-secondary" id="importBlueprintUrlBtn">Import</button>
+          </div>
+          <textarea class="blueprint-textarea" id="blueprintPasteArea" placeholder='Paste blueprint JSON here...'
+              aria-label="Paste blueprint JSON"></textarea>
+          <button class="btn btn-sm btn-secondary disabled" style="align-self:flex-start;" disabled>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>
+            Import from GitHub (coming soon)
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     SECTION 4: FOOTER
+     ================================================================ -->
+<footer class="footer" role="contentinfo">
+  <nav class="footer-links" aria-label="Footer navigation">
+    <a href="#" onclick="event.preventDefault()">Documentation</a>
+    <a href="#" onclick="event.preventDefault()">GitHub</a>
+    <a href="#" onclick="event.preventDefault()">Community</a>
+  </nav>
+  <span class="footer-powered">Powered by WordPress Playground</span>
+</footer>
+
+<!-- ================================================================
+     NEW SITE MODAL
+     ================================================================ -->
+<div class="modal-overlay" id="newSiteModal" role="dialog" aria-modal="true" aria-labelledby="newSiteModalTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="newSiteModalTitle">Create a new site</h3>
+      <button class="btn btn-icon btn-ghost" aria-label="Close" onclick="closeModal('newSiteModal')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:var(--fs-sm); color:var(--color-text-secondary); margin-bottom:var(--space-4);">Choose a starting template for your Playground site.</p>
+      <div class="template-grid">
+        <div class="template-card selected" data-template="blank">
+          <div class="template-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"/></svg>
+          </div>
+          <div class="template-name">Blank</div>
+          <div class="template-desc">Fresh WordPress install</div>
+        </div>
+        <div class="template-card" data-template="blog">
+          <div class="template-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+          </div>
+          <div class="template-name">Blog</div>
+          <div class="template-desc">Posts, categories, about page</div>
+        </div>
+        <div class="template-card" data-template="portfolio">
+          <div class="template-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+          </div>
+          <div class="template-name">Portfolio</div>
+          <div class="template-desc">Gallery, projects, contact</div>
+        </div>
+        <div class="template-card" data-template="store">
+          <div class="template-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.68 13.39a2 2 0 0 0 2 1.61h9.72a2 2 0 0 0 2-1.61L23 6H6"/></svg>
+          </div>
+          <div class="template-name">Store</div>
+          <div class="template-desc">WooCommerce with products</div>
+        </div>
+        <div class="template-card" data-template="docs">
+          <div class="template-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"/><path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"/></svg>
+          </div>
+          <div class="template-name">Docs site</div>
+          <div class="template-desc">Knowledge base layout</div>
+        </div>
+        <div class="template-card disabled" data-template="pr-preview">
+          <div class="template-icon">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
+          </div>
+          <div class="template-name">PR Preview</div>
+          <div class="template-desc">Not available yet</div>
+        </div>
+      </div>
+      <div style="margin-top:var(--space-4);">
+        <div class="panel-subsection-title" style="margin-bottom:var(--space-2);">Or import a blueprint</div>
+        <div class="blueprint-url-row">
+          <input type="url" placeholder="https://example.com/blueprint.json" aria-label="Blueprint URL for new site" />
+          <button class="btn btn-sm btn-secondary">Load</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('newSiteModal')">Cancel</button>
+      <button class="btn btn-primary" id="createSiteBtn">Create Site</button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     BLUEPRINT EXPORT MODAL
+     ================================================================ -->
+<div class="modal-overlay" id="blueprintModal" role="dialog" aria-modal="true" aria-labelledby="blueprintModalTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="blueprintModalTitle">Export as Blueprint</h3>
+      <button class="btn btn-icon btn-ghost" aria-label="Close" onclick="closeModal('blueprintModal')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:var(--fs-sm); color:var(--color-text-secondary); margin-bottom:var(--space-4);">This JSON blueprint captures your current Playground configuration. Share it or use it to recreate this exact setup.</p>
+      <div class="code-block" id="blueprintCode"><button class="copy-btn" id="copyBlueprintBtn" aria-label="Copy blueprint to clipboard">Copy</button>{
+  "landingPage": "/",
+  "phpVersion": "8.2",
+  "wpVersion": "6.7",
+  "features": {
+    "networking": false
+  },
+  "steps": [
+    {
+      "step": "setSiteOptions",
+      "options": {
+        "blogname": "Flavor Lab"
+      }
+    },
+    {
+      "step": "installPlugin",
+      "pluginData": {
+        "resource": "wordpress.org/plugins",
+        "slug": "akismet"
+      }
+    },
+    {
+      "step": "installTheme",
+      "themeData": {
+        "resource": "wordpress.org/themes",
+        "slug": "twentytwentyfive"
+      }
+    }
+  ]
+}</div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('blueprintModal')">Close</button>
+      <button class="btn btn-primary" id="copyBlueprintBtnFooter">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        Copy JSON
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     PUSH TO GITHUB MODAL
+     ================================================================ -->
+<div class="modal-overlay" id="githubModal" role="dialog" aria-modal="true" aria-labelledby="githubModalTitle">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="githubModalTitle">Push to GitHub</h3>
+      <button class="btn btn-icon btn-ghost" aria-label="Close" onclick="closeModal('githubModal')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="github-form">
+        <div class="field">
+          <label class="field-label" for="ghRepo">Repository</label>
+          <input type="text" id="ghRepo" placeholder="owner/repo" value="flavor-lab/flavor-lab-theme" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="ghBranch">Branch</label>
+          <input type="text" id="ghBranch" placeholder="branch-name" value="playground/update-theme" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="ghPrTitle">Pull request title</label>
+          <input type="text" id="ghPrTitle" value="Update theme from WordPress Playground" />
+        </div>
+        <div class="field">
+          <label class="field-label" for="ghPrDesc">Description</label>
+          <textarea id="ghPrDesc">Changes made in WordPress Playground:
+- Updated site configuration
+- Modified theme settings
+
+Exported from playground.wordpress.net</textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-secondary" onclick="closeModal('githubModal')">Cancel</button>
+      <button class="btn btn-primary" id="createPrBtn">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
+        Create Pull Request
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     GLOBAL SEARCH OVERLAY (Cmd+K)
+     ================================================================ -->
+<div class="search-overlay" id="searchOverlay" role="dialog" aria-modal="true" aria-label="Search">
+  <div class="search-dialog">
+    <div class="search-dialog-input-wrapper">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" class="search-dialog-input" id="globalSearchInput" placeholder="Search settings, plugins, themes, actions..." />
+    </div>
+    <div class="search-dialog-hint">
+      <span>Type to search across all panels</span>
+      <span><kbd>Esc</kbd> to close</span>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     TOAST CONTAINER
+     ================================================================ -->
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+<script>
+/* ================================================================
+   INTERACTIVE LOGIC
+   ================================================================ */
+
+// ---- Helpers ----
+function $(sel, ctx) { return (ctx || document).querySelector(sel); }
+function $$(sel, ctx) { return Array.from((ctx || document).querySelectorAll(sel)); }
+
+// ---- Toast system ----
+function showToast(message, type = 'success') {
+  const container = $('#toastContainer');
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  const iconSvg = type === 'success'
+    ? '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>'
+    : '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>';
+  toast.innerHTML = '<span class="toast-icon ' + type + '">' + iconSvg + '</span>' + message;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add('dismissing');
+    toast.addEventListener('animationend', () => toast.remove());
+  }, 3000);
+}
+
+// ---- Modal helpers ----
+function openModal(id) {
+  const el = document.getElementById(id);
+  el.classList.add('open');
+  // Focus first focusable element
+  setTimeout(() => {
+    const focusable = el.querySelector('input, button, textarea, select, [tabindex]:not([tabindex="-1"])');
+    if (focusable) focusable.focus();
+  }, 100);
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+// Close modals on overlay click
+$$('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.classList.remove('open');
+  });
+});
+
+// Close modals on Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    $$('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+    $('#searchOverlay').classList.remove('open');
+  }
+});
+
+// ---- 1. Inline-editable site title ----
+const siteTitle = $('#siteTitle');
+let originalTitle = siteTitle.value;
+
+siteTitle.addEventListener('focus', () => {
+  originalTitle = siteTitle.value;
+  siteTitle.select();
+});
+
+siteTitle.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    siteTitle.blur();
+    if (siteTitle.value.trim() && siteTitle.value !== originalTitle) {
+      showToast('Site title updated to "' + siteTitle.value.trim() + '"');
+    }
+  }
+  if (e.key === 'Escape') {
+    siteTitle.value = originalTitle;
+    siteTitle.blur();
+  }
+});
+
+siteTitle.addEventListener('blur', () => {
+  if (!siteTitle.value.trim()) siteTitle.value = originalTitle;
+});
+
+// ---- 2. Storage badge + dropdown ----
+const storageBadge = $('#storageBadge');
+const storageDropdown = $('#storageDropdown');
+const storageBadgeLabel = $('#storageBadgeLabel');
+const currentStorageLabel = $('#currentStorageLabel');
+
+const storageDescriptions = {
+  memory: { label: 'In memory', desc: 'Temporary, resets when you close the tab' },
+  browser: { label: 'Browser storage', desc: 'Persists across page reloads' },
+  device: { label: 'Device folder', desc: 'Saved to your local filesystem' }
+};
+
+storageBadge.addEventListener('click', (e) => {
+  e.stopPropagation();
+  const isOpen = storageDropdown.classList.contains('open');
+  storageDropdown.classList.toggle('open');
+  storageBadge.setAttribute('aria-expanded', !isOpen);
+});
+
+document.addEventListener('click', () => {
+  storageDropdown.classList.remove('open');
+  storageBadge.setAttribute('aria-expanded', 'false');
+});
+
+$$('.storage-option').forEach(opt => {
+  opt.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const key = opt.dataset.storage;
+    $$('.storage-option').forEach(o => o.classList.remove('active'));
+    opt.classList.add('active');
+    // Update check icon visibility
+    $$('.storage-option .check-icon').forEach(c => c.style.display = 'none');
+    const check = opt.querySelector('.check-icon');
+    if (check) check.style.display = '';
+
+    storageBadgeLabel.textContent = storageDescriptions[key].label;
+    currentStorageLabel.textContent = storageDescriptions[key].label;
+    const descEl = currentStorageLabel.parentElement.querySelector('.field-desc');
+    if (descEl) descEl.textContent = storageDescriptions[key].desc;
+    storageDropdown.classList.remove('open');
+    storageBadge.setAttribute('aria-expanded', 'false');
+    showToast('Storage changed to ' + storageDescriptions[key].label.toLowerCase());
+  });
+});
+
+// Init: hide check icons except active
+$$('.storage-option').forEach(opt => {
+  const check = opt.querySelector('.check-icon');
+  if (check && !opt.classList.contains('active')) check.style.display = 'none';
+});
+
+// "Change" button in Configure panel opens storage dropdown
+$('#changeStorageBtn').addEventListener('click', () => {
+  storageBadge.click();
+  storageBadge.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+});
+
+// ---- 3. New site flow ----
+$('#newSiteBtn').addEventListener('click', () => openModal('newSiteModal'));
+
+$$('.template-card:not(.disabled)').forEach(card => {
+  card.addEventListener('click', () => {
+    $$('.template-card').forEach(c => c.classList.remove('selected'));
+    card.classList.add('selected');
+  });
+});
+
+$('#createSiteBtn').addEventListener('click', () => {
+  const selected = $('.template-card.selected');
+  const template = selected ? selected.dataset.template : 'blank';
+  closeModal('newSiteModal');
+
+  // "Reset" preview and update title
+  const templateNames = {
+    blank: 'My WordPress Site',
+    blog: 'My Blog',
+    portfolio: 'My Portfolio',
+    store: 'My Store',
+    docs: 'Docs Site'
+  };
+  const newName = templateNames[template] || 'My WordPress Site';
+  siteTitle.value = newName;
+  showToast('Created new site from "' + template + '" template');
+});
+
+// ---- 4. Settings with micro-states ----
+function triggerMicroState(settingName) {
+  let microEl;
+
+  // Find the corresponding micro-state element
+  const settingToMicro = {
+    php: 'phpMicro',
+    wp: 'wpMicro',
+    lang: 'langMicro',
+    network: 'networkMicro',
+    multisite: 'multisiteMicro'
+  };
+
+  // Check extensions
+  if (settingName.startsWith('ext-')) {
+    // No individual micro-state for extensions, just toast
+    showToast('PHP extension updated');
+    return;
+  }
+
+  const microId = settingToMicro[settingName];
+  if (!microId) return;
+  microEl = document.getElementById(microId);
+  if (!microEl) return;
+
+  microEl.textContent = 'Applying\u2026';
+  microEl.className = 'micro-state applying';
+
+  setTimeout(() => {
+    microEl.textContent = 'Applied';
+    microEl.className = 'micro-state applied';
+    setTimeout(() => {
+      microEl.className = 'micro-state';
+    }, 1200);
+  }, 600);
+}
+
+// Selects
+$$('.field-select[data-setting]').forEach(sel => {
+  sel.addEventListener('change', () => {
+    triggerMicroState(sel.dataset.setting);
+  });
+});
+
+// Toggles
+$$('.toggle input[data-setting]').forEach(inp => {
+  inp.addEventListener('change', () => {
+    triggerMicroState(inp.dataset.setting);
+  });
+});
+
+// PHP extension checkboxes
+$$('.checkbox-item input[data-setting]').forEach(inp => {
+  inp.addEventListener('change', () => {
+    const label = inp.closest('.checkbox-item');
+    label.classList.toggle('checked', inp.checked);
+    triggerMicroState(inp.dataset.setting);
+  });
+});
+
+// ---- 5. Plugin search ----
+const pluginSearch = $('#pluginSearch');
+const pluginCards = $$('.plugin-card');
+
+pluginSearch.addEventListener('input', () => {
+  const q = pluginSearch.value.toLowerCase();
+  pluginCards.forEach(card => {
+    const name = card.querySelector('.plugin-name').textContent.toLowerCase();
+    const desc = card.querySelector('.plugin-desc').textContent.toLowerCase();
+    card.style.display = (name.includes(q) || desc.includes(q)) ? '' : 'none';
+  });
+});
+
+// Install plugin
+$$('.install-plugin-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const card = btn.closest('.plugin-card');
+    const name = card.querySelector('.plugin-name').textContent;
+
+    btn.disabled = true;
+    btn.textContent = 'Installing\u2026';
+    btn.classList.remove('btn-secondary');
+    btn.classList.add('btn-primary');
+
+    setTimeout(() => {
+      btn.textContent = 'Installed';
+      btn.classList.remove('btn-primary');
+      btn.style.color = 'var(--color-success)';
+      btn.style.background = 'var(--color-success-light)';
+      btn.style.borderColor = 'var(--color-success-light)';
+
+      // Add to installed list
+      const installedList = $('#installedPlugins');
+      const item = document.createElement('div');
+      item.className = 'installed-item';
+      item.innerHTML = '<span class="installed-item-name"><span class="active-dot"></span>' + name + '</span><div class="installed-item-actions"><button class="btn btn-sm btn-ghost deactivate-btn">Deactivate</button><button class="btn btn-sm btn-ghost" style="color:var(--color-danger);" onclick="this.closest(\'.installed-item\').remove(); showToast(\'' + name + ' removed\')">Remove</button></div>';
+      installedList.appendChild(item);
+
+      // Wire up deactivate on new item
+      item.querySelector('.deactivate-btn').addEventListener('click', function() {
+        const dot = this.closest('.installed-item').querySelector('.active-dot');
+        if (this.textContent === 'Deactivate') {
+          this.textContent = 'Activate';
+          dot.style.background = 'var(--color-text-tertiary)';
+          showToast(name + ' deactivated');
+        } else {
+          this.textContent = 'Deactivate';
+          dot.style.background = 'var(--color-success)';
+          showToast(name + ' activated');
+        }
+      });
+
+      showToast(name + ' installed and activated');
+    }, 800);
+  });
+});
+
+// Upload ZIP
+$('#uploadZipBtn').addEventListener('click', () => {
+  showToast('File picker would open here', 'info');
+});
+
+// Deactivate existing plugins
+$$('.deactivate-btn').forEach(btn => {
+  btn.addEventListener('click', function() {
+    const item = this.closest('.installed-item');
+    const name = item.querySelector('.installed-item-name').textContent.trim();
+    const dot = item.querySelector('.active-dot');
+    if (this.textContent === 'Deactivate') {
+      this.textContent = 'Activate';
+      dot.style.background = 'var(--color-text-tertiary)';
+      showToast(name + ' deactivated');
+    } else {
+      this.textContent = 'Deactivate';
+      dot.style.background = 'var(--color-success)';
+      showToast(name + ' activated');
+    }
+  });
+});
+
+// Remove existing plugins
+$$('.installed-item .btn-ghost[style*="danger"]').forEach(btn => {
+  btn.addEventListener('click', function() {
+    const item = this.closest('.installed-item');
+    const name = item.querySelector('.installed-item-name').textContent.trim();
+    item.remove();
+    showToast(name + ' removed');
+  });
+});
+
+// ---- 6. Theme activate ----
+$$('.activate-theme-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const card = btn.closest('.theme-card');
+    const name = card.querySelector('.theme-name').textContent;
+
+    // Remove active from all
+    $$('.theme-card').forEach(c => {
+      c.classList.remove('active-theme');
+      const actBtn = c.querySelector('.activate-theme-btn');
+      if (!actBtn) {
+        // Re-add activate button
+        const actions = c.querySelector('.theme-actions');
+        const newBtn = document.createElement('button');
+        newBtn.className = 'btn btn-sm btn-primary activate-theme-btn';
+        newBtn.textContent = 'Activate';
+        actions.prepend(newBtn);
+        newBtn.addEventListener('click', () => newBtn.click()); // re-wire (simplified)
+      }
+    });
+
+    card.classList.add('active-theme');
+    // Remove the activate button from the newly active card
+    btn.remove();
+
+    showToast('Theme "' + name + '" activated');
+  });
+});
+
+// ---- 7. Blueprint export modal ----
+$('#exportBlueprintBtn').addEventListener('click', () => openModal('blueprintModal'));
+
+function copyBlueprintJSON() {
+  const code = $('#blueprintCode').textContent.replace('Copy', '').trim();
+  navigator.clipboard.writeText(code).then(() => {
+    showToast('Blueprint JSON copied to clipboard');
+  }).catch(() => {
+    showToast('Could not copy to clipboard', 'info');
+  });
+}
+
+$('#copyBlueprintBtn').addEventListener('click', copyBlueprintJSON);
+$('#copyBlueprintBtnFooter').addEventListener('click', copyBlueprintJSON);
+
+// ---- 8. Cmd/Ctrl+S Save ----
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    e.preventDefault();
+    showToast('Site saved');
+  }
+});
+
+// ---- 9. Download/Export ----
+$('#downloadZipBtn').addEventListener('click', () => {
+  showToast('Downloading site as ZIP\u2026');
+});
+
+$('#exportWxrBtn').addEventListener('click', () => {
+  showToast('Exporting WXR file\u2026');
+});
+
+// ---- 10. Push to GitHub ----
+$('#pushGithubBtn').addEventListener('click', () => openModal('githubModal'));
+
+$('#createPrBtn').addEventListener('click', () => {
+  const btn = $('#createPrBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4m0 12v4m-7.07-14.93L7.05 9.19m9.9 5.62l2.12 2.12M2 12h4m12 0h4M4.93 19.07l2.12-2.12m9.9-5.62l2.12-2.12"/></svg> Creating\u2026';
+
+  setTimeout(() => {
+    closeModal('githubModal');
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg> Create Pull Request';
+    showToast('Pull request created successfully');
+  }, 1500);
+});
+
+// ---- 11. Share site ----
+$('#shareBtn').addEventListener('click', () => {
+  const url = 'https://playground.wordpress.net/?blueprint-url=...';
+  navigator.clipboard.writeText(url).then(() => {
+    showToast('Shareable link copied to clipboard');
+  }).catch(() => {
+    showToast('Link ready to share', 'info');
+  });
+});
+
+$('#copyLinkBtn').addEventListener('click', () => {
+  navigator.clipboard.writeText('https://playground.wordpress.net/#{site-id}').then(() => {
+    showToast('Link copied to clipboard');
+  }).catch(() => {
+    showToast('Link ready to share', 'info');
+  });
+});
+
+$('#shareBlueprintBtn').addEventListener('click', () => {
+  navigator.clipboard.writeText('https://playground.wordpress.net/?blueprint-url=https://example.com/blueprint.json').then(() => {
+    showToast('Blueprint URL copied to clipboard');
+  }).catch(() => {
+    showToast('Blueprint URL ready', 'info');
+  });
+});
+
+// ---- 12. Blueprint import ----
+$('#importBlueprintUrlBtn').addEventListener('click', () => {
+  const url = $('#blueprintUrlInput').value.trim();
+  if (!url) {
+    showToast('Enter a blueprint URL first', 'info');
+    return;
+  }
+  showToast('Importing blueprint from URL\u2026');
+});
+
+// ---- 13. Cmd/Ctrl+K Global search ----
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    e.preventDefault();
+    const overlay = $('#searchOverlay');
+    const isOpen = overlay.classList.contains('open');
+    if (isOpen) {
+      overlay.classList.remove('open');
+    } else {
+      overlay.classList.add('open');
+      setTimeout(() => $('#globalSearchInput').focus(), 100);
+    }
+  }
+});
+
+$('#searchOverlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) {
+    e.currentTarget.classList.remove('open');
+  }
+});
+
+// ---- 14. Refresh button ----
+$('#refreshBtn').addEventListener('click', () => {
+  const frame = $('#previewFrame');
+  frame.style.opacity = '0.5';
+  setTimeout(() => {
+    frame.style.opacity = '1';
+    showToast('Preview refreshed');
+  }, 400);
+});
+
+// ---- Floating mini-preview (IntersectionObserver) ----
+const previewSection = $('#previewSection');
+const miniPreview = $('#miniPreview');
+
+const previewObserver = new IntersectionObserver(
+  (entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        miniPreview.classList.remove('visible');
+      } else {
+        miniPreview.classList.add('visible');
+      }
+    });
+  },
+  { threshold: 0.1 }
+);
+previewObserver.observe(previewSection);
+
+miniPreview.addEventListener('click', () => {
+  previewSection.scrollIntoView({ behavior: 'smooth' });
+});
+
+miniPreview.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    previewSection.scrollIntoView({ behavior: 'smooth' });
+  }
+});
+
+// ---- Smooth transitions on preview frame ----
+$('#previewFrame').style.transition = 'opacity 0.3s ease-out';
+</script>
+</body>
+</html>

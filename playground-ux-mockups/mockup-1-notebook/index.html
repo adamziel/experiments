@@ -1,0 +1,3426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WordPress Playground — Notebook UX</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   CSS CUSTOM PROPERTIES
+   ============================================================ */
+:root {
+  /* Palette */
+  --color-bg:        #FDFBF7;
+  --color-bg-warm:   #F8F5EF;
+  --color-bg-panel:  #FAF8F4;
+  --color-bg-hover:  #F3F0E8;
+  --color-bg-active: #EDE9DF;
+  --color-surface:   #FFFFFF;
+  --color-border:    #E8E4DA;
+  --color-border-light: #F0ECE4;
+  --color-text:      #2C2C2C;
+  --color-text-secondary: #6B6660;
+  --color-text-tertiary:  #9A948C;
+  --color-text-placeholder: #B8B2A8;
+  --color-accent:    #7C9A82;
+  --color-accent-hover: #6B8A72;
+  --color-accent-light: #E8F0EA;
+  --color-accent-text: #4A6B50;
+  --color-danger:    #C0392B;
+  --color-danger-light: #FDECEA;
+  --color-warning:   #D4A843;
+  --color-warning-light: #FDF6E3;
+  --color-info:      #5B7BB4;
+  --color-info-light: #EBF0F7;
+  --color-overlay:   rgba(44, 44, 44, 0.4);
+
+  /* Typography */
+  --font-sans:  'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono:  'JetBrains Mono', 'Fira Code', monospace;
+  --fs-xs:   12px;
+  --fs-sm:   13px;
+  --fs-base: 14px;
+  --fs-lg:   16px;
+  --fs-xl:   20px;
+  --fs-2xl:  28px;
+  --fs-3xl:  40px;
+  --lh-tight:  1.3;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.7;
+
+  /* Spacing (4px base grid) */
+  --space-0: 0px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Radii */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 24px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(44, 44, 44, 0.04), 0 1px 4px rgba(44, 44, 44, 0.03);
+  --shadow-md: 0 2px 8px rgba(44, 44, 44, 0.06), 0 4px 16px rgba(44, 44, 44, 0.04);
+  --shadow-lg: 0 4px 16px rgba(44, 44, 44, 0.08), 0 8px 32px rgba(44, 44, 44, 0.06);
+  --shadow-xl: 0 8px 32px rgba(44, 44, 44, 0.10), 0 16px 48px rgba(44, 44, 44, 0.08);
+
+  /* Transitions */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --duration-fast: 180ms;
+  --duration-normal: 240ms;
+  --duration-slow: 320ms;
+
+  /* Layout */
+  --topbar-height: 52px;
+  --panel-width: 320px;
+  --commandbar-height: 48px;
+}
+
+/* ============================================================
+   RESET & BASE
+   ============================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: var(--fs-base);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-weight: 400;
+  line-height: var(--lh-normal);
+  color: var(--color-text);
+  background: var(--color-bg);
+  overflow: hidden;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  line-height: inherit;
+}
+
+input, textarea, select {
+  font-family: inherit;
+  font-size: inherit;
+  color: inherit;
+  border: none;
+  outline: none;
+  background: none;
+}
+
+/* Focus rings */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+a {
+  color: var(--color-accent);
+  text-decoration: none;
+}
+
+/* ============================================================
+   REDUCED MOTION
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   TOP BAR
+   ============================================================ */
+.topbar {
+  height: var(--topbar-height);
+  background: var(--color-bg);
+  border-bottom: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-4);
+  gap: var(--space-3);
+  flex-shrink: 0;
+  z-index: 100;
+  position: relative;
+}
+
+.topbar__wordmark {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--color-text);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.topbar__wordmark svg {
+  flex-shrink: 0;
+}
+
+.topbar__wordmark-label {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
+.topbar__center {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-width: 0;
+}
+
+.topbar__title-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  position: relative;
+  cursor: text;
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-sm);
+  transition: background var(--duration-fast) var(--ease-out);
+  max-width: 400px;
+}
+
+.topbar__title-wrap:hover {
+  background: var(--color-bg-hover);
+}
+
+.topbar__title-wrap:hover .topbar__title-edit-icon {
+  opacity: 1;
+}
+
+.topbar__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--color-text);
+  border: none;
+  outline: none;
+  background: none;
+  text-align: center;
+  width: auto;
+  min-width: 60px;
+  max-width: 340px;
+  padding: 0;
+}
+
+.topbar__title:focus {
+  outline: none;
+}
+
+.topbar__title-input {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--color-text);
+  text-align: center;
+  width: 260px;
+  padding: var(--space-1) var(--space-2);
+  border: 1.5px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  display: none;
+}
+
+.topbar__title-edit-icon {
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.topbar__right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+/* Storage badge */
+.storage-badge {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-warm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-xl);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  position: relative;
+  white-space: nowrap;
+}
+
+.storage-badge:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-text-tertiary);
+}
+
+.storage-badge__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-warning);
+  flex-shrink: 0;
+}
+
+.storage-badge__dot--saved {
+  background: var(--color-accent);
+}
+
+.storage-badge__dot--device {
+  background: var(--color-info);
+}
+
+/* Storage dropdown */
+.storage-dropdown {
+  position: absolute;
+  top: calc(100% + var(--space-2));
+  right: 0;
+  width: 340px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: var(--space-2);
+  z-index: 200;
+  display: none;
+}
+
+.storage-dropdown.is-open {
+  display: block;
+  animation: dropdown-in var(--duration-normal) var(--ease-out);
+}
+
+@keyframes dropdown-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.storage-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+  width: 100%;
+  text-align: left;
+}
+
+.storage-option:hover {
+  background: var(--color-bg-hover);
+}
+
+.storage-option.is-active {
+  background: var(--color-accent-light);
+}
+
+.storage-option__radio {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid var(--color-border);
+  flex-shrink: 0;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.storage-option.is-active .storage-option__radio {
+  border-color: var(--color-accent);
+}
+
+.storage-option.is-active .storage-option__radio::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+
+.storage-option__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.storage-option__label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--color-text);
+  margin-bottom: 2px;
+}
+
+.storage-option__desc {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+  line-height: var(--lh-relaxed);
+}
+
+/* Icon buttons */
+.icon-btn {
+  width: 34px;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  transition: all var(--duration-fast) var(--ease-out);
+  flex-shrink: 0;
+}
+
+.icon-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text);
+}
+
+.icon-btn:active {
+  background: var(--color-bg-active);
+}
+
+/* ============================================================
+   MAIN LAYOUT
+   ============================================================ */
+.app-body {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+  position: relative;
+}
+
+/* Preview area */
+.preview-area {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.preview-frame {
+  flex: 1;
+  overflow-y: auto;
+  background: #fff;
+}
+
+/* ============================================================
+   MOCK WORDPRESS PREVIEW
+   ============================================================ */
+.wp-preview {
+  max-width: 100%;
+  min-height: 100%;
+  background: #fff;
+  font-family: var(--font-sans);
+}
+
+.wp-nav {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-7);
+  border-bottom: 1px solid #f0f0f0;
+  background: #fff;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+
+.wp-nav__brand {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: #1a1a1a;
+  letter-spacing: -0.02em;
+}
+
+.wp-nav__links {
+  display: flex;
+  gap: var(--space-6);
+  list-style: none;
+}
+
+.wp-nav__links a {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: #666;
+  text-decoration: none;
+  transition: color 180ms ease;
+}
+
+.wp-nav__links a:hover {
+  color: #1a1a1a;
+}
+
+.wp-hero {
+  padding: var(--space-8) var(--space-7);
+  background: linear-gradient(135deg, #F8F6F0 0%, #EDE8DC 100%);
+  position: relative;
+  overflow: hidden;
+}
+
+.wp-hero__tag {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--color-accent);
+  margin-bottom: var(--space-3);
+}
+
+.wp-hero__title {
+  font-size: clamp(28px, 4vw, 44px);
+  font-weight: 600;
+  color: #1a1a1a;
+  line-height: 1.15;
+  margin-bottom: var(--space-4);
+  max-width: 640px;
+  letter-spacing: -0.02em;
+}
+
+.wp-hero__excerpt {
+  font-size: var(--fs-lg);
+  color: #666;
+  max-width: 540px;
+  line-height: 1.7;
+  margin-bottom: var(--space-5);
+}
+
+.wp-hero__meta {
+  font-size: var(--fs-xs);
+  color: #999;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.wp-hero__meta-dot {
+  width: 3px;
+  height: 3px;
+  background: #ccc;
+  border-radius: 50%;
+}
+
+.wp-posts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--space-6);
+  padding: var(--space-7);
+}
+
+.wp-post-card {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid #f0f0f0;
+  transition: box-shadow 200ms ease, transform 200ms ease;
+  background: #fff;
+}
+
+.wp-post-card:hover {
+  box-shadow: 0 4px 20px rgba(0,0,0,0.06);
+  transform: translateY(-2px);
+}
+
+.wp-post-card__image {
+  height: 180px;
+  background: linear-gradient(135deg, var(--bg-from, #e8e0d0), var(--bg-to, #d4cec0));
+  display: flex;
+  align-items: flex-end;
+  padding: var(--space-4);
+}
+
+.wp-post-card__category {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: rgba(255,255,255,0.9);
+  background: rgba(0,0,0,0.25);
+  padding: 3px 10px;
+  border-radius: var(--radius-sm);
+  backdrop-filter: blur(8px);
+}
+
+.wp-post-card__body {
+  padding: var(--space-5);
+}
+
+.wp-post-card__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: #1a1a1a;
+  margin-bottom: var(--space-2);
+  line-height: 1.35;
+  letter-spacing: -0.01em;
+}
+
+.wp-post-card__excerpt {
+  font-size: var(--fs-sm);
+  color: #777;
+  line-height: 1.6;
+  margin-bottom: var(--space-4);
+}
+
+.wp-post-card__meta {
+  font-size: var(--fs-xs);
+  color: #aaa;
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+}
+
+/* ============================================================
+   SIDE PANEL
+   ============================================================ */
+.side-panel {
+  width: var(--panel-width);
+  background: var(--color-bg-panel);
+  border-left: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  transition: width var(--duration-normal) var(--ease-out), opacity var(--duration-normal) var(--ease-out);
+  overflow: hidden;
+  z-index: 50;
+}
+
+.side-panel.is-collapsed {
+  width: 0;
+  opacity: 0;
+  border-left: none;
+}
+
+.side-panel__tabs {
+  display: flex;
+  border-bottom: 1px solid var(--color-border);
+  padding: 0 var(--space-2);
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.side-panel__tabs::-webkit-scrollbar { display: none; }
+
+.side-panel__tab {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--color-text-tertiary);
+  padding: var(--space-3) var(--space-3);
+  border-bottom: 2px solid transparent;
+  transition: all var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.side-panel__tab:hover {
+  color: var(--color-text-secondary);
+}
+
+.side-panel__tab.is-active {
+  color: var(--color-text);
+  border-bottom-color: var(--color-accent);
+}
+
+.side-panel__content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+/* Panel shared styles */
+.panel-section {
+  margin-bottom: var(--space-5);
+}
+
+.panel-section__title {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary);
+  margin-bottom: var(--space-3);
+}
+
+.panel-field {
+  margin-bottom: var(--space-4);
+}
+
+.panel-field__label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--color-text);
+  margin-bottom: var(--space-2);
+}
+
+.panel-field__status {
+  font-size: var(--fs-xs);
+  color: var(--color-accent);
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.panel-field__status.is-visible {
+  opacity: 1;
+}
+
+.panel-select {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  color: var(--color-text);
+  cursor: pointer;
+  appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg width='12' height='12' viewBox='0 0 12 12' fill='none' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%239A948C' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 10px center;
+  padding-right: 30px;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.panel-select:hover {
+  border-color: var(--color-text-tertiary);
+}
+
+.panel-select:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+/* Toggle switch */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) 0;
+}
+
+.toggle-row__label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.toggle-row__status {
+  font-size: var(--fs-xs);
+  color: var(--color-accent);
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+.toggle-row__status.is-visible {
+  opacity: 1;
+}
+
+.toggle {
+  width: 36px;
+  height: 20px;
+  background: var(--color-border);
+  border-radius: 10px;
+  position: relative;
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+  flex-shrink: 0;
+}
+
+.toggle::after {
+  content: '';
+  width: 16px;
+  height: 16px;
+  background: #fff;
+  border-radius: 50%;
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  transition: transform var(--duration-fast) var(--ease-out);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+}
+
+.toggle.is-on {
+  background: var(--color-accent);
+}
+
+.toggle.is-on::after {
+  transform: translateX(16px);
+}
+
+/* Search input */
+.search-input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  padding-left: 34px;
+  font-size: var(--fs-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.search-input:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.search-input-wrap {
+  position: relative;
+  margin-bottom: var(--space-4);
+}
+
+.search-input-wrap svg {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--color-text-tertiary);
+}
+
+/* Plugin card */
+.plugin-card {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+  background: var(--color-surface);
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.plugin-card:hover {
+  border-color: var(--color-border);
+}
+
+.plugin-card__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-1);
+}
+
+.plugin-card__name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.plugin-card__desc {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+  line-height: var(--lh-relaxed);
+  margin-bottom: var(--space-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.plugin-card__meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+}
+
+.plugin-card__stars {
+  color: var(--color-warning);
+}
+
+.plugin-card__installs {
+  color: var(--color-text-tertiary);
+}
+
+.btn-sm {
+  padding: 4px 12px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.btn-install {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.btn-install:hover {
+  background: var(--color-accent-hover);
+}
+
+.btn-installed {
+  background: var(--color-bg-warm);
+  color: var(--color-text-secondary);
+  cursor: default;
+}
+
+.btn-outline {
+  border: 1px solid var(--color-border);
+  color: var(--color-text-secondary);
+  background: var(--color-surface);
+}
+
+.btn-outline:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-text-tertiary);
+}
+
+.btn-danger-outline {
+  border: 1px solid var(--color-danger);
+  color: var(--color-danger);
+  background: transparent;
+}
+
+.btn-danger-outline:hover {
+  background: var(--color-danger-light);
+}
+
+/* Installed plugin row */
+.installed-plugin {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+  background: var(--color-surface);
+}
+
+.installed-plugin__info {
+  min-width: 0;
+}
+
+.installed-plugin__name {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.installed-plugin__version {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+}
+
+.installed-plugin__actions {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+/* Theme card */
+.theme-card {
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  border: 1px solid var(--color-border-light);
+  margin-bottom: var(--space-3);
+  background: var(--color-surface);
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.theme-card:hover {
+  border-color: var(--color-border);
+}
+
+.theme-card__preview {
+  height: 100px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255,255,255,0.7);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.theme-card__body {
+  padding: var(--space-3);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.theme-card__name {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.theme-card__actions {
+  display: flex;
+  gap: var(--space-1);
+}
+
+.theme-card.is-active {
+  border-color: var(--color-accent);
+}
+
+.theme-card.is-active .theme-card__name::after {
+  content: ' (Active)';
+  font-weight: 400;
+  color: var(--color-accent);
+  font-size: var(--fs-xs);
+}
+
+/* Blueprint tab */
+.blueprint-input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.blueprint-input:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.blueprint-textarea {
+  width: 100%;
+  min-height: 120px;
+  padding: var(--space-3);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  resize: vertical;
+  line-height: 1.6;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.blueprint-textarea:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  border-radius: var(--radius-sm);
+  transition: all var(--duration-fast) var(--ease-out);
+  white-space: nowrap;
+}
+
+.btn--primary {
+  background: var(--color-accent);
+  color: #fff;
+}
+
+.btn--primary:hover {
+  background: var(--color-accent-hover);
+}
+
+.btn--secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+}
+
+.btn--secondary:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-text-tertiary);
+}
+
+.btn--full {
+  width: 100%;
+  justify-content: center;
+}
+
+.btn--disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+.input-row {
+  display: flex;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+}
+
+.input-row .blueprint-input {
+  flex: 1;
+}
+
+/* Export panel */
+.export-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-2);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  background: var(--color-surface);
+}
+
+.export-option:hover {
+  border-color: var(--color-border);
+  background: var(--color-bg-hover);
+}
+
+.export-option__icon {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-warm);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+.export-option__text {
+  flex: 1;
+  min-width: 0;
+}
+
+.export-option__label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.export-option__desc {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+}
+
+/* Checkbox */
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+.checkbox-row__label {
+  font-size: var(--fs-sm);
+  color: var(--color-text);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.checkbox-row__status {
+  font-size: var(--fs-xs);
+  color: var(--color-accent);
+  font-weight: 500;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out);
+  margin-left: auto;
+}
+
+.checkbox-row__status.is-visible {
+  opacity: 1;
+}
+
+.checkbox-input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+/* ============================================================
+   COMMAND BAR
+   ============================================================ */
+.commandbar {
+  height: var(--commandbar-height);
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-border);
+  display: flex;
+  align-items: center;
+  padding: 0 var(--space-4);
+  gap: var(--space-3);
+  flex-shrink: 0;
+  z-index: 100;
+}
+
+.commandbar__input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: 0 var(--space-3);
+  height: 34px;
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.commandbar__input-wrap:focus-within {
+  border-color: var(--color-accent);
+}
+
+.commandbar__slash {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  user-select: none;
+}
+
+.commandbar__input {
+  flex: 1;
+  font-size: var(--fs-sm);
+  height: 100%;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--color-text);
+}
+
+.commandbar__input::placeholder {
+  color: var(--color-text-placeholder);
+}
+
+.commandbar__kbd {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-warm);
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  white-space: nowrap;
+}
+
+.commandbar__chips {
+  display: flex;
+  gap: var(--space-1);
+  overflow: hidden;
+}
+
+.commandbar__chip {
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  background: var(--color-bg-warm);
+  padding: 3px 10px;
+  border-radius: var(--radius-xl);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+}
+
+.commandbar__chip:hover {
+  background: var(--color-bg-active);
+  color: var(--color-text);
+}
+
+/* Command palette dropdown */
+.command-palette {
+  position: fixed;
+  bottom: calc(var(--commandbar-height) + var(--space-2));
+  left: var(--space-4);
+  right: var(--space-4);
+  max-width: 560px;
+  margin: 0 auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-xl);
+  max-height: 380px;
+  overflow-y: auto;
+  padding: var(--space-2);
+  z-index: 300;
+  display: none;
+}
+
+.command-palette.is-open {
+  display: block;
+  animation: palette-in var(--duration-normal) var(--ease-out);
+}
+
+@keyframes palette-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.command-palette__group-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-text-tertiary);
+  padding: var(--space-2) var(--space-3);
+  margin-top: var(--space-1);
+}
+
+.command-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out);
+  width: 100%;
+  text-align: left;
+}
+
+.command-item:hover, .command-item.is-highlighted {
+  background: var(--color-bg-hover);
+}
+
+.command-item__icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-tertiary);
+  flex-shrink: 0;
+}
+
+.command-item__label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--color-text);
+  flex: 1;
+}
+
+.command-item__kbd {
+  font-size: var(--fs-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-tertiary);
+}
+
+.command-item__badge {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-warm);
+  padding: 2px 8px;
+  border-radius: var(--radius-xl);
+}
+
+.command-item--disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.command-item--disabled:hover {
+  background: transparent;
+}
+
+/* ============================================================
+   TOAST
+   ============================================================ */
+.toast-container {
+  position: fixed;
+  bottom: calc(var(--commandbar-height) + var(--space-4));
+  right: var(--space-4);
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-text);
+  color: var(--color-bg);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  pointer-events: auto;
+  animation: toast-in var(--duration-normal) var(--ease-out);
+  max-width: 360px;
+}
+
+.toast--leaving {
+  animation: toast-out var(--duration-normal) var(--ease-out) forwards;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(16px); }
+}
+
+.toast__icon {
+  flex-shrink: 0;
+}
+
+.toast__link {
+  color: var(--color-accent-light);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+
+/* ============================================================
+   MODALS / DIALOGS
+   ============================================================ */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: var(--color-overlay);
+  z-index: 400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+}
+
+.modal-overlay[hidden] {
+  display: none;
+}
+
+.modal-overlay:not([hidden]) {
+  animation: overlay-in var(--duration-normal) var(--ease-out);
+}
+
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+dialog.modal {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  padding: 0;
+  max-width: 600px;
+  width: 100%;
+  max-height: 80vh;
+  overflow-y: auto;
+  animation: modal-in var(--duration-normal) var(--ease-out);
+  color: var(--color-text);
+}
+
+dialog.modal::backdrop {
+  background: var(--color-overlay);
+}
+
+@keyframes modal-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.modal__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.modal__title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.modal__body {
+  padding: var(--space-5);
+}
+
+.modal__footer {
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--color-border-light);
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+/* New site picker */
+.new-site-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-3);
+  margin-bottom: var(--space-4);
+}
+
+.new-site-card {
+  padding: var(--space-4);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  text-align: center;
+  background: var(--color-surface);
+}
+
+.new-site-card:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+
+.new-site-card--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.new-site-card--disabled:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+
+.new-site-card__icon {
+  width: 40px;
+  height: 40px;
+  margin: 0 auto var(--space-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg-warm);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+}
+
+.new-site-card__label {
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 2px;
+}
+
+.new-site-card__desc {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+}
+
+.new-site-card--disabled .new-site-card__label::after {
+  content: ' (coming soon)';
+  font-weight: 400;
+  color: var(--color-text-tertiary);
+  font-size: var(--fs-xs);
+}
+
+/* Blueprint modal */
+.blueprint-export-json {
+  background: var(--color-bg-warm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-4);
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  line-height: 1.6;
+  max-height: 300px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin-bottom: var(--space-4);
+}
+
+/* GitHub push modal */
+.gh-field {
+  margin-bottom: var(--space-4);
+}
+
+.gh-field label {
+  display: block;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--color-text);
+  margin-bottom: var(--space-1);
+}
+
+.gh-field input, .gh-field textarea {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--fs-sm);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface);
+  transition: border-color var(--duration-fast) var(--ease-out);
+}
+
+.gh-field input:focus, .gh-field textarea:focus {
+  border-color: var(--color-accent);
+  outline: none;
+}
+
+.gh-field textarea {
+  min-height: 80px;
+  resize: vertical;
+  font-family: var(--font-sans);
+}
+
+/* Upload area */
+.upload-zone {
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-5);
+  text-align: center;
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-out);
+  margin-bottom: var(--space-4);
+}
+
+.upload-zone:hover {
+  border-color: var(--color-accent);
+  background: var(--color-accent-light);
+}
+
+.upload-zone__label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.upload-zone__hint {
+  font-size: var(--fs-xs);
+  color: var(--color-text-tertiary);
+  margin-top: var(--space-1);
+}
+
+/* PR link chip */
+.pr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 10px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--color-accent-text);
+  background: var(--color-accent-light);
+  border-radius: var(--radius-xl);
+  cursor: pointer;
+}
+
+/* ============================================================
+   MOBILE (360px)
+   ============================================================ */
+@media (max-width: 768px) {
+  :root {
+    --panel-width: 100%;
+    --topbar-height: 48px;
+    --commandbar-height: 0px;
+  }
+
+  .topbar__wordmark-label {
+    display: none;
+  }
+
+  .commandbar {
+    display: none;
+  }
+
+  .commandbar__chips {
+    display: none;
+  }
+
+  .side-panel {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    width: 100%;
+    height: 70vh;
+    border-left: none;
+    border-top: 1px solid var(--color-border);
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    z-index: 200;
+    transform: translateY(100%);
+    transition: transform var(--duration-normal) var(--ease-out);
+  }
+
+  .side-panel.is-collapsed {
+    width: 100%;
+    opacity: 1;
+    transform: translateY(100%);
+  }
+
+  .side-panel.is-open-mobile {
+    transform: translateY(0);
+    opacity: 1;
+  }
+
+  .mobile-fab {
+    display: flex !important;
+  }
+
+  .mobile-cmd-fab {
+    display: flex !important;
+  }
+
+  .wp-posts-grid {
+    grid-template-columns: 1fr;
+    padding: var(--space-5);
+    gap: var(--space-4);
+  }
+
+  .wp-hero {
+    padding: var(--space-6) var(--space-5);
+  }
+
+  .wp-nav {
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .wp-nav__links {
+    display: none;
+  }
+
+  .topbar__title-wrap {
+    max-width: 200px;
+  }
+
+  .storage-dropdown {
+    right: -60px;
+    width: 300px;
+  }
+
+  .command-palette {
+    bottom: var(--space-4);
+    left: var(--space-3);
+    right: var(--space-3);
+  }
+
+  .toast-container {
+    bottom: var(--space-4);
+    left: var(--space-3);
+    right: var(--space-3);
+  }
+}
+
+/* Floating action buttons (mobile) */
+.mobile-fab {
+  display: none;
+  position: fixed;
+  bottom: 80px;
+  right: var(--space-4);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--color-accent);
+  color: #fff;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-lg);
+  z-index: 150;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.mobile-fab:active {
+  transform: scale(0.93);
+}
+
+.mobile-cmd-fab {
+  display: none;
+  position: fixed;
+  bottom: var(--space-4);
+  right: var(--space-4);
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  background: var(--color-text);
+  color: var(--color-bg);
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow-lg);
+  z-index: 150;
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.mobile-cmd-fab:active {
+  transform: scale(0.93);
+}
+
+/* Panel toggle desktop */
+.panel-toggle {
+  display: flex;
+}
+
+/* Divider */
+.panel-divider {
+  height: 1px;
+  background: var(--color-border-light);
+  margin: var(--space-4) 0;
+}
+
+/* Separator for disabled items */
+.command-palette__separator {
+  height: 1px;
+  background: var(--color-border-light);
+  margin: var(--space-1) var(--space-3);
+}
+
+/* Mobile bottom sheet handle */
+.side-panel__handle {
+  display: none;
+  width: 36px;
+  height: 4px;
+  background: var(--color-border);
+  border-radius: 2px;
+  margin: var(--space-2) auto var(--space-1);
+}
+
+@media (max-width: 768px) {
+  .side-panel__handle {
+    display: block;
+  }
+}
+
+/* Blueprint import disabled */
+.btn--coming-soon {
+  position: relative;
+}
+
+.btn--coming-soon::after {
+  content: 'coming soon';
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--color-text-tertiary);
+  position: absolute;
+  right: -70px;
+  top: 50%;
+  transform: translateY(-50%);
+}
+</style>
+</head>
+<body>
+
+<!-- ============================================================
+     TOP BAR
+     ============================================================ -->
+<header class="topbar">
+  <!-- Wordmark -->
+  <div class="topbar__wordmark">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
+      <rect x="3" y="3" width="18" height="18" rx="4" stroke="currentColor" stroke-width="1.5"/>
+      <path d="M8 12h8M12 8v8" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+    </svg>
+    <span>Playground</span>
+    <span class="topbar__wordmark-label">WordPress</span>
+  </div>
+
+  <!-- Center: editable title -->
+  <div class="topbar__center">
+    <div class="topbar__title-wrap" id="titleWrap" onclick="startEditTitle()">
+      <span class="topbar__title" id="titleDisplay">The Flavor Lab</span>
+      <input class="topbar__title-input" id="titleInput" type="text" value="The Flavor Lab"
+             aria-label="Site title">
+      <svg class="topbar__title-edit-icon" width="14" height="14" viewBox="0 0 20 20" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M14.5 3.5l2 2m-1-3l-10 10-2 4 4-2 10-10a1.414 1.414 0 00-2-2z"/>
+      </svg>
+    </div>
+  </div>
+
+  <!-- Right: actions -->
+  <div class="topbar__right">
+    <!-- Share -->
+    <button class="icon-btn" aria-label="Share site" onclick="shareSite()">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="14" cy="4" r="2.5"/>
+        <circle cx="14" cy="16" r="2.5"/>
+        <circle cx="6" cy="10" r="2.5"/>
+        <path d="M8.2 8.8l3.6-3.6M8.2 11.2l3.6 3.6"/>
+      </svg>
+    </button>
+
+    <!-- New site -->
+    <button class="icon-btn" aria-label="New site" onclick="openNewSiteModal()">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10 4v12M4 10h12"/>
+      </svg>
+    </button>
+
+    <!-- Storage badge -->
+    <div style="position: relative;">
+      <button class="storage-badge" id="storageBadge" onclick="toggleStorageDropdown(event)">
+        <span class="storage-badge__dot" id="storageDot"></span>
+        <span id="storageLabel">In memory</span>
+        <svg width="12" height="12" viewBox="0 0 12 12" fill="none"
+             stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 4.5L6 7.5L9 4.5"/>
+        </svg>
+      </button>
+
+      <div class="storage-dropdown" id="storageDropdown">
+        <button class="storage-option is-active" data-storage="memory" onclick="selectStorage('memory', this)">
+          <div class="storage-option__radio"></div>
+          <div class="storage-option__content">
+            <div class="storage-option__label">Keep in memory</div>
+            <div class="storage-option__desc">Resets when you close this tab. Good for quick experiments.</div>
+          </div>
+        </button>
+        <button class="storage-option" data-storage="browser" onclick="selectStorage('browser', this)">
+          <div class="storage-option__radio"></div>
+          <div class="storage-option__content">
+            <div class="storage-option__label">Save to browser storage</div>
+            <div class="storage-option__desc">Persists across sessions in this browser. No file access needed.</div>
+          </div>
+        </button>
+        <button class="storage-option" data-storage="device" onclick="selectStorage('device', this)">
+          <div class="storage-option__radio"></div>
+          <div class="storage-option__content">
+            <div class="storage-option__label">Save to a folder on your device</div>
+            <div class="storage-option__desc">Most durable. Uses the File System Access API to write to a local folder.</div>
+          </div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Panel toggle -->
+    <button class="icon-btn panel-toggle" aria-label="Toggle side panel" onclick="togglePanel()">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+           stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="16" height="14" rx="2"/>
+        <path d="M13 3v14"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<!-- ============================================================
+     MAIN BODY
+     ============================================================ -->
+<div class="app-body">
+  <!-- Preview -->
+  <main class="preview-area">
+    <div class="preview-frame" id="previewFrame">
+      <div class="wp-preview" id="wpPreview">
+        <!-- Nav -->
+        <nav class="wp-nav">
+          <div class="wp-nav__brand">The Flavor Lab</div>
+          <ul class="wp-nav__links">
+            <li><a href="javascript:void(0)">Home</a></li>
+            <li><a href="javascript:void(0)">Menu</a></li>
+            <li><a href="javascript:void(0)">About</a></li>
+            <li><a href="javascript:void(0)">Catering</a></li>
+            <li><a href="javascript:void(0)">Contact</a></li>
+          </ul>
+        </nav>
+
+        <!-- Hero -->
+        <section class="wp-hero">
+          <div class="wp-hero__tag">Featured</div>
+          <h1 class="wp-hero__title">Introducing our spring menu</h1>
+          <p class="wp-hero__excerpt">
+            Fresh herbs from our rooftop garden, locally sourced vegetables,
+            and bold flavor combinations that celebrate the season.
+            Every dish tells a story about where it came from.
+          </p>
+          <div class="wp-hero__meta">
+            <span>By Julia Chen</span>
+            <span class="wp-hero__meta-dot"></span>
+            <span>April 12, 2026</span>
+            <span class="wp-hero__meta-dot"></span>
+            <span>6 min read</span>
+          </div>
+        </section>
+
+        <!-- Posts grid -->
+        <section class="wp-posts-grid">
+          <article class="wp-post-card">
+            <div class="wp-post-card__image" style="--bg-from: #C8D8E4; --bg-to: #A4B8C8;">
+              <span class="wp-post-card__category">Engineering</span>
+            </div>
+            <div class="wp-post-card__body">
+              <h2 class="wp-post-card__title">Why we switched to edge rendering</h2>
+              <p class="wp-post-card__excerpt">
+                Our site now loads in under 200ms worldwide. Here is how we moved
+                from a traditional server setup to edge functions without breaking anything.
+              </p>
+              <div class="wp-post-card__meta">
+                <span>Marcus Rivera</span>
+                <span class="wp-hero__meta-dot"></span>
+                <span>April 8, 2026</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="wp-post-card">
+            <div class="wp-post-card__image" style="--bg-from: #D4C8B0; --bg-to: #C0B090;">
+              <span class="wp-post-card__category">Product</span>
+            </div>
+            <div class="wp-post-card__body">
+              <h2 class="wp-post-card__title">Behind the scenes: new checkout flow</h2>
+              <p class="wp-post-card__excerpt">
+                We redesigned our online ordering from scratch. Three rounds of user testing,
+                one pivotal insight, and a 34% increase in completed orders.
+              </p>
+              <div class="wp-post-card__meta">
+                <span>Sarah Kim</span>
+                <span class="wp-hero__meta-dot"></span>
+                <span>March 29, 2026</span>
+              </div>
+            </div>
+          </article>
+
+          <article class="wp-post-card">
+            <div class="wp-post-card__image" style="--bg-from: #B8C8A0; --bg-to: #98B080;">
+              <span class="wp-post-card__category">Culture</span>
+            </div>
+            <div class="wp-post-card__body">
+              <h2 class="wp-post-card__title">What our team learned at WordCamp Asia</h2>
+              <p class="wp-post-card__excerpt">
+                Three days of talks, workshops, and conversations with the WordPress
+                community. Key takeaways from the sessions that stuck with us the most.
+              </p>
+              <div class="wp-post-card__meta">
+                <span>David Park</span>
+                <span class="wp-hero__meta-dot"></span>
+                <span>March 20, 2026</span>
+              </div>
+            </div>
+          </article>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <!-- ============================================================
+       SIDE PANEL
+       ============================================================ -->
+  <aside class="side-panel" id="sidePanel">
+    <div class="side-panel__handle"></div>
+    <nav class="side-panel__tabs" role="tablist">
+      <button class="side-panel__tab is-active" role="tab" data-tab="settings" onclick="switchTab('settings', this)">Settings</button>
+      <button class="side-panel__tab" role="tab" data-tab="plugins" onclick="switchTab('plugins', this)">Plugins</button>
+      <button class="side-panel__tab" role="tab" data-tab="themes" onclick="switchTab('themes', this)">Themes</button>
+      <button class="side-panel__tab" role="tab" data-tab="blueprint" onclick="switchTab('blueprint', this)">Blueprint</button>
+      <button class="side-panel__tab" role="tab" data-tab="export" onclick="switchTab('export', this)">Export</button>
+    </nav>
+
+    <div class="side-panel__content">
+      <!-- ===== SETTINGS TAB ===== -->
+      <div class="tab-content" id="tab-settings">
+        <div class="panel-section">
+          <div class="panel-section__title">Environment</div>
+
+          <div class="panel-field">
+            <div class="panel-field__label">
+              PHP version
+              <span class="panel-field__status" id="phpStatus"></span>
+            </div>
+            <select class="panel-select" onchange="applyChange('phpStatus', this)">
+              <option>8.3 (latest)</option>
+              <option>8.2</option>
+              <option selected>8.1</option>
+              <option>8.0</option>
+            </select>
+          </div>
+
+          <div class="panel-field">
+            <div class="panel-field__label">
+              WordPress version
+              <span class="panel-field__status" id="wpStatus"></span>
+            </div>
+            <select class="panel-select" onchange="applyChange('wpStatus', this)">
+              <option>6.7 (latest)</option>
+              <option selected>6.6</option>
+              <option>6.5</option>
+              <option>6.4</option>
+              <option>6.3</option>
+            </select>
+          </div>
+
+          <div class="panel-field">
+            <div class="panel-field__label">
+              Language
+              <span class="panel-field__status" id="langStatus"></span>
+            </div>
+            <select class="panel-select" onchange="applyChange('langStatus', this)">
+              <option selected>English (en_US)</option>
+              <option>Spanish (es_ES)</option>
+              <option>French (fr_FR)</option>
+              <option>German (de_DE)</option>
+              <option>Japanese (ja)</option>
+              <option>Portuguese (pt_BR)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-section">
+          <div class="panel-section__title">Features</div>
+
+          <div class="toggle-row">
+            <span class="toggle-row__label">
+              Networking
+              <span class="toggle-row__status" id="networkStatus"></span>
+            </span>
+            <button class="toggle" aria-label="Toggle networking" onclick="toggleSwitch(this, 'networkStatus')"></button>
+          </div>
+
+          <div class="toggle-row">
+            <span class="toggle-row__label">
+              Multisite
+              <span class="toggle-row__status" id="multisiteStatus"></span>
+            </span>
+            <button class="toggle" aria-label="Toggle multisite" onclick="toggleSwitch(this, 'multisiteStatus')"></button>
+          </div>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-section">
+          <div class="panel-section__title">PHP Extensions</div>
+
+          <div class="checkbox-row">
+            <label class="checkbox-row__label">
+              <input type="checkbox" class="checkbox-input" checked onchange="applyCheckbox(this, 'extGdStatus')"> gd
+            </label>
+            <span class="checkbox-row__status" id="extGdStatus"></span>
+          </div>
+          <div class="checkbox-row">
+            <label class="checkbox-row__label">
+              <input type="checkbox" class="checkbox-input" checked onchange="applyCheckbox(this, 'extMbStatus')"> mbstring
+            </label>
+            <span class="checkbox-row__status" id="extMbStatus"></span>
+          </div>
+          <div class="checkbox-row">
+            <label class="checkbox-row__label">
+              <input type="checkbox" class="checkbox-input" onchange="applyCheckbox(this, 'extImagickStatus')"> imagick
+            </label>
+            <span class="checkbox-row__status" id="extImagickStatus"></span>
+          </div>
+          <div class="checkbox-row">
+            <label class="checkbox-row__label">
+              <input type="checkbox" class="checkbox-input" checked onchange="applyCheckbox(this, 'extXmlStatus')"> xml
+            </label>
+            <span class="checkbox-row__status" id="extXmlStatus"></span>
+          </div>
+          <div class="checkbox-row">
+            <label class="checkbox-row__label">
+              <input type="checkbox" class="checkbox-input" onchange="applyCheckbox(this, 'extIntlStatus')"> intl
+            </label>
+            <span class="checkbox-row__status" id="extIntlStatus"></span>
+          </div>
+          <div class="checkbox-row">
+            <label class="checkbox-row__label">
+              <input type="checkbox" class="checkbox-input" onchange="applyCheckbox(this, 'extZipStatus')"> zip
+            </label>
+            <span class="checkbox-row__status" id="extZipStatus"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== PLUGINS TAB ===== -->
+      <div class="tab-content" id="tab-plugins" style="display: none;">
+        <div class="panel-section">
+          <div class="panel-section__title">Installed</div>
+
+          <div class="installed-plugin" id="installed-akismet">
+            <div class="installed-plugin__info">
+              <div class="installed-plugin__name">Akismet Anti-spam</div>
+              <div class="installed-plugin__version">v5.3 &middot; Active</div>
+            </div>
+            <div class="installed-plugin__actions">
+              <button class="btn-sm btn-outline" onclick="deactivatePlugin(this, 'Akismet Anti-spam')">Deactivate</button>
+              <button class="btn-sm btn-danger-outline" onclick="removePlugin(this, 'Akismet Anti-spam')">Remove</button>
+            </div>
+          </div>
+
+          <div class="installed-plugin" id="installed-hello">
+            <div class="installed-plugin__info">
+              <div class="installed-plugin__name">Hello Dolly</div>
+              <div class="installed-plugin__version">v1.7.2 &middot; Inactive</div>
+            </div>
+            <div class="installed-plugin__actions">
+              <button class="btn-sm btn-outline" onclick="activatePlugin(this, 'Hello Dolly')">Activate</button>
+              <button class="btn-sm btn-danger-outline" onclick="removePlugin(this, 'Hello Dolly')">Remove</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-section">
+          <div class="panel-section__title">Add plugins</div>
+
+          <div class="search-input-wrap">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none"
+                 stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="9" cy="9" r="6"/>
+              <path d="M13.5 13.5L17 17"/>
+            </svg>
+            <input class="search-input" type="text" placeholder="Search plugins..." oninput="filterPlugins(this.value)">
+          </div>
+
+          <div id="pluginResults">
+            <div class="plugin-card" data-name="jetpack">
+              <div class="plugin-card__header">
+                <span class="plugin-card__name">Jetpack</span>
+                <button class="btn-sm btn-install" onclick="installPlugin(this, 'Jetpack')">Install</button>
+              </div>
+              <div class="plugin-card__desc">Security, performance, and marketing tools made by the WordPress experts. Jetpack keeps your site safe and fast.</div>
+              <div class="plugin-card__meta">
+                <span class="plugin-card__stars">4.2 / 5</span>
+                <span class="plugin-card__installs">5M+ installs</span>
+              </div>
+            </div>
+
+            <div class="plugin-card" data-name="yoast seo">
+              <div class="plugin-card__header">
+                <span class="plugin-card__name">Yoast SEO</span>
+                <button class="btn-sm btn-install" onclick="installPlugin(this, 'Yoast SEO')">Install</button>
+              </div>
+              <div class="plugin-card__desc">The most complete WordPress SEO plugin. Optimize your posts for readability, keyphrases, and social sharing with real-time analysis.</div>
+              <div class="plugin-card__meta">
+                <span class="plugin-card__stars">4.7 / 5</span>
+                <span class="plugin-card__installs">11M+ installs</span>
+              </div>
+            </div>
+
+            <div class="plugin-card" data-name="woocommerce">
+              <div class="plugin-card__header">
+                <span class="plugin-card__name">WooCommerce</span>
+                <button class="btn-sm btn-install" onclick="installPlugin(this, 'WooCommerce')">Install</button>
+              </div>
+              <div class="plugin-card__desc">The open-source eCommerce platform built for WordPress. Sell anything, anywhere with fully customizable stores and extensions.</div>
+              <div class="plugin-card__meta">
+                <span class="plugin-card__stars">4.4 / 5</span>
+                <span class="plugin-card__installs">7M+ installs</span>
+              </div>
+            </div>
+
+            <div class="plugin-card" data-name="contact form 7">
+              <div class="plugin-card__header">
+                <span class="plugin-card__name">Contact Form 7</span>
+                <button class="btn-sm btn-install" onclick="installPlugin(this, 'Contact Form 7')">Install</button>
+              </div>
+              <div class="plugin-card__desc">Simple but flexible contact forms. Manages multiple forms, supports AJAX submissions, CAPTCHA, and Akismet spam filtering.</div>
+              <div class="plugin-card__meta">
+                <span class="plugin-card__stars">4.1 / 5</span>
+                <span class="plugin-card__installs">5M+ installs</span>
+              </div>
+            </div>
+
+            <div class="plugin-card" data-name="elementor">
+              <div class="plugin-card__header">
+                <span class="plugin-card__name">Elementor</span>
+                <button class="btn-sm btn-install" onclick="installPlugin(this, 'Elementor')">Install</button>
+              </div>
+              <div class="plugin-card__desc">The leading website builder for WordPress. Design pixel-perfect pages with an intuitive drag-and-drop visual editor.</div>
+              <div class="plugin-card__meta">
+                <span class="plugin-card__stars">4.6 / 5</span>
+                <span class="plugin-card__installs">8M+ installs</span>
+              </div>
+            </div>
+
+            <div class="plugin-card" data-name="wp super cache">
+              <div class="plugin-card__header">
+                <span class="plugin-card__name">WP Super Cache</span>
+                <button class="btn-sm btn-install" onclick="installPlugin(this, 'WP Super Cache')">Install</button>
+              </div>
+              <div class="plugin-card__desc">Generates static HTML files from your dynamic WordPress site. Reduces server load and improves page speed for your visitors.</div>
+              <div class="plugin-card__meta">
+                <span class="plugin-card__stars">4.3 / 5</span>
+                <span class="plugin-card__installs">2M+ installs</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel-divider"></div>
+
+          <div class="upload-zone" onclick="showToast('Upload handler would open a file picker here')">
+            <div class="upload-zone__label">Upload plugin ZIP</div>
+            <div class="upload-zone__hint">Drag a .zip file here or click to browse</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== THEMES TAB ===== -->
+      <div class="tab-content" id="tab-themes" style="display: none;">
+        <div class="panel-section">
+          <div class="panel-section__title">Installed themes</div>
+
+          <div class="theme-card is-active" id="theme-tt25">
+            <div class="theme-card__preview" style="background: linear-gradient(135deg, #1a1a2e, #16213e);">
+              Twenty Twenty-Five
+            </div>
+            <div class="theme-card__body">
+              <span class="theme-card__name">Twenty Twenty-Five</span>
+              <div class="theme-card__actions">
+                <button class="btn-sm btn-installed">Active</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="theme-card" id="theme-blockbase">
+            <div class="theme-card__preview" style="background: linear-gradient(135deg, #f0f4f8, #d9e2ec); color: #666;">
+              Blockbase
+            </div>
+            <div class="theme-card__body">
+              <span class="theme-card__name">Blockbase</span>
+              <div class="theme-card__actions">
+                <button class="btn-sm btn-install" onclick="activateTheme(this, 'Blockbase')">Activate</button>
+                <button class="btn-sm btn-outline" onclick="showToast('Preview mode would load here')">Preview</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="theme-card" id="theme-astra">
+            <div class="theme-card__preview" style="background: linear-gradient(135deg, #6c63ff, #8b83ff);">
+              Astra
+            </div>
+            <div class="theme-card__body">
+              <span class="theme-card__name">Astra</span>
+              <div class="theme-card__actions">
+                <button class="btn-sm btn-install" onclick="activateTheme(this, 'Astra')">Activate</button>
+                <button class="btn-sm btn-outline" onclick="showToast('Preview mode would load here')">Preview</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="theme-card" id="theme-tt24">
+            <div class="theme-card__preview" style="background: linear-gradient(135deg, #2d5016, #4a7c29);">
+              Twenty Twenty-Four
+            </div>
+            <div class="theme-card__body">
+              <span class="theme-card__name">Twenty Twenty-Four</span>
+              <div class="theme-card__actions">
+                <button class="btn-sm btn-install" onclick="activateTheme(this, 'Twenty Twenty-Four')">Activate</button>
+                <button class="btn-sm btn-outline" onclick="showToast('Preview mode would load here')">Preview</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== BLUEPRINT TAB ===== -->
+      <div class="tab-content" id="tab-blueprint" style="display: none;">
+        <div class="panel-section">
+          <div class="panel-section__title">Import blueprint</div>
+
+          <div class="input-row">
+            <input class="blueprint-input" type="text" placeholder="https://playground.wordpress.net/blueprint.json" id="blueprintUrlInput">
+            <button class="btn btn--primary" onclick="loadBlueprint()">Load</button>
+          </div>
+
+          <div style="text-align: center; font-size: var(--fs-xs); color: var(--color-text-tertiary); margin-bottom: var(--space-3);">or paste JSON below</div>
+
+          <textarea class="blueprint-textarea" placeholder='{"steps": [{"step": "installPlugin", "pluginData": {...}}]}' id="blueprintJsonInput"></textarea>
+
+          <button class="btn btn--primary btn--full" style="margin-top: var(--space-3);" onclick="applyBlueprintJson()">Apply blueprint</button>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-section">
+          <div class="panel-section__title">Import from GitHub</div>
+          <button class="btn btn--secondary btn--full btn--disabled" style="position:relative;">
+            Import from GitHub repository
+          </button>
+          <div style="font-size: var(--fs-xs); color: var(--color-text-tertiary); margin-top: var(--space-2); text-align:center;">Coming soon</div>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-section">
+          <div class="panel-section__title">Export</div>
+          <button class="btn btn--secondary btn--full" onclick="openExportBlueprintModal()">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none"
+                 stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 14v2a2 2 0 002 2h8a2 2 0 002-2v-2M10 3v10M7 6l3-3 3 3"/>
+            </svg>
+            Export current site as blueprint
+          </button>
+        </div>
+      </div>
+
+      <!-- ===== EXPORT TAB ===== -->
+      <div class="tab-content" id="tab-export" style="display: none;">
+        <div class="panel-section">
+          <div class="panel-section__title">Download</div>
+
+          <button class="export-option" onclick="downloadZip()">
+            <div class="export-option__icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+                   stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 14v2a2 2 0 002 2h8a2 2 0 002-2v-2M10 3v10M7 12l3 3 3-3"/>
+              </svg>
+            </div>
+            <div class="export-option__text">
+              <div class="export-option__label">Download site as ZIP</div>
+              <div class="export-option__desc">Full site archive including database, plugins, and media</div>
+            </div>
+          </button>
+
+          <button class="export-option" onclick="exportWxr()">
+            <div class="export-option__icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+                   stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M5 3h10a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/>
+                <path d="M7 8h6M7 11h4"/>
+              </svg>
+            </div>
+            <div class="export-option__text">
+              <div class="export-option__label">Export as WXR</div>
+              <div class="export-option__desc">WordPress eXtended RSS format for importing into other sites</div>
+            </div>
+          </button>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-section">
+          <div class="panel-section__title">Share</div>
+
+          <button class="export-option" onclick="shareSite()">
+            <div class="export-option__icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+                   stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 3v10M7 6l3-3 3 3M3 14v2a2 2 0 002 2h10a2 2 0 002-2v-2"/>
+              </svg>
+            </div>
+            <div class="export-option__text">
+              <div class="export-option__label">Share link</div>
+              <div class="export-option__desc">Copy a URL that recreates this exact site for anyone</div>
+            </div>
+          </button>
+
+          <button class="export-option" onclick="shareBlueprintUrl()">
+            <div class="export-option__icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none"
+                   stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M8 11a3 3 0 004 0l3-3a3 3 0 00-4.243-4.243L9.5 4.964"/>
+                <path d="M12 9a3 3 0 00-4 0l-3 3a3 3 0 004.243 4.243l1.257-1.207"/>
+              </svg>
+            </div>
+            <div class="export-option__text">
+              <div class="export-option__label">Share as blueprint URL</div>
+              <div class="export-option__desc">Link with embedded blueprint that sets up the full environment</div>
+            </div>
+          </button>
+        </div>
+
+        <div class="panel-divider"></div>
+
+        <div class="panel-section">
+          <div class="panel-section__title">Push to GitHub</div>
+
+          <button class="export-option" onclick="openGitHubModal()">
+            <div class="export-option__icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.22 2.2.82A7.64 7.64 0 0110 6.3c.68.003 1.36.092 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0018 10c0-4.42-3.58-8-8-8z"/>
+              </svg>
+            </div>
+            <div class="export-option__text">
+              <div class="export-option__label">Push to GitHub</div>
+              <div class="export-option__desc">Create a pull request with your site changes</div>
+            </div>
+          </button>
+        </div>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<!-- ============================================================
+     COMMAND BAR
+     ============================================================ -->
+<footer class="commandbar">
+  <div class="commandbar__input-wrap">
+    <span class="commandbar__slash">/</span>
+    <input class="commandbar__input" id="commandInput" type="text"
+           placeholder="Type a command or search..."
+           aria-label="Command palette"
+           onfocus="openCommandPalette()" oninput="filterCommands(this.value)">
+    <span class="commandbar__kbd" id="cmdKbdHint">Ctrl+K</span>
+  </div>
+  <div class="commandbar__chips">
+    <button class="commandbar__chip" onclick="openNewSiteModal()">New site</button>
+    <button class="commandbar__chip" onclick="switchTab('settings', document.querySelector('[data-tab=settings]'))">Settings</button>
+    <button class="commandbar__chip" onclick="switchTab('plugins', document.querySelector('[data-tab=plugins]'))">Plugins</button>
+    <button class="commandbar__chip" onclick="shareSite()">Share</button>
+  </div>
+</footer>
+
+<!-- Command palette -->
+<div class="command-palette" id="commandPalette">
+  <div class="command-palette__group-label">Actions</div>
+
+  <button class="command-item" onclick="executeCommand('new-site')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4v12M4 10h12"/></svg></span>
+    <span class="command-item__label">New site</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('settings')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 2v2m0 12v2m-8-8h2m12 0h2M4.93 4.93l1.41 1.41m7.32 7.32l1.41 1.41m0-10.14l-1.41 1.41m-7.32 7.32l-1.41 1.41"/></svg></span>
+    <span class="command-item__label">Settings</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('plugins')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 2v4M13 2v4M5 8h10M4 6h12a1 1 0 011 1v9a2 2 0 01-2 2H5a2 2 0 01-2-2V7a1 1 0 011-1z"/></svg></span>
+    <span class="command-item__label">Plugins</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('themes')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3h6v6H3zM11 3h6v6h-6zM3 11h6v6H3zM11 11h6v6h-6z"/></svg></span>
+    <span class="command-item__label">Themes</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('blueprint')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h10a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2zM7 7h6M7 10h4"/></svg></span>
+    <span class="command-item__label">Blueprint</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('save')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h8l4 4v8a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M13 3v4H7V3M7 17v-5h6v5"/></svg></span>
+    <span class="command-item__label">Save</span>
+    <span class="command-item__kbd">Ctrl+S</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('download')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 14v2a2 2 0 002 2h8a2 2 0 002-2v-2M10 3v10M7 12l3 3 3-3"/></svg></span>
+    <span class="command-item__label">Download ZIP</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('wxr')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h10a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M7 8h6M7 11h4"/></svg></span>
+    <span class="command-item__label">Export WXR</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('github')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.22 2.2.82A7.64 7.64 0 0110 6.3c.68.003 1.36.092 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0018 10c0-4.42-3.58-8-8-8z"/></svg></span>
+    <span class="command-item__label">Push to GitHub</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('share')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="14" cy="4" r="2.5"/><circle cx="14" cy="16" r="2.5"/><circle cx="6" cy="10" r="2.5"/><path d="M8.2 8.8l3.6-3.6M8.2 11.2l3.6 3.6"/></svg></span>
+    <span class="command-item__label">Share link</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('share-blueprint')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 11a3 3 0 004 0l3-3a3 3 0 00-4.243-4.243L9.5 4.964"/><path d="M12 9a3 3 0 00-4 0l-3 3a3 3 0 004.243 4.243l1.257-1.207"/></svg></span>
+    <span class="command-item__label">Share blueprint URL</span>
+  </button>
+
+  <div class="command-palette__group-label">Quick settings</div>
+
+  <button class="command-item" onclick="executeCommand('php-version')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7l4 6M8 7L4 13M11 8v5M11 8h2a2 2 0 010 4h-2"/></svg></span>
+    <span class="command-item__label">Change PHP version</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('wp-version')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="3"/><path d="M7 7h6M7 10h6M7 13h3"/></svg></span>
+    <span class="command-item__label">Change WP version</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('toggle-networking')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2 10a8 8 0 0116 0M5 10a5 5 0 0110 0M8 10a2 2 0 014 0"/></svg></span>
+    <span class="command-item__label">Toggle networking</span>
+  </button>
+
+  <button class="command-item" onclick="executeCommand('toggle-multisite')">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="7" height="7" rx="1.5"/><rect x="11" y="2" width="7" height="7" rx="1.5"/><rect x="2" y="11" width="7" height="7" rx="1.5"/><rect x="11" y="11" width="7" height="7" rx="1.5"/></svg></span>
+    <span class="command-item__label">Toggle multisite</span>
+  </button>
+
+  <div class="command-palette__separator"></div>
+  <div class="command-palette__group-label">Unavailable</div>
+
+  <button class="command-item command-item--disabled" tabindex="-1">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h10a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/><path d="M8 10h4"/></svg></span>
+    <span class="command-item__label">Clone site</span>
+    <span class="command-item__badge">Coming soon</span>
+  </button>
+
+  <button class="command-item command-item--disabled" tabindex="-1">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 7v6M7 10h6"/></svg></span>
+    <span class="command-item__label">Preview WordPress PR</span>
+    <span class="command-item__badge">Coming soon</span>
+  </button>
+
+  <button class="command-item command-item--disabled" tabindex="-1">
+    <span class="command-item__icon"><svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7"/><path d="M10 7v6M7 10h6"/></svg></span>
+    <span class="command-item__label">Preview Gutenberg PR</span>
+    <span class="command-item__badge">Coming soon</span>
+  </button>
+</div>
+
+<!-- ============================================================
+     MOBILE FABs
+     ============================================================ -->
+<button class="mobile-fab" aria-label="Open panel" onclick="toggleMobilePanel()">
+  <svg width="22" height="22" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="2" y="3" width="16" height="14" rx="2"/>
+    <path d="M13 3v14"/>
+  </svg>
+</button>
+
+<button class="mobile-cmd-fab" aria-label="Open command palette" onclick="toggleMobileCommandPalette()">
+  <svg width="22" height="22" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M10 4v12M4 10h12"/>
+  </svg>
+</button>
+
+<!-- ============================================================
+     TOAST CONTAINER
+     ============================================================ -->
+<div class="toast-container" id="toastContainer"></div>
+
+<!-- ============================================================
+     NEW SITE MODAL
+     ============================================================ -->
+<div class="modal-overlay" id="newSiteOverlay" hidden>
+  <dialog class="modal" id="newSiteModal">
+    <div class="modal__header">
+      <h2 class="modal__title">Create a new site</h2>
+      <button class="icon-btn" aria-label="Close" onclick="closeNewSiteModal()">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 5l10 10M15 5L5 15"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal__body">
+      <div class="panel-section__title" style="margin-bottom: var(--space-3);">Start from scratch</div>
+      <div class="new-site-grid" style="grid-template-columns: 1fr; margin-bottom: var(--space-5);">
+        <button class="new-site-card" onclick="createNewSite('Blank site', 'My new site')">
+          <div class="new-site-card__icon">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 3h10a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2z"/>
+            </svg>
+          </div>
+          <div class="new-site-card__label">Blank site</div>
+          <div class="new-site-card__desc">Clean WordPress install with no extra content</div>
+        </button>
+      </div>
+
+      <div class="panel-section__title" style="margin-bottom: var(--space-3);">Templates</div>
+      <div class="new-site-grid">
+        <button class="new-site-card" onclick="createNewSite('Blog', 'My Blog')">
+          <div class="new-site-card__icon">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M4 4h12M4 8h12M4 12h8M4 16h6"/>
+            </svg>
+          </div>
+          <div class="new-site-card__label">Blog</div>
+          <div class="new-site-card__desc">Posts, categories, and a reading-focused layout</div>
+        </button>
+
+        <button class="new-site-card" onclick="createNewSite('Portfolio', 'My Portfolio')">
+          <div class="new-site-card__icon">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="3" y="3" width="6" height="6" rx="1"/>
+              <rect x="11" y="3" width="6" height="6" rx="1"/>
+              <rect x="3" y="11" width="6" height="6" rx="1"/>
+              <rect x="11" y="11" width="6" height="6" rx="1"/>
+            </svg>
+          </div>
+          <div class="new-site-card__label">Portfolio</div>
+          <div class="new-site-card__desc">Project showcase with image galleries</div>
+        </button>
+
+        <button class="new-site-card" onclick="createNewSite('Store', 'My Store')">
+          <div class="new-site-card__icon">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 3h14l-1.5 9H4.5L3 3zM8 17a1 1 0 100-2 1 1 0 000 2zM14 17a1 1 0 100-2 1 1 0 000 2z"/>
+            </svg>
+          </div>
+          <div class="new-site-card__label">Store</div>
+          <div class="new-site-card__desc">WooCommerce-powered shop with sample products</div>
+        </button>
+
+        <button class="new-site-card" onclick="createNewSite('Docs site', 'Documentation')">
+          <div class="new-site-card__icon">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 2h8l4 4v10a2 2 0 01-2 2H6a2 2 0 01-2-2V4a2 2 0 012-2z"/>
+              <path d="M14 2v4h4M8 10h4M8 13h6"/>
+            </svg>
+          </div>
+          <div class="new-site-card__label">Docs site</div>
+          <div class="new-site-card__desc">Structured knowledge base with search and navigation</div>
+        </button>
+      </div>
+
+      <div class="panel-divider"></div>
+
+      <div class="panel-section__title" style="margin-bottom: var(--space-3);">Advanced</div>
+      <div class="new-site-grid" style="grid-template-columns: 1fr;">
+        <button class="new-site-card" onclick="createFromBlueprint()">
+          <div class="new-site-card__icon">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M5 3h10a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2zM7 7h6M7 10h4"/>
+            </svg>
+          </div>
+          <div class="new-site-card__label">From blueprint URL or paste JSON</div>
+          <div class="new-site-card__desc">Create a fully configured site from a blueprint</div>
+        </button>
+      </div>
+
+      <div class="new-site-grid" style="margin-top: var(--space-2);">
+        <button class="new-site-card new-site-card--disabled">
+          <div class="new-site-card__icon">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="10" cy="10" r="7"/><path d="M10 7v6M7 10h6"/>
+            </svg>
+          </div>
+          <div class="new-site-card__label">Preview WordPress PR</div>
+          <div class="new-site-card__desc">Test a pull request in an isolated site</div>
+        </button>
+
+        <button class="new-site-card new-site-card--disabled">
+          <div class="new-site-card__icon">
+            <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="10" cy="10" r="7"/><path d="M10 7v6M7 10h6"/>
+            </svg>
+          </div>
+          <div class="new-site-card__label">Preview Gutenberg PR</div>
+          <div class="new-site-card__desc">Test a Gutenberg pull request in isolation</div>
+        </button>
+      </div>
+    </div>
+  </dialog>
+</div>
+
+<!-- ============================================================
+     EXPORT BLUEPRINT MODAL
+     ============================================================ -->
+<div class="modal-overlay" id="blueprintExportOverlay" hidden>
+  <dialog class="modal" id="blueprintExportModal">
+    <div class="modal__header">
+      <h2 class="modal__title">Export blueprint</h2>
+      <button class="icon-btn" aria-label="Close" onclick="closeBlueprintExportModal()">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 5l10 10M15 5L5 15"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal__body">
+      <pre class="blueprint-export-json" id="blueprintExportJson">{
+  "landingPage": "/",
+  "phpExtensionBundles": ["kitchen-sink"],
+  "preferredVersions": {
+    "php": "8.1",
+    "wp": "6.6"
+  },
+  "steps": [
+    {
+      "step": "installTheme",
+      "themeData": {
+        "resource": "wordpress.org/themes",
+        "slug": "twentytwentyfive"
+      }
+    },
+    {
+      "step": "installPlugin",
+      "pluginData": {
+        "resource": "wordpress.org/plugins",
+        "slug": "akismet"
+      }
+    },
+    {
+      "step": "setSiteOptions",
+      "options": {
+        "blogname": "The Flavor Lab"
+      }
+    }
+  ]
+}</pre>
+    </div>
+    <div class="modal__footer">
+      <button class="btn btn--secondary" onclick="closeBlueprintExportModal()">Close</button>
+      <button class="btn btn--primary" onclick="copyBlueprintJson()">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="6" y="6" width="12" height="12" rx="2"/>
+          <path d="M4 14H3a1 1 0 01-1-1V3a1 1 0 011-1h10a1 1 0 011 1v1"/>
+        </svg>
+        Copy JSON
+      </button>
+    </div>
+  </dialog>
+</div>
+
+<!-- ============================================================
+     GITHUB PUSH MODAL
+     ============================================================ -->
+<div class="modal-overlay" id="githubOverlay" hidden>
+  <dialog class="modal" id="githubModal">
+    <div class="modal__header">
+      <h2 class="modal__title">Push to GitHub</h2>
+      <button class="icon-btn" aria-label="Close" onclick="closeGitHubModal()">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 5l10 10M15 5L5 15"/>
+        </svg>
+      </button>
+    </div>
+    <div class="modal__body">
+      <div class="gh-field">
+        <label for="ghRepo">Repository URL</label>
+        <input type="text" id="ghRepo" value="https://github.com/my-org/flavor-lab-theme">
+      </div>
+      <div class="gh-field">
+        <label for="ghBranch">Branch</label>
+        <input type="text" id="ghBranch" value="playground/spring-menu-update">
+      </div>
+      <div class="gh-field">
+        <label for="ghTitle">Pull request title</label>
+        <input type="text" id="ghTitle" value="Update theme with spring menu content">
+      </div>
+      <div class="gh-field">
+        <label for="ghDesc">Description</label>
+        <textarea id="ghDesc">Adds the spring menu hero section and three new blog posts. Preview this PR at playground.wordpress.net.</textarea>
+      </div>
+    </div>
+    <div class="modal__footer">
+      <button class="btn btn--secondary" onclick="closeGitHubModal()">Cancel</button>
+      <button class="btn btn--primary" onclick="pushToGitHub()">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.22 2.2.82A7.64 7.64 0 0110 6.3c.68.003 1.36.092 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0018 10c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        Create Pull Request
+      </button>
+    </div>
+  </dialog>
+</div>
+
+<!-- ============================================================
+     JAVASCRIPT
+     ============================================================ -->
+<script>
+/* ---- State ---- */
+let currentStorage = 'memory';
+let currentTab = 'settings';
+let panelOpen = true;
+let commandPaletteOpen = false;
+let titleEditing = false;
+
+/* ---- Detect Mac for keyboard shortcut display ---- */
+const isMac = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+document.getElementById('cmdKbdHint').textContent = isMac ? '\u2318K' : 'Ctrl+K';
+
+/* ---- Toast system ---- */
+function showToast(message, linkText, linkHref) {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+
+  const checkSvg = '<svg class="toast__icon" width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10l3 3 7-7"/></svg>';
+
+  let html = checkSvg + '<span>' + message + '</span>';
+  if (linkText) {
+    html += ' <span class="toast__link" onclick="window.open(\'' + (linkHref || '#') + '\')">' + linkText + '</span>';
+  }
+  toast.innerHTML = html;
+  container.appendChild(toast);
+
+  setTimeout(function() {
+    toast.classList.add('toast--leaving');
+    setTimeout(function() {
+      toast.remove();
+    }, 240);
+  }, 3000);
+}
+
+/* ---- Inline-editable title ---- */
+function startEditTitle() {
+  if (titleEditing) return;
+  titleEditing = true;
+  const display = document.getElementById('titleDisplay');
+  const input = document.getElementById('titleInput');
+  const wrap = document.getElementById('titleWrap');
+
+  input.value = display.textContent;
+  display.style.display = 'none';
+  input.style.display = 'block';
+  wrap.querySelector('.topbar__title-edit-icon').style.display = 'none';
+  input.focus();
+  input.select();
+
+  input.onkeydown = function(e) {
+    if (e.key === 'Enter') {
+      commitTitle();
+    } else if (e.key === 'Escape') {
+      cancelTitle();
+    }
+  };
+
+  input.onblur = function() {
+    commitTitle();
+  };
+}
+
+function commitTitle() {
+  if (!titleEditing) return;
+  titleEditing = false;
+  const display = document.getElementById('titleDisplay');
+  const input = document.getElementById('titleInput');
+  const wrap = document.getElementById('titleWrap');
+
+  const newTitle = input.value.trim() || display.textContent;
+  display.textContent = newTitle;
+  display.style.display = '';
+  input.style.display = 'none';
+  wrap.querySelector('.topbar__title-edit-icon').style.display = '';
+
+  // Update the mock preview title
+  document.querySelector('.wp-nav__brand').textContent = newTitle;
+  showToast('Title updated to "' + newTitle + '"');
+}
+
+function cancelTitle() {
+  titleEditing = false;
+  const display = document.getElementById('titleDisplay');
+  const input = document.getElementById('titleInput');
+  const wrap = document.getElementById('titleWrap');
+
+  display.style.display = '';
+  input.style.display = 'none';
+  wrap.querySelector('.topbar__title-edit-icon').style.display = '';
+}
+
+/* ---- Storage dropdown ---- */
+function toggleStorageDropdown(e) {
+  e.stopPropagation();
+  const dd = document.getElementById('storageDropdown');
+  dd.classList.toggle('is-open');
+}
+
+function selectStorage(mode, btn) {
+  currentStorage = mode;
+  const options = document.querySelectorAll('.storage-option');
+  options.forEach(function(o) { o.classList.remove('is-active'); });
+  btn.classList.add('is-active');
+
+  const dot = document.getElementById('storageDot');
+  const label = document.getElementById('storageLabel');
+
+  if (mode === 'memory') {
+    label.textContent = 'In memory';
+    dot.className = 'storage-badge__dot';
+    showToast('Storage set to in-memory (resets when you close this tab)');
+  } else if (mode === 'browser') {
+    label.textContent = 'Saved to browser';
+    dot.className = 'storage-badge__dot storage-badge__dot--saved';
+    showToast('Site will be saved to browser storage');
+  } else if (mode === 'device') {
+    label.textContent = 'Saved to device';
+    dot.className = 'storage-badge__dot storage-badge__dot--device';
+    showToast('Site will be saved to a folder on your device');
+  }
+
+  document.getElementById('storageDropdown').classList.remove('is-open');
+}
+
+/* ---- Panel toggle ---- */
+function togglePanel() {
+  const panel = document.getElementById('sidePanel');
+  panelOpen = !panelOpen;
+  if (panelOpen) {
+    panel.classList.remove('is-collapsed');
+  } else {
+    panel.classList.add('is-collapsed');
+  }
+}
+
+function toggleMobilePanel() {
+  const panel = document.getElementById('sidePanel');
+  panel.classList.toggle('is-open-mobile');
+}
+
+function toggleMobileCommandPalette() {
+  const palette = document.getElementById('commandPalette');
+  commandPaletteOpen = !commandPaletteOpen;
+  if (commandPaletteOpen) {
+    palette.classList.add('is-open');
+  } else {
+    palette.classList.remove('is-open');
+  }
+}
+
+/* ---- Tab switching ---- */
+function switchTab(tab, btn) {
+  currentTab = tab;
+
+  // Ensure panel is open
+  const panel = document.getElementById('sidePanel');
+  if (panel.classList.contains('is-collapsed')) {
+    panel.classList.remove('is-collapsed');
+    panelOpen = true;
+  }
+  // Mobile
+  if (window.innerWidth <= 768) {
+    panel.classList.add('is-open-mobile');
+  }
+
+  // Update tab buttons
+  document.querySelectorAll('.side-panel__tab').forEach(function(t) {
+    t.classList.remove('is-active');
+  });
+  if (btn) btn.classList.add('is-active');
+  else {
+    document.querySelector('[data-tab="' + tab + '"]').classList.add('is-active');
+  }
+
+  // Show tab content
+  document.querySelectorAll('.tab-content').forEach(function(c) {
+    c.style.display = 'none';
+  });
+  document.getElementById('tab-' + tab).style.display = '';
+
+  closeCommandPalette();
+}
+
+/* ---- Settings: Apply change ---- */
+function applyChange(statusId, el) {
+  const statusEl = document.getElementById(statusId);
+  statusEl.textContent = 'Applying...';
+  statusEl.classList.add('is-visible');
+
+  setTimeout(function() {
+    statusEl.textContent = 'Applied';
+    setTimeout(function() {
+      statusEl.classList.remove('is-visible');
+    }, 2000);
+  }, 800);
+}
+
+function toggleSwitch(btn, statusId) {
+  btn.classList.toggle('is-on');
+  const statusEl = document.getElementById(statusId);
+  const isOn = btn.classList.contains('is-on');
+  statusEl.textContent = 'Applying...';
+  statusEl.classList.add('is-visible');
+
+  setTimeout(function() {
+    statusEl.textContent = isOn ? 'Enabled' : 'Disabled';
+    setTimeout(function() {
+      statusEl.classList.remove('is-visible');
+    }, 2000);
+  }, 800);
+}
+
+function applyCheckbox(el, statusId) {
+  const statusEl = document.getElementById(statusId);
+  statusEl.textContent = 'Applying...';
+  statusEl.classList.add('is-visible');
+
+  setTimeout(function() {
+    statusEl.textContent = el.checked ? 'Enabled' : 'Disabled';
+    setTimeout(function() {
+      statusEl.classList.remove('is-visible');
+    }, 2000);
+  }, 600);
+}
+
+/* ---- Plugins ---- */
+function installPlugin(btn, name) {
+  btn.textContent = 'Installing...';
+  btn.disabled = true;
+  setTimeout(function() {
+    btn.textContent = 'Installed';
+    btn.className = 'btn-sm btn-installed';
+    btn.disabled = true;
+    showToast(name + ' installed and activated');
+  }, 1200);
+}
+
+function deactivatePlugin(btn, name) {
+  btn.textContent = 'Deactivating...';
+  setTimeout(function() {
+    btn.textContent = 'Activate';
+    btn.onclick = function() { activatePlugin(btn, name); };
+    const versionEl = btn.closest('.installed-plugin').querySelector('.installed-plugin__version');
+    versionEl.textContent = versionEl.textContent.replace('Active', 'Inactive');
+    showToast(name + ' deactivated');
+  }, 600);
+}
+
+function activatePlugin(btn, name) {
+  btn.textContent = 'Activating...';
+  setTimeout(function() {
+    btn.textContent = 'Deactivate';
+    btn.onclick = function() { deactivatePlugin(btn, name); };
+    const versionEl = btn.closest('.installed-plugin').querySelector('.installed-plugin__version');
+    versionEl.textContent = versionEl.textContent.replace('Inactive', 'Active');
+    showToast(name + ' activated');
+  }, 600);
+}
+
+function removePlugin(btn, name) {
+  const row = btn.closest('.installed-plugin');
+  row.style.opacity = '0.5';
+  setTimeout(function() {
+    row.remove();
+    showToast(name + ' removed');
+  }, 500);
+}
+
+function filterPlugins(query) {
+  const cards = document.querySelectorAll('#pluginResults .plugin-card');
+  const q = query.toLowerCase();
+  cards.forEach(function(card) {
+    const name = card.getAttribute('data-name');
+    card.style.display = name.indexOf(q) >= 0 ? '' : 'none';
+  });
+}
+
+/* ---- Themes ---- */
+function activateTheme(btn, name) {
+  btn.textContent = 'Activating...';
+  setTimeout(function() {
+    // Remove active from all
+    document.querySelectorAll('.theme-card').forEach(function(c) {
+      c.classList.remove('is-active');
+      const actBtn = c.querySelector('.btn-installed');
+      if (actBtn) {
+        actBtn.textContent = 'Activate';
+        actBtn.className = 'btn-sm btn-install';
+        actBtn.onclick = function() { activateTheme(actBtn, c.querySelector('.theme-card__name').textContent.replace(' (Active)', '')); };
+      }
+    });
+
+    // Set new active
+    const card = btn.closest('.theme-card');
+    card.classList.add('is-active');
+    btn.textContent = 'Active';
+    btn.className = 'btn-sm btn-installed';
+    btn.onclick = null;
+
+    showToast(name + ' theme activated');
+  }, 800);
+}
+
+/* ---- Blueprint ---- */
+function loadBlueprint() {
+  const url = document.getElementById('blueprintUrlInput').value.trim();
+  if (!url) {
+    showToast('Please enter a blueprint URL');
+    return;
+  }
+  showToast('Loading blueprint from URL...');
+  setTimeout(function() {
+    showToast('Blueprint applied successfully');
+  }, 1500);
+}
+
+function applyBlueprintJson() {
+  const json = document.getElementById('blueprintJsonInput').value.trim();
+  if (!json) {
+    showToast('Please paste blueprint JSON');
+    return;
+  }
+  showToast('Applying blueprint...');
+  setTimeout(function() {
+    showToast('Blueprint applied successfully');
+  }, 1200);
+}
+
+function openExportBlueprintModal() {
+  document.getElementById('blueprintExportOverlay').hidden = false;
+}
+
+function closeBlueprintExportModal() {
+  document.getElementById('blueprintExportOverlay').hidden = true;
+}
+
+function copyBlueprintJson() {
+  const json = document.getElementById('blueprintExportJson').textContent;
+  navigator.clipboard.writeText(json).then(function() {
+    showToast('Blueprint JSON copied to clipboard');
+  }).catch(function() {
+    showToast('Could not copy to clipboard');
+  });
+  closeBlueprintExportModal();
+}
+
+/* ---- Export ---- */
+function downloadZip() {
+  showToast('Preparing download...');
+  setTimeout(function() {
+    showToast('Your download is ready');
+  }, 1500);
+}
+
+function exportWxr() {
+  showToast('Generating WXR export...');
+  setTimeout(function() {
+    showToast('WXR export ready');
+  }, 1200);
+}
+
+/* ---- Share ---- */
+function shareSite() {
+  const fakeUrl = 'https://playground.wordpress.net/?id=the-flavor-lab-abc123';
+  navigator.clipboard.writeText(fakeUrl).then(function() {
+    showToast('Link copied to clipboard');
+  }).catch(function() {
+    showToast('Link copied to clipboard');
+  });
+}
+
+function shareBlueprintUrl() {
+  const fakeUrl = 'https://playground.wordpress.net/#eyJzdGVwcyI6W3sic3RlcCI6Imluc3RhbGxUaGVtZSJ9XX0=';
+  navigator.clipboard.writeText(fakeUrl).then(function() {
+    showToast('Blueprint URL copied to clipboard');
+  }).catch(function() {
+    showToast('Blueprint URL copied to clipboard');
+  });
+}
+
+/* ---- GitHub ---- */
+function openGitHubModal() {
+  document.getElementById('githubOverlay').hidden = false;
+}
+
+function closeGitHubModal() {
+  document.getElementById('githubOverlay').hidden = true;
+}
+
+function pushToGitHub() {
+  const btn = document.querySelector('#githubModal .btn--primary');
+  btn.textContent = 'Creating...';
+  btn.disabled = true;
+
+  setTimeout(function() {
+    closeGitHubModal();
+    btn.innerHTML = '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.22 2.2.82A7.64 7.64 0 0110 6.3c.68.003 1.36.092 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0018 10c0-4.42-3.58-8-8-8z"/></svg> Create Pull Request';
+    btn.disabled = false;
+    showToast('Pull request #42 created', 'View on GitHub', 'https://github.com/my-org/flavor-lab-theme/pull/42');
+  }, 1800);
+}
+
+/* ---- New site ---- */
+function openNewSiteModal() {
+  document.getElementById('newSiteOverlay').hidden = false;
+  closeCommandPalette();
+}
+
+function closeNewSiteModal() {
+  document.getElementById('newSiteOverlay').hidden = true;
+}
+
+function createNewSite(template, defaultTitle) {
+  closeNewSiteModal();
+  showToast('Setting up ' + template + '...');
+
+  // Update title
+  document.getElementById('titleDisplay').textContent = defaultTitle;
+  document.getElementById('titleInput').value = defaultTitle;
+  document.querySelector('.wp-nav__brand').textContent = defaultTitle;
+
+  // Brief loading state
+  const preview = document.getElementById('wpPreview');
+  preview.style.opacity = '0.4';
+  preview.style.transition = 'opacity 300ms ease';
+
+  setTimeout(function() {
+    preview.style.opacity = '1';
+    showToast(template + ' site created');
+  }, 1500);
+}
+
+function createFromBlueprint() {
+  closeNewSiteModal();
+  switchTab('blueprint', document.querySelector('[data-tab=blueprint]'));
+}
+
+/* ---- Command palette ---- */
+function openCommandPalette() {
+  commandPaletteOpen = true;
+  document.getElementById('commandPalette').classList.add('is-open');
+}
+
+function closeCommandPalette() {
+  commandPaletteOpen = false;
+  document.getElementById('commandPalette').classList.remove('is-open');
+  document.getElementById('commandInput').value = '';
+  // Reset all items visibility
+  document.querySelectorAll('.command-item').forEach(function(item) {
+    item.style.display = '';
+  });
+  document.querySelectorAll('.command-palette__group-label').forEach(function(label) {
+    label.style.display = '';
+  });
+  document.querySelectorAll('.command-palette__separator').forEach(function(sep) {
+    sep.style.display = '';
+  });
+}
+
+function filterCommands(query) {
+  const q = query.toLowerCase().trim();
+  const items = document.querySelectorAll('.command-item');
+  let hasVisible = false;
+
+  items.forEach(function(item) {
+    const label = item.querySelector('.command-item__label').textContent.toLowerCase();
+    if (!q || label.indexOf(q) >= 0) {
+      item.style.display = '';
+      hasVisible = true;
+    } else {
+      item.style.display = 'none';
+    }
+  });
+
+  if (q) {
+    openCommandPalette();
+  }
+}
+
+function executeCommand(cmd) {
+  closeCommandPalette();
+
+  switch(cmd) {
+    case 'new-site':     openNewSiteModal(); break;
+    case 'settings':     switchTab('settings', null); break;
+    case 'plugins':      switchTab('plugins', null); break;
+    case 'themes':       switchTab('themes', null); break;
+    case 'blueprint':    switchTab('blueprint', null); break;
+    case 'save':         triggerSave(); break;
+    case 'download':     downloadZip(); break;
+    case 'wxr':          exportWxr(); break;
+    case 'github':       openGitHubModal(); break;
+    case 'share':        shareSite(); break;
+    case 'share-blueprint': shareBlueprintUrl(); break;
+    case 'php-version':
+      switchTab('settings', null);
+      setTimeout(function() {
+        document.querySelector('.panel-select').focus();
+      }, 300);
+      break;
+    case 'wp-version':
+      switchTab('settings', null);
+      setTimeout(function() {
+        document.querySelectorAll('.panel-select')[1].focus();
+      }, 300);
+      break;
+    case 'toggle-networking':
+      switchTab('settings', null);
+      setTimeout(function() {
+        const toggle = document.querySelectorAll('.toggle')[0];
+        toggleSwitch(toggle, 'networkStatus');
+      }, 300);
+      break;
+    case 'toggle-multisite':
+      switchTab('settings', null);
+      setTimeout(function() {
+        const toggle = document.querySelectorAll('.toggle')[1];
+        toggleSwitch(toggle, 'multisiteStatus');
+      }, 300);
+      break;
+  }
+}
+
+/* ---- Save (Ctrl+S) ---- */
+function triggerSave() {
+  const storageLabels = {
+    memory: 'in memory',
+    browser: 'to browser storage',
+    device: 'to device folder'
+  };
+  showToast('Site saved ' + storageLabels[currentStorage]);
+}
+
+/* ---- Keyboard shortcuts ---- */
+document.addEventListener('keydown', function(e) {
+  // Ctrl/Cmd + S = Save
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    triggerSave();
+  }
+
+  // Ctrl/Cmd + K = Command palette
+  if ((e.ctrlKey || e.metaKey) && e.key === 'k') {
+    e.preventDefault();
+    if (commandPaletteOpen) {
+      closeCommandPalette();
+      document.getElementById('commandInput').blur();
+    } else {
+      document.getElementById('commandInput').focus();
+    }
+  }
+
+  // Escape = close things
+  if (e.key === 'Escape') {
+    if (commandPaletteOpen) {
+      closeCommandPalette();
+      document.getElementById('commandInput').blur();
+    }
+    document.getElementById('storageDropdown').classList.remove('is-open');
+  }
+});
+
+/* ---- Click outside to close dropdowns ---- */
+document.addEventListener('click', function(e) {
+  // Storage dropdown
+  if (!e.target.closest('.storage-badge') && !e.target.closest('.storage-dropdown')) {
+    document.getElementById('storageDropdown').classList.remove('is-open');
+  }
+
+  // Command palette
+  if (commandPaletteOpen && !e.target.closest('.commandbar') && !e.target.closest('.command-palette') && !e.target.closest('.mobile-cmd-fab')) {
+    closeCommandPalette();
+  }
+
+  // Modals
+  if (e.target.classList.contains('modal-overlay')) {
+    e.target.hidden = true;
+  }
+});
+
+/* ---- On load ---- */
+document.addEventListener('DOMContentLoaded', function() {
+  // Detect Mac vs PC for shortcut hints
+  if (isMac) {
+    document.querySelectorAll('.command-item__kbd').forEach(function(el) {
+      el.textContent = el.textContent.replace('Ctrl+', '\u2318');
+    });
+  }
+});
+</script>
+</body>
+</html>

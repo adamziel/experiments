@@ -1,55 +1,98 @@
-# WordPress Playground UX Mockups (v2)
+# WordPress Playground — UX Mockups v3
 
-## Friction analysis of current playground.wordpress.net
+Three design directions for the next generation of [playground.wordpress.net](https://playground.wordpress.net), grounded in a thorough audit of all 31 user flows.
 
-The current playground.wordpress.net UI suffers from several UX friction points:
+## Research
 
-1. **Too many icon buttons without hierarchy** — The toolbar presents a flat row of icons with no visual grouping, making it hard to identify the primary action or understand what each icon does without hovering.
-2. **No clear document/session identity** — Users land on an unnamed, unsaved session with no indication of its draft/temporary state. There's no filename, no "Untitled" placeholder, and no unsaved indicator.
-3. **Buried technical settings** — Critical options like PHP version, WP version, PHP extensions, and storage mode are hidden in flat menus with no visual hierarchy or grouping.
-4. **No obvious primary action** — Save, Share, Export, and Settings all compete for attention at the same level. There's no visual weight guiding users to what matters most.
-5. **Tangled concepts** — "Site", "Blueprint", and "Storage" are distinct concepts but overlap in the UI. Users can't easily understand what they're editing vs. what they're configuring.
-6. **Poor mobile experience** — The icon-heavy toolbar doesn't adapt well to narrow screens, causing overflow and cramped touch targets.
-7. **No feedback loop** — Actions like changing PHP version or toggling storage mode happen silently with no visual confirmation, leaving users unsure if their change took effect.
+A detailed [feature and flow audit](research/flows.md) (~1,300 lines) was conducted on the live Playground site. The audit maps:
 
-## Three directions
+- **Three core primitives**: Sites (running WP instances), Blueprints (declarative JSON configs), Storage (temporary / browser-OPFS / device filesystem)
+- **31 user flows**: from first visit through blueprint export, GitHub PR push, and error recovery
+- **10 friction points**: 23+ top-bar buttons, flat modal hierarchy, no plugin search UI, no "Clone site" affordance, technical error messages, and more
 
-Each mockup takes a different real-world product's visual language and interaction model for the "draft document + save + settings + export" primitive and applies it to WordPress Playground.
+The mockups are designed to address these friction points while preserving full flow coverage.
 
-### Direction 1: Figma (Design Tool)
-**Reference product:** Figma  
-**Directory:** `mockup-1-figma/`  
-**Theme:** Dark
+## The three directions
 
-Borrows Figma's floating toolbar, inspector panel, and canvas metaphor. The WordPress preview sits on a dark dot-grid canvas. A "Draft" badge near the filename signals unsaved state. Settings live in a right-side inspector panel with tabs (Runtime, Storage, Network). The Share button is prominent and blue. Zoom controls sit in the bottom-right corner. A layers panel on the left shows WordPress structural elements (Pages, Templates, Plugins).
+### Direction 1: The Notebook
 
-**Best for:** Users who think of their WordPress setup as a designable artifact — tweaking versions, extensions, and plugins like adjusting layers in a design file.
+> *Quiet chrome, canvas-first*
 
-### Direction 2: Google Docs (Document)
-**Reference product:** Google Docs  
-**Directory:** `mockup-2-docs/`  
-**Theme:** Light
+A document-centric layout where the preview is the canvas and advanced actions live in a slim side panel and a slash-style command bar. Warm, book-like palette with an autosave feel. Think Notion + iA Writer + Google Docs.
 
-Borrows Docs' clean document-centered layout with an autosave indicator ("Saving…" → "All changes saved in browser"), menu bar, toolbar ribbon, and blue Share button with avatar stack. The WordPress preview appears as a centered "page" on a light gray background. Settings open as a right sidebar panel. Slash commands (/) let users install plugins inline.
+**Key affordances**: Bottom command bar with `/` prompt, collapsible side panel with tabs, inline-editable title, storage badge always visible.
 
-**Best for:** Users who see their Playground session as a document they're drafting — the metaphor of "all changes saved" communicates the ephemeral-yet-persistent nature of browser storage naturally.
+### Direction 2: The Workspace
 
-### Direction 3: VS Code (IDE)
-**Reference product:** Visual Studio Code  
-**Directory:** `mockup-3-vscode/`  
-**Theme:** Dark
+> *Multi-site-first, project switcher*
 
-Borrows VS Code's activity bar, file tabs with unsaved dot indicators, command palette (Ctrl+Shift+P), and status bar. The WordPress preview lives in the editor area. An Extensions sidebar panel lets users browse and install plugins like VS Code extensions. Settings open as a tab with grouped options. The blue status bar at the bottom surfaces PHP version, WP version, storage mode, and plugin count.
+On entry, users see a grid of site cards (with a "Draft (unsaved)" card for the current session). Click a card to open it in a clean editor view. A dark left rail groups Drafts, Saved, and Cloned-from-URL sites. Feels like Linear, Arc, or Raycast.
 
-**Best for:** Developer-oriented users who are comfortable with IDE conventions and appreciate keyboard-driven workflows, command palettes, and information-dense status bars.
+**Key affordances**: Site card grid with hover actions, two-view layout (grid ↔ editor), dark sidebar navigation, Cmd+K command palette.
+
+### Direction 3: The Hub
+
+> *Everything on one scrolling page*
+
+The live preview is pinned at the top; below it, three horizontal panels for Configure, Extend, and Export & Share. A floating mini-preview appears when you scroll past the main preview. Feels like a Stripe settings page or GitHub Project overview.
+
+**Key affordances**: Three-panel layout, sticky section headers on mobile, IntersectionObserver-powered mini-preview, Cmd+K global search.
+
+## Flow coverage
+
+All three mockups implement the same 12 critical flows via click-through interactions with visible state changes and toast notifications:
+
+1. Inline-editable site title (click → edit → Enter/Esc)
+2. Storage state always visible (In memory / Browser / Device) with one-click change
+3. New site flow (template picker: Blank, Blog, Portfolio, Store, Docs, Blueprint)
+4. Settings (PHP/WP version, Language, Networking, Multisite, Extensions)
+5. Plugin management (search 6 real plugins, install, deactivate, remove, ZIP upload)
+6. Theme gallery (4 themes with colored previews, activate/preview)
+7. Blueprint import/export (URL, JSON paste, formatted export with clipboard copy)
+8. Save/Persist (memory → browser → device with clear explanations)
+9. Download (ZIP + WXR export)
+10. Push to GitHub (modal with repo/branch/PR fields)
+11. Share site (clipboard copy + blueprint URL option)
+12. Keyboard shortcuts (Cmd+S save, Cmd+K command palette or search)
+
+Non-critical flows (Clone site, Preview WP/Gutenberg PR, Import from GitHub, error recovery) are represented as disabled/coming-soon affordances.
 
 ## How to view
 
-1. Open any mockup's `index.html` directly in a modern browser (Chrome, Firefox, Safari, Edge).
-2. Or open `index.html` in the root of this directory for a landing page with thumbnails linking to each direction.
-3. All mockups are fully self-contained — no build step, no npm, no server required.
-4. Interact with each mockup: click the title to rename, open settings, save, share, install plugins, and try keyboard shortcuts (Ctrl/Cmd+S to save, Ctrl/Cmd+Shift+P for command palette in the VS Code mockup).
+Open any HTML file directly in a browser:
 
-## Screenshots
+```bash
+# Landing page with all three directions
+open playground-ux-mockups/index.html
 
-Pre-rendered screenshots at three viewport widths (360px, 768px, 1280px) are in `screenshots/`.
+# Individual mockups
+open playground-ux-mockups/mockup-1-notebook/index.html
+open playground-ux-mockups/mockup-2-workspace/index.html
+open playground-ux-mockups/mockup-3-hub/index.html
+```
+
+Or start a local server:
+
+```bash
+cd playground-ux-mockups
+python3 -m http.server 8080
+# Then open http://localhost:8080
+```
+
+All mockups are single self-contained HTML files with inline CSS and JavaScript — no build step required. They use Google Fonts (Inter + JetBrains Mono) loaded via CDN.
+
+## Responsive breakpoints
+
+Each mockup is responsive at 360px, 768px, 1024px, and 1280px. Screenshots at all widths are in the `screenshots/` directory.
+
+## Design system
+
+Each mockup uses a CSS-variable-driven design system:
+
+- **Typography**: `--fs-xs` through `--fs-3xl` (12px–40px)
+- **Spacing**: `--space-1` through `--space-8` (4px–64px, 4px base grid)
+- **Colors**: `--bg`, `--surface`, `--surface-2`, `--border`, `--text`, `--text-muted`, `--accent`, `--accent-fg`, `--success`, `--warning`, `--danger`
+- **Radii**: `--radius-sm` through `--radius-xl` (6px–24px)
+- **Shadows**: Layered, quiet (2+ stops)
+- **Icons**: Inline SVG, Lucide-style (stroke-based, 1.5 width, round caps/joins)
+- **Motion**: 180ms hover, 240ms menus/modals, ease-out (respects `prefers-reduced-motion`)
