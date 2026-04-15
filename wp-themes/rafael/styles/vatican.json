@@ -1,0 +1,142 @@
+{
+	"$schema": "https://schemas.wp.org/wp/6.7/theme.json",
+	"version": 3,
+	"title": "Vatican",
+	"settings": {
+		"color": {
+			"palette": [
+				{
+					"slug": "rich-gold",
+					"color": "#B8A88A",
+					"name": "Aged Gold"
+				},
+				{
+					"slug": "deep-burgundy",
+					"color": "#5C3A3A",
+					"name": "Faded Fresco Red"
+				},
+				{
+					"slug": "ultramarine-blue",
+					"color": "#6A7B8D",
+					"name": "Chapel Blue"
+				},
+				{
+					"slug": "ivory",
+					"color": "#F5F0E8",
+					"name": "Plaster White"
+				},
+				{
+					"slug": "warm-sienna",
+					"color": "#8B7355",
+					"name": "Fresco Ochre"
+				},
+				{
+					"slug": "olive-green",
+					"color": "#7A8B6F",
+					"name": "Patina Green"
+				}
+			]
+		},
+		"typography": {
+			"fontFamilies": [
+				{
+					"fontFamily": "'EB Garamond', Garamond, 'Times New Roman', serif",
+					"slug": "cormorant-garamond",
+					"name": "EB Garamond",
+					"fontFace": [
+						{
+							"fontFamily": "EB Garamond",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/ebgaramond/v27/SlGDmQSNjdsmc35JDF1K5E55YMjF_7DPuGi-6_RUA4V-e6yHgQ.woff2"
+							]
+						},
+						{
+							"fontFamily": "EB Garamond",
+							"fontWeight": "600",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/ebgaramond/v27/SlGDmQSNjdsmc35JDF1K5E55YMjF_7DPuGi-2_dUA4V-e6yHgQ.woff2"
+							]
+						},
+						{
+							"fontFamily": "EB Garamond",
+							"fontWeight": "700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/ebgaramond/v27/SlGDmQSNjdsmc35JDF1K5E55YMjF_7DPuGi-4PdUA4V-e6yHgQ.woff2"
+							]
+						}
+					]
+				},
+				{
+					"fontFamily": "'Crimson Text', 'Times New Roman', serif",
+					"slug": "lora",
+					"name": "Crimson Text",
+					"fontFace": [
+						{
+							"fontFamily": "Crimson Text",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/crimsontext/v19/wlp2gwHKFkZgtmSR3NB0oRJfajhRK_Z_.woff2"
+							]
+						},
+						{
+							"fontFamily": "Crimson Text",
+							"fontWeight": "400",
+							"fontStyle": "italic",
+							"src": [
+								"https://fonts.gstatic.com/s/crimsontext/v19/wlpogwHKFkZgtmSR3NB0oRJfajDODMhRaA.woff2"
+							]
+						},
+						{
+							"fontFamily": "Crimson Text",
+							"fontWeight": "700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/crimsontext/v19/wlppgwHKFkZgtmSR3NB0oRJXsCxGDNNQ9rJPfw.woff2"
+							]
+						}
+					]
+				}
+			]
+		}
+	},
+	"styles": {
+		"color": {
+			"background": "var(--wp--preset--color--ivory)",
+			"text": "#3D3229"
+		},
+		"elements": {
+			"heading": {
+				"color": {
+					"text": "var(--wp--preset--color--deep-burgundy)"
+				}
+			},
+			"link": {
+				"color": {
+					"text": "var(--wp--preset--color--ultramarine-blue)"
+				},
+				":hover": {
+					"color": {
+						"text": "var(--wp--preset--color--warm-sienna)"
+					}
+				}
+			},
+			"button": {
+				"color": {
+					"background": "var(--wp--preset--color--deep-burgundy)",
+					"text": "var(--wp--preset--color--ivory)"
+				},
+				":hover": {
+					"color": {
+						"background": "var(--wp--preset--color--warm-sienna)",
+						"text": "var(--wp--preset--color--ivory)"
+					}
+				}
+			}
+		}
+	}
+}

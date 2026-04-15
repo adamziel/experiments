@@ -1,0 +1,153 @@
+{
+	"$schema": "https://schemas.wp.org/wp/6.7/theme.json",
+	"version": 3,
+	"title": "Biophilia",
+	"settings": {
+		"color": {
+			"palette": [
+				{
+					"slug": "moss-green",
+					"color": "#2E7D32",
+					"name": "Moss Green"
+				},
+				{
+					"slug": "brushed-silver",
+					"color": "#B0BEC5",
+					"name": "Brushed Silver"
+				},
+				{
+					"slug": "copper-metallic",
+					"color": "#BF6A30",
+					"name": "Copper Metallic"
+				},
+				{
+					"slug": "forest-canopy",
+					"color": "#1B3A2D",
+					"name": "Forest Canopy"
+				},
+				{
+					"slug": "lichen-gold",
+					"color": "#C8B560",
+					"name": "Lichen Gold"
+				},
+				{
+					"slug": "mineral-white",
+					"color": "#ECEFF1",
+					"name": "Mineral White"
+				},
+				{
+					"slug": "basalt-dark",
+					"color": "#121A14",
+					"name": "Basalt Dark"
+				}
+			]
+		},
+		"typography": {
+			"fontFamilies": [
+				{
+					"fontFamily": "'Space Grotesk', sans-serif",
+					"slug": "space-grotesk",
+					"name": "Space Grotesk",
+					"fontFace": [
+						{
+							"fontFamily": "Space Grotesk",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/spacegrotesk/v16/V8mDoQDjQSkFtoMM3T6r8E7mPbF4Cw.woff2"
+							]
+						},
+						{
+							"fontFamily": "Space Grotesk",
+							"fontWeight": "700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/spacegrotesk/v16/V8mDoQDjQSkFtoMM3T6r8E7mPbF4Cw.woff2"
+							]
+						}
+					]
+				},
+				{
+					"fontFamily": "'DM Sans', sans-serif",
+					"slug": "dm-sans",
+					"name": "DM Sans",
+					"fontFace": [
+						{
+							"fontFamily": "DM Sans",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/dmsans/v15/rP2tp2ywxg089UriI5-g4vlH9VoD8A.woff2"
+							]
+						},
+						{
+							"fontFamily": "DM Sans",
+							"fontWeight": "700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/dmsans/v15/rP2tp2ywxg089UriI5-g4vlH9VoD8A.woff2"
+							]
+						}
+					]
+				}
+			]
+		}
+	},
+	"styles": {
+		"color": {
+			"background": "var(--wp--preset--color--basalt-dark)",
+			"text": "var(--wp--preset--color--mineral-white)"
+		},
+		"elements": {
+			"heading": {
+				"color": {
+					"text": "var(--wp--preset--color--lichen-gold)"
+				},
+				"typography": {
+					"fontFamily": "var(--wp--preset--font-family--space-grotesk)"
+				}
+			},
+			"link": {
+				"color": {
+					"text": "var(--wp--preset--color--moss-green)"
+				},
+				":hover": {
+					"color": {
+						"text": "var(--wp--preset--color--copper-metallic)"
+					}
+				}
+			},
+			"button": {
+				"color": {
+					"background": "var(--wp--preset--color--moss-green)",
+					"text": "var(--wp--preset--color--mineral-white)"
+				},
+				":hover": {
+					"color": {
+						"background": "var(--wp--preset--color--copper-metallic)",
+						"text": "var(--wp--preset--color--mineral-white)"
+					}
+				}
+			}
+		},
+		"blocks": {
+			"core/site-title": {
+				"color": {
+					"text": "var(--wp--preset--color--mineral-white)"
+				},
+				"elements": {
+					"link": {
+						"color": {
+							"text": "var(--wp--preset--color--mineral-white)"
+						},
+						":hover": {
+							"color": {
+								"text": "var(--wp--preset--color--lichen-gold)"
+							}
+						}
+					}
+				}
+			}
+		}
+	}
+}

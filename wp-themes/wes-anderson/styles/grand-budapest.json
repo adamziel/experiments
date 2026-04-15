@@ -1,0 +1,194 @@
+{
+	"$schema": "https://schemas.wp.org/wp/6.7/theme.json",
+	"version": 3,
+	"title": "Grand Budapest",
+	"settings": {
+		"color": {
+			"palette": [
+				{
+					"slug": "blush-pink",
+					"color": "#E8A0BF",
+					"name": "Blush Pink"
+				},
+				{
+					"slug": "dusty-rose",
+					"color": "#9B3A5A",
+					"name": "Dusty Rose"
+				},
+				{
+					"slug": "mustard-yellow",
+					"color": "#D4A84B",
+					"name": "Mustard Yellow"
+				},
+				{
+					"slug": "powder-blue",
+					"color": "#7BA7BC",
+					"name": "Powder Blue"
+				},
+				{
+					"slug": "sage-green",
+					"color": "#8B9E6B",
+					"name": "Sage Green"
+				},
+				{
+					"slug": "cream",
+					"color": "#F5EDE0",
+					"name": "Cream"
+				},
+				{
+					"slug": "burgundy",
+					"color": "#4A0E1E",
+					"name": "Burgundy"
+				},
+				{
+					"slug": "lobby-purple",
+					"color": "#6E3A5F",
+					"name": "Lobby Purple"
+				},
+				{
+					"slug": "concierge-red",
+					"color": "#A3243B",
+					"name": "Concierge Red"
+				}
+			]
+		},
+		"typography": {
+			"fontFamilies": [
+				{
+					"fontFamily": "Jost, sans-serif",
+					"slug": "jost",
+					"name": "Jost",
+					"fontFace": [
+						{
+							"fontFamily": "Jost",
+							"fontWeight": "300",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/jost/v15/92zatBhPNqw73oDd4iYl.woff2"
+							]
+						},
+						{
+							"fontFamily": "Jost",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/jost/v15/92zatBhPNqw73oDd4iYl.woff2"
+							]
+						},
+						{
+							"fontFamily": "Jost",
+							"fontWeight": "500",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/jost/v15/92zatBhPNqw73oDd4iYl.woff2"
+							]
+						},
+						{
+							"fontFamily": "Jost",
+							"fontWeight": "700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/jost/v15/92zatBhPNqw73oDd4iYl.woff2"
+							]
+						}
+					]
+				},
+				{
+					"fontFamily": "Libre Franklin, sans-serif",
+					"slug": "libre-franklin",
+					"name": "Libre Franklin",
+					"fontFace": [
+						{
+							"fontFamily": "Libre Franklin",
+							"fontWeight": "300",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/librefranklin/v14/jizOREhUroWOjjwxBB60SxUYmVNRCkI.woff2"
+							]
+						},
+						{
+							"fontFamily": "Libre Franklin",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/librefranklin/v14/jizOREhUroWOjjwxBB60SxUYmVNRCkI.woff2"
+							]
+						},
+						{
+							"fontFamily": "Libre Franklin",
+							"fontWeight": "400",
+							"fontStyle": "italic",
+							"src": [
+								"https://fonts.gstatic.com/s/librefranklin/v14/jizMREhUroWOjjwxBB60SxUY07dKe2E.woff2"
+							]
+						},
+						{
+							"fontFamily": "Libre Franklin",
+							"fontWeight": "700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/librefranklin/v14/jizOREhUroWOjjwxBB60SxUYmVNRCkI.woff2"
+							]
+						}
+					]
+				}
+			]
+		}
+	},
+	"styles": {
+		"color": {
+			"background": "var(--wp--preset--color--cream)",
+			"text": "var(--wp--preset--color--burgundy)"
+		},
+		"elements": {
+			"heading": {
+				"color": {
+					"text": "var(--wp--preset--color--burgundy)"
+				}
+			},
+			"link": {
+				"color": {
+					"text": "var(--wp--preset--color--concierge-red)"
+				},
+				":hover": {
+					"color": {
+						"text": "var(--wp--preset--color--lobby-purple)"
+					}
+				}
+			},
+			"button": {
+				"color": {
+					"background": "var(--wp--preset--color--concierge-red)",
+					"text": "var(--wp--preset--color--cream)"
+				},
+				":hover": {
+					"color": {
+						"background": "var(--wp--preset--color--lobby-purple)",
+						"text": "var(--wp--preset--color--cream)"
+					}
+				}
+			}
+		},
+		"blocks": {
+			"core/site-title": {
+				"color": {
+					"text": "var(--wp--preset--color--burgundy)"
+				}
+			},
+			"core/quote": {
+				"border": {
+					"left": {
+						"color": "var(--wp--preset--color--concierge-red)",
+						"width": "3px",
+						"style": "solid"
+					}
+				}
+			},
+			"core/separator": {
+				"color": {
+					"text": "var(--wp--preset--color--concierge-red)"
+				}
+			}
+		}
+	}
+}
