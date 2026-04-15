@@ -1616,18 +1616,84 @@ ZEND_NAMED_FUNCTION(branchfs_override_lstat) {
     original_lstat_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
-/* glob() override.
+/* glob() override: see doc in branchfs.h.
  *
- * glob(3) is a syscall: it doesn't go through PHP stream wrappers. Without
- * this override, glob("/path/in/branchfs/*.php") returns FALSE (or empty)
- * for files that only exist in the SQLite store, which breaks WordPress
- * pattern registration (block-patterns.php uses `glob($dirpath.'*.php')`).
- *
- * We handle the "dir/<pattern>" form where <pattern> has no slashes and
- * dir is under wp_root. Fallback for anything else.
+ * Supports wildcards at ANY path depth, matching PHP glob semantics where a
+ * double-star pattern behaves the same as a single-star (one path segment).
+ * Pattern must begin with a literal prefix rooted under wp_root; wildcards
+ * in the anchoring prefix are unsupported (glob(3) doesn't support that in
+ * practice either).
  */
 
 static zif_handler original_glob_handler = NULL;
+
+/* Recursive helper: rel_dir is the current directory (relative to wp_root),
+ * segs[seg_idx..seg_count-1] are the remaining pattern segments. Appends
+ * matching canonical absolute paths to return_value. */
+static void branchfs_glob_walk(zval *return_value, int branch_id,
+    const char *rel_dir, char **segs, int seg_count, int seg_idx, int depth)
+{
+    if (depth > 64) return; /* paranoia */
+    if (seg_idx >= seg_count) return;
+
+    const char *seg = segs[seg_idx];
+    int is_last = (seg_idx == seg_count - 1);
+    int has_wild = (strpbrk(seg, "*?[") != NULL);
+
+    if (!has_wild) {
+        /* Literal segment: descend without enumeration. */
+        char next_rel[BRANCHFS_MAX_PATH];
+        if (rel_dir[0] == '\0') {
+            snprintf(next_rel, sizeof(next_rel), "%s", seg);
+        } else {
+            snprintf(next_rel, sizeof(next_rel), "%s/%s", rel_dir, seg);
+        }
+        int is_dir = 0;
+        int r = store_stat_file(branch_id, next_rel, &is_dir, NULL, NULL, NULL);
+        if (r != 0) return;
+        if (is_last) {
+            /* Final literal segment: if it exists, include it. */
+            char abs[BRANCHFS_MAX_PATH];
+            snprintf(abs, sizeof(abs), "%s/%s", BRANCHFS_G(wp_root), next_rel);
+            add_next_index_string(return_value, abs);
+        } else {
+            if (is_dir) {
+                branchfs_glob_walk(return_value, branch_id, next_rel, segs, seg_count, seg_idx + 1, depth + 1);
+            }
+        }
+        return;
+    }
+
+    /* Wildcard segment: enumerate current dir and fnmatch each entry. */
+    char **entries = NULL;
+    int count = 0;
+    if (store_list_dir(branch_id, rel_dir, &entries, &count) != 0) return;
+    for (int i = 0; i < count; i++) {
+        const char *name = entries[i];
+        /* glob(3) skips names starting with '.' unless the pattern explicitly starts with '.' */
+        if (name[0] == '.' && seg[0] != '.') continue;
+        if (fnmatch(seg, name, 0) != 0) continue;
+
+        char child_rel[BRANCHFS_MAX_PATH];
+        if (rel_dir[0] == '\0') {
+            snprintf(child_rel, sizeof(child_rel), "%s", name);
+        } else {
+            snprintf(child_rel, sizeof(child_rel), "%s/%s", rel_dir, name);
+        }
+        int is_dir = 0;
+        if (store_stat_file(branch_id, child_rel, &is_dir, NULL, NULL, NULL) != 0) continue;
+
+        if (is_last) {
+            char abs[BRANCHFS_MAX_PATH];
+            snprintf(abs, sizeof(abs), "%s/%s", BRANCHFS_G(wp_root), child_rel);
+            add_next_index_string(return_value, abs);
+        } else if (is_dir) {
+            branchfs_glob_walk(return_value, branch_id, child_rel, segs, seg_count, seg_idx + 1, depth + 1);
+        }
+    }
+    for (int i = 0; i < count; i++) efree(entries[i]);
+    if (entries) efree(entries);
+}
 
 ZEND_NAMED_FUNCTION(branchfs_override_glob) {
     zend_string *pat_z;
@@ -1650,33 +1716,32 @@ ZEND_NAMED_FUNCTION(branchfs_override_glob) {
         return;
     }
 
-    /* Split pattern into dir + basename glob. We only handle the case where
-     * only the last path segment contains wildcards; if there are wildcards
-     * earlier in the path, defer to the OS handler. */
-    const char *last_slash = strrchr(pat, '/');
-    if (!last_slash) {
+    /* Find the literal prefix — the longest slash-prefix with no wildcards. */
+    const char *first_wild = strpbrk(pat, "*?[");
+    if (!first_wild) {
         original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
         return;
     }
-    size_t dir_len = last_slash - pat;
-    const char *base_pat = last_slash + 1;
+    /* Back up to the last slash before the first wildcard. */
+    const char *prefix_end = first_wild;
+    while (prefix_end > pat && prefix_end[-1] != '/') prefix_end--;
+    if (prefix_end == pat) {
+        /* Pattern starts with a wildcard — unsupported, defer. */
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
 
-    char dir[BRANCHFS_MAX_PATH];
-    if (dir_len >= sizeof(dir)) {
+    size_t prefix_len = prefix_end - pat - 1; /* exclude trailing slash */
+    char prefix[BRANCHFS_MAX_PATH];
+    if (prefix_len >= sizeof(prefix)) {
         original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
         return;
     }
-    memcpy(dir, pat, dir_len);
-    dir[dir_len] = '\0';
-
-    /* Check that dir segment itself has no wildcards. */
-    if (strpbrk(dir, "*?[") != NULL) {
-        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
-        return;
-    }
+    memcpy(prefix, pat, prefix_len);
+    prefix[prefix_len] = '\0';
 
     char rel_dir[BRANCHFS_MAX_PATH];
-    if (!resolve_to_wp_relative(dir, rel_dir, sizeof(rel_dir))) {
+    if (!resolve_to_wp_relative(prefix, rel_dir, sizeof(rel_dir))) {
         original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
         return;
     }
@@ -1687,43 +1752,32 @@ ZEND_NAMED_FUNCTION(branchfs_override_glob) {
         return;
     }
 
-    /* Make sure the dir itself exists in the store — matches glob(3) semantics
-     * of returning empty (not FALSE) when the directory is valid but nothing
-     * matched, FALSE when the directory doesn't exist. */
-    int dir_is_dir = 0;
-    int dir_exists = (store_stat_file(branch_id, rel_dir, &dir_is_dir, NULL, NULL, NULL) == 0);
-    if (!dir_exists || !dir_is_dir) {
+    int prefix_is_dir = 0;
+    if (store_stat_file(branch_id, rel_dir, &prefix_is_dir, NULL, NULL, NULL) != 0 || !prefix_is_dir) {
         original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
         return;
     }
 
-    char **entries = NULL;
-    int count = 0;
-    if (store_list_dir(branch_id, rel_dir, &entries, &count) != 0) {
-        array_init(return_value);
-        return;
-    }
-
-    /* Reconstruct the canonical absolute directory prefix so results look
-     * like what glob() would normally return. */
-    char abs_dir[BRANCHFS_MAX_PATH];
-    if (rel_dir[0] == '\0') {
-        snprintf(abs_dir, sizeof(abs_dir), "%s", BRANCHFS_G(wp_root));
-    } else {
-        snprintf(abs_dir, sizeof(abs_dir), "%s/%s", BRANCHFS_G(wp_root), rel_dir);
+    /* Split the remaining tail on '/'. */
+    char tail[BRANCHFS_MAX_PATH];
+    snprintf(tail, sizeof(tail), "%s", prefix_end);
+    char *segs[64];
+    int seg_count = 0;
+    char *tok = tail;
+    while (tok && *tok && seg_count < 64) {
+        segs[seg_count++] = tok;
+        char *slash = strchr(tok, '/');
+        if (!slash) break;
+        *slash = '\0';
+        tok = slash + 1;
+        /* Skip empty segs from double-slashes. */
+        while (*tok == '/') tok++;
     }
 
     array_init(return_value);
-    for (int i = 0; i < count; i++) {
-        /* fnmatch() with default flags handles *, ?, [..]. */
-        if (fnmatch(base_pat, entries[i], 0) == 0) {
-            char full[BRANCHFS_MAX_PATH];
-            snprintf(full, sizeof(full), "%s/%s", abs_dir, entries[i]);
-            add_next_index_string(return_value, full);
-        }
-        efree(entries[i]);
+    if (seg_count > 0) {
+        branchfs_glob_walk(return_value, branch_id, rel_dir, segs, seg_count, 0, 0);
     }
-    if (entries) efree(entries);
 
     /* glob() sorts lexicographically by default (no GLOB_NOSORT). To avoid
      * depending on PHP's internal sort comparator, pull the values out,

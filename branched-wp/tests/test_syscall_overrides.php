@@ -93,6 +93,28 @@ assert_true(count($all) === 3,                  'glob * (no ext) count: ' . coun
 $none = glob("$ROOT/wp-content/nonexistent-dir/*.php");
 assert_true($none === [] || $none === false,    'glob on missing dir: [] or false');
 
+// Multi-segment glob — what WP core uses for block style discovery:
+// glob(BLOCKS_PATH . '**/**.css'). ** is just * in PHP glob (one segment).
+mkdir("branchfs://main/wp-content/blocks-fake", 0755, true);
+foreach (['navigation', 'button', 'heading'] as $b) {
+    mkdir("branchfs://main/wp-content/blocks-fake/$b", 0755, true);
+    file_put_contents("branchfs://main/wp-content/blocks-fake/$b/style.css", ".$b{}");
+}
+$multi = glob("$ROOT/wp-content/blocks-fake/*/style.css");
+assert_true(count($multi) === 3,                'glob dir/*/file count: ' . count($multi));
+$multi_names = array_map('basename', array_map('dirname', $multi));
+sort($multi_names);
+assert_true($multi_names === ['button','heading','navigation'], 'glob dir/*/file names ordered');
+
+// PHP treats ** the same as * — ensure we do too.
+$doublestar = glob("$ROOT/wp-content/blocks-fake/**/**.css");
+assert_true(count($doublestar) === 3,           'glob dir/**/**.css (WP core pattern) count: ' . count($doublestar));
+
+// Mixed literal + wildcard in the middle.
+$mid = glob("$ROOT/wp-content/blocks-fake/button/*.css");
+assert_true(count($mid) === 1 && basename($mid[0]) === 'style.css',
+                                                'glob literal/wild/file');
+
 echo "# chmod/chown/chgrp\n";
 assert_true(chmod($css, 0644) === true,         'chmod: no-op returns true');
 assert_true(chmod("$ROOT/wp-admin", 0755) === true, 'chmod on dir: true');
