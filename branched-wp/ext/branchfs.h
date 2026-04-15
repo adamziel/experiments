@@ -12,6 +12,8 @@
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <fnmatch.h>
+#include "ext/standard/php_array.h"
 
 #define PHP_BRANCHFS_VERSION "0.1.0"
 #define BRANCHFS_PROTO "branchfs"

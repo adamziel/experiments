@@ -1416,6 +1416,143 @@ ZEND_NAMED_FUNCTION(branchfs_override_is_readable) {
     branchfs_stat_check(INTERNAL_FUNCTION_PARAM_PASSTHRU, 2, original_is_readable_handler);
 }
 
+/* glob() override.
+ *
+ * glob(3) is a syscall: it doesn't go through PHP stream wrappers. Without
+ * this override, glob("/path/in/branchfs/*.php") returns FALSE (or empty)
+ * for files that only exist in the SQLite store, which breaks WordPress
+ * pattern registration (block-patterns.php uses `glob($dirpath.'*.php')`).
+ *
+ * We handle the "dir/<pattern>" form where <pattern> has no slashes and
+ * dir is under wp_root. Fallback for anything else.
+ */
+
+static zif_handler original_glob_handler = NULL;
+
+ZEND_NAMED_FUNCTION(branchfs_override_glob) {
+    zend_string *pat_z;
+    zend_long flags = 0;
+    ZEND_PARSE_PARAMETERS_START(1, 2)
+        Z_PARAM_PATH_STR(pat_z)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_LONG(flags)
+    ZEND_PARSE_PARAMETERS_END();
+    (void)flags;
+
+    if (!BRANCHFS_G(active) || !BRANCHFS_G(current_branch) || BRANCHFS_G(intercepting)) {
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+
+    const char *pat = ZSTR_VAL(pat_z);
+    if (strstr(pat, "://") != NULL) {
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+
+    /* Split pattern into dir + basename glob. We only handle the case where
+     * only the last path segment contains wildcards; if there are wildcards
+     * earlier in the path, defer to the OS handler. */
+    const char *last_slash = strrchr(pat, '/');
+    if (!last_slash) {
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+    size_t dir_len = last_slash - pat;
+    const char *base_pat = last_slash + 1;
+
+    char dir[BRANCHFS_MAX_PATH];
+    if (dir_len >= sizeof(dir)) {
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+    memcpy(dir, pat, dir_len);
+    dir[dir_len] = '\0';
+
+    /* Check that dir segment itself has no wildcards. */
+    if (strpbrk(dir, "*?[") != NULL) {
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+
+    char rel_dir[BRANCHFS_MAX_PATH];
+    if (!resolve_to_wp_relative(dir, rel_dir, sizeof(rel_dir))) {
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+
+    int branch_id = get_current_branch_id();
+    if (branch_id <= 0) {
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+
+    /* Make sure the dir itself exists in the store — matches glob(3) semantics
+     * of returning empty (not FALSE) when the directory is valid but nothing
+     * matched, FALSE when the directory doesn't exist. */
+    int dir_is_dir = 0;
+    int dir_exists = (store_stat_file(branch_id, rel_dir, &dir_is_dir, NULL, NULL, NULL) == 0);
+    if (!dir_exists || !dir_is_dir) {
+        original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+        return;
+    }
+
+    char **entries = NULL;
+    int count = 0;
+    if (store_list_dir(branch_id, rel_dir, &entries, &count) != 0) {
+        array_init(return_value);
+        return;
+    }
+
+    /* Reconstruct the canonical absolute directory prefix so results look
+     * like what glob() would normally return. */
+    char abs_dir[BRANCHFS_MAX_PATH];
+    if (rel_dir[0] == '\0') {
+        snprintf(abs_dir, sizeof(abs_dir), "%s", BRANCHFS_G(wp_root));
+    } else {
+        snprintf(abs_dir, sizeof(abs_dir), "%s/%s", BRANCHFS_G(wp_root), rel_dir);
+    }
+
+    array_init(return_value);
+    for (int i = 0; i < count; i++) {
+        /* fnmatch() with default flags handles *, ?, [..]. */
+        if (fnmatch(base_pat, entries[i], 0) == 0) {
+            char full[BRANCHFS_MAX_PATH];
+            snprintf(full, sizeof(full), "%s/%s", abs_dir, entries[i]);
+            add_next_index_string(return_value, full);
+        }
+        efree(entries[i]);
+    }
+    if (entries) efree(entries);
+
+    /* glob() sorts lexicographically by default (no GLOB_NOSORT). To avoid
+     * depending on PHP's internal sort comparator, pull the values out,
+     * qsort them, and rebuild the array. */
+    HashTable *ht = Z_ARRVAL_P(return_value);
+    int ncount = zend_hash_num_elements(ht);
+    if (ncount > 1) {
+        char **buf = emalloc(sizeof(char*) * ncount);
+        int bi = 0;
+        zval *zv;
+        ZEND_HASH_FOREACH_VAL(ht, zv) {
+            buf[bi++] = estrdup(Z_STRVAL_P(zv));
+        } ZEND_HASH_FOREACH_END();
+
+        /* qsort(3) with strcmp */
+        for (int i = 1; i < ncount; i++) {
+            for (int j = i; j > 0 && strcmp(buf[j-1], buf[j]) > 0; j--) {
+                char *t = buf[j]; buf[j] = buf[j-1]; buf[j-1] = t;
+            }
+        }
+        zend_hash_clean(ht);
+        for (int i = 0; i < ncount; i++) {
+            add_next_index_string(return_value, buf[i]);
+            efree(buf[i]);
+        }
+        efree(buf);
+    }
+}
+
 /* ================================================================
  * Section 10: Module lifecycle
  * ================================================================ */
@@ -1489,6 +1626,15 @@ PHP_MINIT_FUNCTION(branchfs) {
     if (ir_func && ir_func->type == ZEND_INTERNAL_FUNCTION) {
         original_is_readable_handler = ir_func->internal_function.handler;
         ir_func->internal_function.handler = branchfs_override_is_readable;
+    }
+
+    /* Override glob: uses glob(3) syscall, bypasses all stream wrappers.
+     * Crucial for WordPress theme pattern registration. */
+    zend_function *gl_func = zend_hash_str_find_ptr(CG(function_table),
+        "glob", sizeof("glob") - 1);
+    if (gl_func && gl_func->type == ZEND_INTERNAL_FUNCTION) {
+        original_glob_handler = gl_func->internal_function.handler;
+        gl_func->internal_function.handler = branchfs_override_glob;
     }
 
     return SUCCESS;
