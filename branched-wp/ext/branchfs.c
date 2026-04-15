@@ -419,25 +419,33 @@ static int parse_branchfs_url(const char *url, char *branch, size_t branch_len,
 }
 
 /* Resolve a path to branch-relative. Returns 1 if under WP root, 0 otherwise. */
+/* Forward declaration — defined later alongside the function overrides. */
+static int branchfs_canonicalize(const char *in, char *out, size_t out_len);
+
 static int resolve_to_wp_relative(const char *filename, char *rel_path, size_t rel_len) {
     if (!BRANCHFS_G(wp_root) || !BRANCHFS_G(active)) return 0;
 
-    char resolved[BRANCHFS_MAX_PATH];
-    const char *abs_path;
+    char joined[BRANCHFS_MAX_PATH];
+    const char *abs_in;
 
     if (filename[0] == '/') {
-        abs_path = filename;
+        abs_in = filename;
     } else {
         char cwd[BRANCHFS_MAX_PATH];
         if (getcwd(cwd, sizeof(cwd)) == NULL) return 0;
-        snprintf(resolved, sizeof(resolved), "%s/%s", cwd, filename);
-        abs_path = resolved;
+        snprintf(joined, sizeof(joined), "%s/%s", cwd, filename);
+        abs_in = joined;
     }
+
+    /* Canonicalize (resolve . and ..) before matching root, so paths like
+     * <wp_root>/wp-admin/./css/../css/foo.css match the store's stored
+     * relative path "wp-admin/css/foo.css". */
+    char abs_path[BRANCHFS_MAX_PATH];
+    if (!branchfs_canonicalize(abs_in, abs_path, sizeof(abs_path))) return 0;
 
     size_t root_len = strlen(BRANCHFS_G(wp_root));
     if (strncmp(abs_path, BRANCHFS_G(wp_root), root_len) != 0) return 0;
 
-    /* Must be exactly at root or followed by / */
     if (abs_path[root_len] == '/') {
         snprintf(rel_path, rel_len, "%s", abs_path + root_len + 1);
     } else if (abs_path[root_len] == '\0') {
@@ -446,7 +454,6 @@ static int resolve_to_wp_relative(const char *filename, char *rel_path, size_t r
         return 0;
     }
 
-    /* Remove trailing slash */
     size_t pl = strlen(rel_path);
     while (pl > 0 && rel_path[pl - 1] == '/') rel_path[--pl] = '\0';
     return 1;
@@ -1264,6 +1271,10 @@ PHP_FUNCTION(branchfs_is_active) {
  * ================================================================ */
 
 static zif_handler original_file_exists_handler = NULL;
+static zif_handler original_realpath_handler    = NULL;
+static zif_handler original_is_file_handler     = NULL;
+static zif_handler original_is_dir_handler      = NULL;
+static zif_handler original_is_readable_handler = NULL;
 
 ZEND_NAMED_FUNCTION(branchfs_override_file_exists) {
     zend_string *filename;
@@ -1285,6 +1296,124 @@ ZEND_NAMED_FUNCTION(branchfs_override_file_exists) {
         }
     }
     original_file_exists_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+/* Canonicalize a path by collapsing ./ and ../ segments. Does not touch the
+ * filesystem. Returns 0 on overflow, 1 on success. */
+static int branchfs_canonicalize(const char *in, char *out, size_t out_len) {
+    if (!in || in[0] != '/') return 0;
+    const char *segs[BRANCHFS_MAX_PATH / 2];
+    size_t seg_lens[BRANCHFS_MAX_PATH / 2];
+    int nseg = 0;
+
+    const char *p = in + 1;
+    while (*p) {
+        const char *q = p;
+        while (*q && *q != '/') q++;
+        size_t slen = q - p;
+        if (slen == 0 || (slen == 1 && p[0] == '.')) {
+            /* skip empty or "." */
+        } else if (slen == 2 && p[0] == '.' && p[1] == '.') {
+            if (nseg > 0) nseg--;
+        } else {
+            if (nseg >= (int)(sizeof(segs) / sizeof(segs[0]))) return 0;
+            segs[nseg] = p;
+            seg_lens[nseg] = slen;
+            nseg++;
+        }
+        p = q;
+        if (*p) p++;
+    }
+
+    size_t pos = 0;
+    if (nseg == 0) {
+        if (out_len < 2) return 0;
+        out[pos++] = '/';
+        out[pos] = '\0';
+        return 1;
+    }
+    for (int i = 0; i < nseg; i++) {
+        if (pos + 1 + seg_lens[i] >= out_len) return 0;
+        out[pos++] = '/';
+        memcpy(out + pos, segs[i], seg_lens[i]);
+        pos += seg_lens[i];
+    }
+    out[pos] = '\0';
+    return 1;
+}
+
+ZEND_NAMED_FUNCTION(branchfs_override_realpath) {
+    zend_string *filename;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(filename)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0 && store_file_exists(branch_id, rel_path)) {
+                    /* Reassemble the canonical absolute path from wp_root + rel. */
+                    char canon[BRANCHFS_MAX_PATH];
+                    if (rel_path[0] == '\0') {
+                        snprintf(canon, sizeof(canon), "%s", BRANCHFS_G(wp_root));
+                    } else {
+                        snprintf(canon, sizeof(canon), "%s/%s", BRANCHFS_G(wp_root), rel_path);
+                    }
+                    RETURN_STRING(canon);
+                }
+            }
+        }
+    }
+    original_realpath_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+/* Shared body for is_file / is_dir / is_readable overrides. */
+static void branchfs_stat_check(INTERNAL_FUNCTION_PARAMETERS, int want_dir, zif_handler fallback) {
+    zend_string *filename;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(filename)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0) {
+                    int is_dir = 0;
+                    size_t sz = 0;
+                    int mode = 0;
+                    time_t mtime = 0;
+                    int r = store_stat_file(branch_id, rel_path, &is_dir, &sz, &mode, &mtime);
+                    if (r != 0) {
+                        RETURN_FALSE;
+                    }
+                    if (want_dir == 0) {
+                        RETURN_BOOL(!is_dir);       /* is_file */
+                    } else if (want_dir == 1) {
+                        RETURN_BOOL(is_dir);        /* is_dir */
+                    } else {
+                        RETURN_TRUE;                /* is_readable */
+                    }
+                }
+            }
+        }
+    }
+    fallback(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+ZEND_NAMED_FUNCTION(branchfs_override_is_file) {
+    branchfs_stat_check(INTERNAL_FUNCTION_PARAM_PASSTHRU, 0, original_is_file_handler);
+}
+ZEND_NAMED_FUNCTION(branchfs_override_is_dir) {
+    branchfs_stat_check(INTERNAL_FUNCTION_PARAM_PASSTHRU, 1, original_is_dir_handler);
+}
+ZEND_NAMED_FUNCTION(branchfs_override_is_readable) {
+    branchfs_stat_check(INTERNAL_FUNCTION_PARAM_PASSTHRU, 2, original_is_readable_handler);
 }
 
 /* ================================================================
@@ -1331,6 +1460,35 @@ PHP_MINIT_FUNCTION(branchfs) {
     if (fe_func && fe_func->type == ZEND_INTERNAL_FUNCTION) {
         original_file_exists_handler = fe_func->internal_function.handler;
         fe_func->internal_function.handler = branchfs_override_file_exists;
+    }
+
+    /* Override realpath: goes straight to realpath(3), bypasses wrappers. */
+    zend_function *rp_func = zend_hash_str_find_ptr(CG(function_table),
+        "realpath", sizeof("realpath") - 1);
+    if (rp_func && rp_func->type == ZEND_INTERNAL_FUNCTION) {
+        original_realpath_handler = rp_func->internal_function.handler;
+        rp_func->internal_function.handler = branchfs_override_realpath;
+    }
+
+    /* Override is_file / is_dir / is_readable — stat-family calls that can
+     * bypass the url_stat path for plain filenames. */
+    zend_function *if_func = zend_hash_str_find_ptr(CG(function_table),
+        "is_file", sizeof("is_file") - 1);
+    if (if_func && if_func->type == ZEND_INTERNAL_FUNCTION) {
+        original_is_file_handler = if_func->internal_function.handler;
+        if_func->internal_function.handler = branchfs_override_is_file;
+    }
+    zend_function *id_func = zend_hash_str_find_ptr(CG(function_table),
+        "is_dir", sizeof("is_dir") - 1);
+    if (id_func && id_func->type == ZEND_INTERNAL_FUNCTION) {
+        original_is_dir_handler = id_func->internal_function.handler;
+        id_func->internal_function.handler = branchfs_override_is_dir;
+    }
+    zend_function *ir_func = zend_hash_str_find_ptr(CG(function_table),
+        "is_readable", sizeof("is_readable") - 1);
+    if (ir_func && ir_func->type == ZEND_INTERNAL_FUNCTION) {
+        original_is_readable_handler = ir_func->internal_function.handler;
+        ir_func->internal_function.handler = branchfs_override_is_readable;
     }
 
     return SUCCESS;
