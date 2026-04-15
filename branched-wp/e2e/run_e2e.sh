@@ -12,18 +12,18 @@
 set -euo pipefail
 
 # ---- Configuration ----
-BASE_DIR="/home/claude/single-dir-container"
-E2E_DIR="$BASE_DIR/e2e"
-WP_SRC="$E2E_DIR/wp-src"
-WORK_DIR="/tmp/branchfs-e2e-$$"
-DOLT_PORT=13306
-PHP_PORT=18080
-BRANCHFS_SECRET="e2e-test-secret"
-SITE_TITLE="Branched WP"
+E2E_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="$(cd "$E2E_DIR/.." && pwd)"
+WP_SRC="${WP_SRC:-$E2E_DIR/wp-src}"
+WORK_DIR="${WORK_DIR:-/tmp/branchfs-e2e-$$}"
+DOLT_PORT="${DOLT_PORT:-13306}"
+PHP_PORT="${PHP_PORT:-18080}"
+BRANCHFS_SECRET="${BRANCHFS_SECRET:-e2e-test-secret}"
+SITE_TITLE="${SITE_TITLE:-Branched WP}"
 
-PHP_BIN="/run/current-system/sw/bin/php"
+PHP_BIN="${PHP_BIN:-php}"
 PHP="$PHP_BIN -d extension=$BASE_DIR/ext/branchfs.so -d display_errors=Off -d display_startup_errors=Off"
-DOLT="$HOME/.local/bin/dolt"
+DOLT="${DOLT:-$(command -v dolt || echo "$HOME/.local/bin/dolt")}"
 
 DB_PATH="$WORK_DIR/branchfs.db"
 WP_ROOT="$WORK_DIR/wproot"

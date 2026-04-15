@@ -36,10 +36,28 @@ The script:
 
 Re-running from scratch is idempotent. Exit code is non-zero on any failure.
 
+## Manual mode
+
+`dev.sh` bootstraps the same stack as `run_e2e.sh` (Dolt + branchfs + real
+WordPress + php -S router) and then stays running so you can hit it from a
+browser. Binds to `0.0.0.0:18080` by default so it's reachable from your
+host.
+
+```bash
+bash e2e/dev.sh
+# open http://localhost:18080/
+# admin: http://localhost:18080/wp-login.php  (admin / admin)
+```
+
+The bootstrap output prints recipes for creating a preview branch, minting a
+signed cookie, and merging back. See the top-level README for a worked
+example.
+
 ## Files
 
 | File | Purpose |
 | --- | --- |
-| `run_e2e.sh` | The driver script |
+| `run_e2e.sh` | Automated 8-step driver (exits non-zero on failure) |
+| `dev.sh` | Manual mode — bootstrap + keep servers running |
 | `bootstrap_wp.php` | Writes branch-aware `wp-config.php` into the store, installs WordPress via `wp_install()` |
 | `router.php` | `php -S` front controller — resolves branch from cookie/header, activates branchfs, serves PHP or static assets |
