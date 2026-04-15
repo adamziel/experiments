@@ -3,69 +3,326 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>WordPress Playground UX Redesign — 3 Directions</title>
+<title>WordPress Playground UX Mockups</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif; color: #1e1e1e; background: #f9f9f9; line-height: 1.6; }
-  .hero { background: linear-gradient(135deg, #3858e9 0%, #1e4bd8 100%); color: #fff; padding: 3rem 1.5rem; text-align: center; }
-  .hero h1 { font-size: clamp(1.5rem, 4vw, 2.4rem); font-weight: 700; margin-bottom: .75rem; }
-  .hero p { max-width: 640px; margin: 0 auto; font-size: clamp(.95rem, 2vw, 1.1rem); opacity: .92; }
-  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 1.5rem; max-width: 1100px; margin: -2rem auto 3rem; padding: 0 1.5rem; position: relative; z-index: 1; }
-  .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); overflow: hidden; transition: transform .15s, box-shadow .15s; display: flex; flex-direction: column; }
-  .card:hover { transform: translateY(-3px); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
-  .card-preview { height: 180px; display: flex; align-items: center; justify-content: center; font-size: 3rem; }
-  .card-preview.c1 { background: linear-gradient(135deg, #e8f5e9, #c8e6c9); }
-  .card-preview.c2 { background: linear-gradient(135deg, #e3f2fd, #bbdefb); }
-  .card-preview.c3 { background: linear-gradient(135deg, #fff3e0, #ffe0b2); }
-  .card-body { padding: 1.25rem; flex: 1; display: flex; flex-direction: column; }
-  .card-body h2 { font-size: 1.15rem; margin-bottom: .35rem; }
-  .card-body .tag { display: inline-block; font-size: .75rem; font-weight: 600; padding: .15rem .5rem; border-radius: 4px; margin-bottom: .5rem; }
-  .tag.t1 { background: #e8f5e9; color: #2e7d32; }
-  .tag.t2 { background: #e3f2fd; color: #1565c0; }
-  .tag.t3 { background: #fff3e0; color: #e65100; }
-  .card-body p { font-size: .9rem; color: #555; flex: 1; }
-  .card-body a { display: inline-block; margin-top: .75rem; font-weight: 600; color: #3858e9; text-decoration: none; font-size: .95rem; }
-  .card-body a:hover { text-decoration: underline; }
-  .card-body a:focus-visible { outline: 2px solid #3858e9; outline-offset: 2px; border-radius: 3px; }
-  footer { text-align: center; padding: 2rem 1rem; font-size: .85rem; color: #888; }
+  :root {
+    --bg: #f8f9fa;
+    --surface: #ffffff;
+    --border: #e1e4e8;
+    --text: #1a1a2e;
+    --text-muted: #6b7280;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --radius-sm: 6px;
+    --radius-md: 12px;
+    --radius-lg: 16px;
+    --shadow-sm: 0 1px 2px rgba(0,0,0,.05);
+    --shadow-md: 0 1px 3px rgba(0,0,0,.06), 0 4px 16px rgba(0,0,0,.08);
+    --shadow-lg: 0 4px 6px rgba(0,0,0,.05), 0 10px 40px rgba(0,0,0,.12);
+    --space-1: 4px;
+    --space-2: 8px;
+    --space-3: 12px;
+    --space-4: 16px;
+    --space-5: 24px;
+    --space-6: 32px;
+    --space-7: 48px;
+    --space-8: 64px;
+    --font-xs: 12px;
+    --font-sm: 13px;
+    --font-base: 15px;
+    --font-lg: 18px;
+    --font-xl: 24px;
+    --font-2xl: 36px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: var(--space-6) var(--space-5);
+    text-align: center;
+  }
+  .header-inner {
+    max-width: 1100px;
+    margin: 0 auto;
+  }
+  .header h1 {
+    font-size: var(--font-2xl);
+    font-weight: 700;
+    letter-spacing: -0.5px;
+    margin-bottom: var(--space-2);
+  }
+  .header h1 span { color: var(--accent); }
+  .header p {
+    font-size: var(--font-lg);
+    color: var(--text-muted);
+    max-width: 640px;
+    margin: 0 auto;
+  }
+
+  .badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 20px;
+    font-size: var(--font-xs);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .badge-dark { background: #1e1e1e; color: #e0e0e0; }
+  .badge-light { background: #e8f0fe; color: #1a73e8; }
+  .badge-blue { background: #007acc; color: #fff; }
+
+  .grid {
+    max-width: 1100px;
+    margin: var(--space-7) auto;
+    padding: 0 var(--space-5);
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: var(--space-5);
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    overflow: hidden;
+    transition: box-shadow 0.25s ease, transform 0.25s ease;
+    text-decoration: none;
+    color: inherit;
+    display: flex;
+    flex-direction: column;
+  }
+  .card:hover {
+    box-shadow: var(--shadow-lg);
+    transform: translateY(-2px);
+  }
+
+  .card-img {
+    width: 100%;
+    aspect-ratio: 16/10;
+    background: #e5e7eb;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    position: relative;
+  }
+  .card-img img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    object-position: top left;
+  }
+  .card-img-placeholder {
+    color: var(--text-muted);
+    font-size: var(--font-sm);
+  }
+
+  .card-body {
+    padding: var(--space-5);
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+  }
+  .card-body h2 {
+    font-size: var(--font-lg);
+    font-weight: 600;
+    margin-bottom: var(--space-1);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .card-body .ref {
+    font-size: var(--font-sm);
+    color: var(--accent);
+    font-weight: 500;
+    margin-bottom: var(--space-3);
+  }
+  .card-body p {
+    font-size: var(--font-sm);
+    color: var(--text-muted);
+    line-height: 1.55;
+    flex: 1;
+  }
+  .card-footer {
+    padding: var(--space-3) var(--space-5);
+    border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--font-xs);
+    color: var(--accent);
+    font-weight: 500;
+  }
+  .card-footer svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .features {
+    max-width: 1100px;
+    margin: 0 auto var(--space-7);
+    padding: 0 var(--space-5);
+  }
+  .features h3 {
+    font-size: var(--font-base);
+    font-weight: 600;
+    margin-bottom: var(--space-3);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-size: var(--font-xs);
+  }
+  .feature-grid {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--space-3);
+  }
+  .feature-item {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: var(--space-4);
+  }
+  .feature-item strong {
+    display: block;
+    font-size: var(--font-sm);
+    margin-bottom: var(--space-1);
+  }
+  .feature-item span {
+    font-size: var(--font-xs);
+    color: var(--text-muted);
+  }
+
+  .footer {
+    text-align: center;
+    padding: var(--space-6) var(--space-5);
+    color: var(--text-muted);
+    font-size: var(--font-sm);
+    border-top: 1px solid var(--border);
+  }
+
+  @media (max-width: 900px) {
+    .grid { grid-template-columns: 1fr; max-width: 520px; }
+    .feature-grid { grid-template-columns: repeat(2, 1fr); }
+    .header h1 { font-size: var(--font-xl); }
+  }
+  @media (max-width: 480px) {
+    .feature-grid { grid-template-columns: 1fr; }
+    .header { padding: var(--space-5) var(--space-4); }
+    .grid { padding: 0 var(--space-4); }
+  }
 </style>
 </head>
 <body>
-  <div class="hero">
-    <h1>WordPress Playground UX Redesign</h1>
-    <p>playground.wordpress.net packs powerful features behind a cluttered interface. Too many icon-only buttons, technical settings front-and-center, and no clear starting point for newcomers. Below are three distinct design directions that explore different ways to fix these friction points.</p>
-  </div>
-
-  <div class="cards">
-    <div class="card">
-      <div class="card-preview c1" aria-hidden="true">&#9998;</div>
-      <div class="card-body">
-        <span class="tag t1">Direction 1</span>
-        <h2>Progressive Disclosure</h2>
-        <p>One big "Launch WordPress" button. Technical settings are tucked into expandable accordion sections that reveal themselves only when you need them.</p>
-        <a href="mockup-1-progressive-disclosure/index.html">Open mockup &rarr;</a>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-preview c2" aria-hidden="true">&#8984;</div>
-      <div class="card-body">
-        <span class="tag t2">Direction 2</span>
-        <h2>Command Palette</h2>
-        <p>Full-bleed WordPress preview with a floating mini-toolbar. Press Ctrl/Cmd+K to open a searchable command palette that replaces menus and modals.</p>
-        <a href="mockup-2-command-palette/index.html">Open mockup &rarr;</a>
-      </div>
-    </div>
-    <div class="card">
-      <div class="card-preview c3" aria-hidden="true">&#9638;</div>
-      <div class="card-body">
-        <span class="tag t3">Direction 3</span>
-        <h2>Dashboard with Cards</h2>
-        <p>A home screen showing your sites as cards alongside starter templates. Click a card to open its WordPress instance. Manage everything from the dashboard.</p>
-        <a href="mockup-3-dashboard/index.html">Open mockup &rarr;</a>
-      </div>
+  <div class="header">
+    <div class="header-inner">
+      <h1>Playground UX <span>Mockups</span></h1>
+      <p>Three product-grade directions for redesigning playground.wordpress.net, each inspired by a distinct real-world product.</p>
     </div>
   </div>
 
-  <footer>WordPress Playground UX Exploration &middot; 2026</footer>
+  <div class="grid">
+    <a class="card" href="mockup-1-figma/index.html">
+      <div class="card-img">
+        <img src="screenshots/mockup-1-1280.png" alt="Figma-inspired mockup" onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=card-img-placeholder>Figma-inspired mockup</span>';">
+      </div>
+      <div class="card-body">
+        <h2>Direction 1 <span class="badge badge-dark">Dark</span></h2>
+        <div class="ref">Inspired by Figma</div>
+        <p>Floating toolbar, inspector panel, canvas metaphor. Settings in a right-side panel with tabs. Draft badge and dot-grid canvas. Great for users who think of their WordPress setup as a designable artifact.</p>
+      </div>
+      <div class="card-footer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        Open mockup
+      </div>
+    </a>
+
+    <a class="card" href="mockup-2-docs/index.html">
+      <div class="card-img">
+        <img src="screenshots/mockup-2-1280.png" alt="Google Docs-inspired mockup" onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=card-img-placeholder>Google Docs-inspired mockup</span>';">
+      </div>
+      <div class="card-body">
+        <h2>Direction 2 <span class="badge badge-light">Light</span></h2>
+        <div class="ref">Inspired by Google Docs</div>
+        <p>Clean document-centered layout with autosave indicator, menu bar, toolbar ribbon, and blue Share button. Slash commands for plugin install. Settings in a right sidebar panel.</p>
+      </div>
+      <div class="card-footer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        Open mockup
+      </div>
+    </a>
+
+    <a class="card" href="mockup-3-vscode/index.html">
+      <div class="card-img">
+        <img src="screenshots/mockup-3-1280.png" alt="VS Code-inspired mockup" onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=card-img-placeholder>VS Code-inspired mockup</span>';">
+      </div>
+      <div class="card-body">
+        <h2>Direction 3 <span class="badge badge-blue">Dark</span></h2>
+        <div class="ref">Inspired by VS Code</div>
+        <p>Activity bar, file tabs with unsaved dot, command palette, and status bar. Extensions panel for plugins. Settings as a tab. Keyboard-driven workflow with information-dense chrome.</p>
+      </div>
+      <div class="card-footer">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+        Open mockup
+      </div>
+    </a>
+  </div>
+
+  <div class="features">
+    <h3>Every mockup includes</h3>
+    <div class="feature-grid">
+      <div class="feature-item">
+        <strong>Inline-editable title</strong>
+        <span>Click to rename the site/session. Enter to save, Esc to cancel.</span>
+      </div>
+      <div class="feature-item">
+        <strong>Unsaved state indicator</strong>
+        <span>Visual feedback when settings change, styled per reference product.</span>
+      </div>
+      <div class="feature-item">
+        <strong>Save / Export / Share</strong>
+        <span>Save to browser, download ZIP, push to GitHub, copy live URL.</span>
+      </div>
+      <div class="feature-item">
+        <strong>Settings panel</strong>
+        <span>PHP/WP version, extensions, storage mode, network, language.</span>
+      </div>
+      <div class="feature-item">
+        <strong>Plugin install</strong>
+        <span>Install plugins via the reference product's idiom (palette, slash, panel).</span>
+      </div>
+      <div class="feature-item">
+        <strong>Keyboard shortcuts</strong>
+        <span>Ctrl/Cmd+S to save. Shortcut hints visible in all menus.</span>
+      </div>
+      <div class="feature-item">
+        <strong>Responsive design</strong>
+        <span>Works at 360px, 768px, and 1280px. Panels collapse on mobile.</span>
+      </div>
+      <div class="feature-item">
+        <strong>Feedback toasts</strong>
+        <span>Every action shows a toast notification with auto-dismiss.</span>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    WordPress Playground UX Mockups &middot; Three directions for playground.wordpress.net
+  </div>
 </body>
 </html>

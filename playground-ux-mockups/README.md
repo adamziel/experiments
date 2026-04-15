@@ -1,53 +1,55 @@
-# WordPress Playground UX Redesign Mockups
+# WordPress Playground UX Mockups (v2)
 
-## Current-State Friction Points
+## Friction analysis of current playground.wordpress.net
 
-- **Too many buttons at once**: The top chrome bar shows 10+ icon-only buttons (share, settings, download, restart, GitHub, reporting, feedback) with no labels — users can't tell what they do without hovering.
-- **Technical options front-and-center**: PHP version, PHP extensions, storage mode, and networking toggle are immediately visible in the sidebar even though most visitors just want to try WordPress or preview a plugin.
-- **No clear primary action**: On first load, newcomers face a wall of options with no guidance on what to do first.
-- **Flat modal/settings hierarchy**: "Install plugin", "Import blueprint", and "Fork on GitHub" all compete for attention at the same level despite serving very different audiences.
-- **Cramped mobile layout**: The iframe is squeezed by chrome, and feature discovery is buried behind a hamburger menu.
-- **Tangled concepts**: Site switching, blueprint management, and storage persistence are interleaved in the same sidebar, making each harder to understand.
-- **No onboarding path**: First-time visitors and power users see the same interface with no progressive complexity.
-- **Missing visual hierarchy**: Everything is small, gray, and icon-based — nothing draws the eye toward the most common workflows.
+The current playground.wordpress.net UI suffers from several UX friction points:
 
-## Three Design Directions
+1. **Too many icon buttons without hierarchy** — The toolbar presents a flat row of icons with no visual grouping, making it hard to identify the primary action or understand what each icon does without hovering.
+2. **No clear document/session identity** — Users land on an unnamed, unsaved session with no indication of its draft/temporary state. There's no filename, no "Untitled" placeholder, and no unsaved indicator.
+3. **Buried technical settings** — Critical options like PHP version, WP version, PHP extensions, and storage mode are hidden in flat menus with no visual hierarchy or grouping.
+4. **No obvious primary action** — Save, Share, Export, and Settings all compete for attention at the same level. There's no visual weight guiding users to what matters most.
+5. **Tangled concepts** — "Site", "Blueprint", and "Storage" are distinct concepts but overlap in the UI. Users can't easily understand what they're editing vs. what they're configuring.
+6. **Poor mobile experience** — The icon-heavy toolbar doesn't adapt well to narrow screens, causing overflow and cramped touch targets.
+7. **No feedback loop** — Actions like changing PHP version or toggling storage mode happen silently with no visual confirmation, leaving users unsure if their change took effect.
 
-### Direction 1: Progressive Disclosure
+## Three directions
 
-- **Core bet**: Most users just want to launch WordPress and start exploring. Technical options should exist but stay out of the way until needed.
-- **Optimizes for**: First-time visitors, low time-to-WordPress, clean visual hierarchy.
-- **Sacrifices**: Power users need an extra click to reach advanced settings. Less information density on screen.
-- **Key interaction**: A single "Launch WordPress" CTA on first load. Settings are organized into collapsible accordion sections in a sidebar that slides in on demand.
+Each mockup takes a different real-world product's visual language and interaction model for the "draft document + save + settings + export" primitive and applies it to WordPress Playground.
 
-### Direction 2: Command Palette
+### Direction 1: Figma (Design Tool)
+**Reference product:** Figma  
+**Directory:** `mockup-1-figma/`  
+**Theme:** Dark
 
-- **Core bet**: A keyboard-driven command palette (Cmd/Ctrl+K) can replace most of the toolbar and sidebar, maximizing the WordPress preview area.
-- **Optimizes for**: Power users, keyboard efficiency, screen real estate for the WordPress iframe.
-- **Sacrifices**: Discoverability for mouse-primary users. Relies on users learning the shortcut.
-- **Key interaction**: Full-bleed WordPress preview with a minimal floating toolbar. Pressing Cmd/Ctrl+K opens a searchable, filterable command palette for all actions.
+Borrows Figma's floating toolbar, inspector panel, and canvas metaphor. The WordPress preview sits on a dark dot-grid canvas. A "Draft" badge near the filename signals unsaved state. Settings live in a right-side inspector panel with tabs (Runtime, Storage, Network). The Share button is prominent and blue. Zoom controls sit in the bottom-right corner. A layers panel on the left shows WordPress structural elements (Pages, Templates, Plugins).
 
-### Direction 3: Dashboard with Cards
+**Best for:** Users who think of their WordPress setup as a designable artifact — tweaking versions, extensions, and plugins like adjusting layers in a design file.
 
-- **Core bet**: Users who return to Playground manage multiple sites/experiments. A card-based dashboard makes sites, templates, and recent activity the primary surface.
-- **Optimizes for**: Returning users, site management, template discovery, visual overview.
-- **Sacrifices**: Immediate WordPress access requires one more click. More chrome on screen.
-- **Key interaction**: A grid of site cards and starter templates. Click a card to open its WordPress instance. Each card shows key metadata (WP version, storage type, last modified).
+### Direction 2: Google Docs (Document)
+**Reference product:** Google Docs  
+**Directory:** `mockup-2-docs/`  
+**Theme:** Light
 
-## How to View
+Borrows Docs' clean document-centered layout with an autosave indicator ("Saving…" → "All changes saved in browser"), menu bar, toolbar ribbon, and blue Share button with avatar stack. The WordPress preview appears as a centered "page" on a light gray background. Settings open as a right sidebar panel. Slash commands (/) let users install plugins inline.
 
-Open the landing page directly in any modern browser:
+**Best for:** Users who see their Playground session as a document they're drafting — the metaphor of "all changes saved" communicates the ephemeral-yet-persistent nature of browser storage naturally.
 
-```bash
-open playground-ux-mockups/index.html
-```
+### Direction 3: VS Code (IDE)
+**Reference product:** Visual Studio Code  
+**Directory:** `mockup-3-vscode/`  
+**Theme:** Dark
 
-Or serve locally:
+Borrows VS Code's activity bar, file tabs with unsaved dot indicators, command palette (Ctrl+Shift+P), and status bar. The WordPress preview lives in the editor area. An Extensions sidebar panel lets users browse and install plugins like VS Code extensions. Settings open as a tab with grouped options. The blue status bar at the bottom surfaces PHP version, WP version, storage mode, and plugin count.
 
-```bash
-cd playground-ux-mockups
-python3 -m http.server 8080
-# Then visit http://localhost:8080
-```
+**Best for:** Developer-oriented users who are comfortable with IDE conventions and appreciate keyboard-driven workflows, command palettes, and information-dense status bars.
 
-Each mockup is a self-contained HTML file with inline CSS and JS. No build step or dependencies required.
+## How to view
+
+1. Open any mockup's `index.html` directly in a modern browser (Chrome, Firefox, Safari, Edge).
+2. Or open `index.html` in the root of this directory for a landing page with thumbnails linking to each direction.
+3. All mockups are fully self-contained — no build step, no npm, no server required.
+4. Interact with each mockup: click the title to rename, open settings, save, share, install plugins, and try keyboard shortcuts (Ctrl/Cmd+S to save, Ctrl/Cmd+Shift+P for command palette in the VS Code mockup).
+
+## Screenshots
+
+Pre-rendered screenshots at three viewport widths (360px, 768px, 1280px) are in `screenshots/`.
