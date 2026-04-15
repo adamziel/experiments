@@ -50,10 +50,15 @@ cleanup() {
 trap cleanup EXIT
 
 mint_cookie() {
+    # Legacy shim kept for compatibility with earlier step numbering; the
+    # router now routes by subdomain, so preview requests use a Host header
+    # like `branch.wp.localhost` instead of a signed cookie.
     local branch="$1"
-    local sig
-    sig=$($PHP_BIN -r "echo hash_hmac('sha256', '$branch', '$BRANCHFS_SECRET');")
-    echo "wp_branch=${branch}:${sig}"
+    echo "$branch.wp.localhost"
+}
+
+host_for() {
+    echo "$1.wp.localhost"
 }
 
 # Run a single SQL statement against Dolt
@@ -96,6 +101,16 @@ bfs_php() {
 
 fetch() {
     curl -sL --max-time 15 "$@" 2>/dev/null
+}
+
+# Fetch a URL into a scratch file under $WORK_DIR and echo the filename.
+# Reading the body through a file avoids bash $VAR -> echo -> grep issues
+# that bite when the response is >~16KB or contains awkward bytes.
+fetch_to_file() {
+    local name="$1"; shift
+    local out="$WORK_DIR/fetch-$name.txt"
+    curl -sL --max-time 15 -o "$out" "$@" 2>/dev/null
+    echo "$out"
 }
 
 # ---- Kill old processes ----
@@ -179,14 +194,10 @@ set +e
 # STEP 1: Main branch request
 # ============================================================
 
-BODY=$(fetch "http://127.0.0.1:$PHP_PORT/")
+F=$(fetch_to_file step1 "http://127.0.0.1:$PHP_PORT/")
 
-HAS_TITLE=$(echo "$BODY" | grep -qi "$SITE_TITLE" && echo y || echo n)
-HAS_HELLO=$(echo "$BODY" | grep -qi "Hello world" && echo y || echo n)
-HAS_HTML=$(echo "$BODY" | grep -qi '<html' && echo y || echo n)
-
-if [ "$HAS_TITLE" = "y" ] && [ "$HAS_HTML" = "y" ]; then
-    if [ "$HAS_HELLO" = "y" ]; then
+if grep -qi "$SITE_TITLE" "$F" && grep -qi '<html' "$F"; then
+    if grep -qi "Hello world" "$F"; then
         echo "STEP 1 PASS: main / returns 200 with '$SITE_TITLE' and 'Hello world!'"
     else
         echo "STEP 1 PASS: main / returns 200 with '$SITE_TITLE' (valid WordPress HTML)"
@@ -194,9 +205,8 @@ if [ "$HAS_TITLE" = "y" ] && [ "$HAS_HTML" = "y" ]; then
     S1=1
 else
     echo "STEP 1 FAIL: main / did not return expected content"
-    echo "  Body length: ${#BODY}"
-    echo "  Title: $(echo "$BODY" | grep -oiP '<title>[^<]+' | head -1)"
-    echo "  Has HTML: $HAS_HTML"
+    echo "  Body size: $(wc -c < "$F")"
+    echo "  Title: $(grep -oiP '<title>[^<]+' "$F" | head -1)"
 fi
 
 # ============================================================
@@ -240,32 +250,32 @@ fi
 # STEP 3: Preview branch request
 # ============================================================
 
-COOKIE_A=$(mint_cookie "preview-a")
+HOST_A=$(host_for "preview-a")
 S3_OK=true
 
-PREVIEW_BODY=$(fetch -b "$COOKIE_A" "http://127.0.0.1:$PHP_PORT/")
-if echo "$PREVIEW_BODY" | grep -qi "Preview A Site"; then
+F=$(fetch_to_file step3a -H "Host: $HOST_A" "http://127.0.0.1:$PHP_PORT/")
+if grep -qi "Preview A Site" "$F"; then
     echo "STEP 3 PASS: preview-a / reflects modified title 'Preview A Site'"
 else
     echo "STEP 3 FAIL: preview-a / did not show 'Preview A Site'"
-    echo "  Title: $(echo "$PREVIEW_BODY" | grep -oiP '<title>[^<]+' | head -1)"
+    echo "  Title: $(grep -oiP '<title>[^<]+' "$F" | head -1)"
     S3_OK=false
 fi
 
-PREVIEW_CSS=$(fetch -b "$COOKIE_A" "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
-if echo "$PREVIEW_CSS" | grep -q "preview-a marker"; then
+F=$(fetch_to_file step3css -H "Host: $HOST_A" "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
+if grep -q "preview-a marker" "$F"; then
     echo "STEP 3 PASS: preview-a stylesheet contains '/* preview-a marker */'"
 else
     echo "STEP 3 FAIL: preview-a stylesheet missing marker"
     S3_OK=false
 fi
 
-MAIN_BODY2=$(fetch "http://127.0.0.1:$PHP_PORT/")
-if echo "$MAIN_BODY2" | grep -qi "$SITE_TITLE" && ! echo "$MAIN_BODY2" | grep -qi "Preview A Site"; then
+F=$(fetch_to_file step3main "http://127.0.0.1:$PHP_PORT/")
+if grep -qi "$SITE_TITLE" "$F" && ! grep -qi "Preview A Site" "$F"; then
     echo "STEP 3 PASS: main / unchanged (no cookie)"
 else
     echo "STEP 3 FAIL: main / was contaminated or missing title"
-    echo "  Title: $(echo "$MAIN_BODY2" | grep -oiP '<title>[^<]+' | head -1)"
+    echo "  Title: $(grep -oiP '<title>[^<]+' "$F" | head -1)"
     S3_OK=false
 fi
 
@@ -285,16 +295,16 @@ dolt_session \
     "CALL DOLT_COMMIT('--allow-empty', '-am', 'Auto-commit before merge')" \
     "CALL DOLT_MERGE('preview-a')" > /dev/null 2>&1
 
-MERGED_BODY=$(fetch "http://127.0.0.1:$PHP_PORT/")
-MERGED_CSS=$(fetch "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
+FB=$(fetch_to_file step4body "http://127.0.0.1:$PHP_PORT/")
+FC=$(fetch_to_file step4css "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
 
-if echo "$MERGED_BODY" | grep -qi "Preview A Site" && echo "$MERGED_CSS" | grep -q "preview-a marker"; then
+if grep -qi "Preview A Site" "$FB" && grep -q "preview-a marker" "$FC"; then
     echo "STEP 4 PASS: merge preview-a -> main completed, main reflects changes"
     S4=1
 else
     echo "STEP 4 FAIL: merge did not propagate changes to main"
-    echo "  Title: $(echo "$MERGED_BODY" | grep -oiP '<title>[^<]+' | head -1)"
-    echo "  CSS marker: $(echo "$MERGED_CSS" | grep 'preview-a marker' | head -1)"
+    echo "  Title: $(grep -oiP '<title>[^<]+' "$FB" | head -1)"
+    echo "  CSS marker: $(grep 'preview-a marker' "$FC" | head -1)"
 fi
 
 # ============================================================
@@ -319,17 +329,19 @@ bfs_php -r "
     );
 " 2>/dev/null
 
-REVERTED_BODY=$(fetch "http://127.0.0.1:$PHP_PORT/")
-REVERTED_CSS=$(fetch "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
+FB=$(fetch_to_file step5body "http://127.0.0.1:$PHP_PORT/")
+FC=$(fetch_to_file step5css "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
 
-if echo "$REVERTED_BODY" | grep -qi "$SITE_TITLE" && \
-   ! echo "$REVERTED_BODY" | grep -qi "Preview A Site" && \
-   ! echo "$REVERTED_CSS" | grep -q "preview-a marker"; then
+if grep -qi "$SITE_TITLE" "$FB" && \
+   ! grep -qi "Preview A Site" "$FB" && \
+   ! grep -q "preview-a marker" "$FC"; then
     echo "STEP 5 PASS: revert restored main to original state"
     S5=1
 else
     echo "STEP 5 FAIL: revert did not restore original state"
-    echo "  Title: $(echo "$REVERTED_BODY" | grep -oiP '<title>[^<]+' | head -1)"
+    echo "  Title: $(grep -oiP '<title>[^<]+' "$FB" | head -1)"
+    grep -qi "Preview A Site" "$FB" && echo "  (body still has 'Preview A Site')"
+    grep -q "preview-a marker" "$FC" && echo "  (css still has 'preview-a marker')"
 fi
 
 # ============================================================
@@ -402,41 +414,41 @@ for BNAME in preview-c preview-d preview-e; do
     " 2>/dev/null
 done
 
-COOKIE_C=$(mint_cookie "preview-c")
-COOKIE_D=$(mint_cookie "preview-d")
-COOKIE_E=$(mint_cookie "preview-e")
+HOST_C=$(host_for "preview-c")
+HOST_D=$(host_for "preview-d")
+HOST_E=$(host_for "preview-e")
 
-fetch -b "$COOKIE_C" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-c.txt" &
+fetch -H "Host: $HOST_C" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-c.txt" &
 PID_C=$!
-fetch -b "$COOKIE_D" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-d.txt" &
+fetch -H "Host: $HOST_D" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-d.txt" &
 PID_D=$!
-fetch -b "$COOKIE_E" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-e.txt" &
+fetch -H "Host: $HOST_E" "http://127.0.0.1:$PHP_PORT/" > "$WORK_DIR/body-e.txt" &
 PID_E=$!
 
 wait $PID_C $PID_D $PID_E 2>/dev/null || true
 
-BODY_C=$(cat "$WORK_DIR/body-c.txt" 2>/dev/null)
-BODY_D=$(cat "$WORK_DIR/body-d.txt" 2>/dev/null)
-BODY_E=$(cat "$WORK_DIR/body-e.txt" 2>/dev/null)
+FILE_C="$WORK_DIR/body-c.txt"
+FILE_D="$WORK_DIR/body-d.txt"
+FILE_E="$WORK_DIR/body-e.txt"
 
 S7_OK=true
 
-echo "$BODY_C" | grep -qi "Branch c Title" || { echo "  preview-c did not show 'Branch c Title'"; S7_OK=false; }
-echo "$BODY_D" | grep -qi "Branch d Title" || { echo "  preview-d did not show 'Branch d Title'"; S7_OK=false; }
-echo "$BODY_E" | grep -qi "Branch e Title" || { echo "  preview-e did not show 'Branch e Title'"; S7_OK=false; }
+grep -qi "Branch c Title" "$FILE_C" || { echo "  preview-c did not show 'Branch c Title'"; S7_OK=false; }
+grep -qi "Branch d Title" "$FILE_D" || { echo "  preview-d did not show 'Branch d Title'"; S7_OK=false; }
+grep -qi "Branch e Title" "$FILE_E" || { echo "  preview-e did not show 'Branch e Title'"; S7_OK=false; }
 
-echo "$BODY_C" | grep -qi "Branch d Title\|Branch e Title" && { echo "  preview-c contaminated"; S7_OK=false; } || true
-echo "$BODY_D" | grep -qi "Branch c Title\|Branch e Title" && { echo "  preview-d contaminated"; S7_OK=false; } || true
-echo "$BODY_E" | grep -qi "Branch c Title\|Branch d Title" && { echo "  preview-e contaminated"; S7_OK=false; } || true
+grep -qEi "Branch (d|e) Title" "$FILE_C" && { echo "  preview-c contaminated"; S7_OK=false; } || true
+grep -qEi "Branch (c|e) Title" "$FILE_D" && { echo "  preview-d contaminated"; S7_OK=false; } || true
+grep -qEi "Branch (c|d) Title" "$FILE_E" && { echo "  preview-e contaminated"; S7_OK=false; } || true
 
 if $S7_OK; then
     echo "STEP 7 PASS: three parallel branches return independent content"
     S7=1
 else
     echo "STEP 7 FAIL: parallel branch isolation failed"
-    echo "  C title: $(echo "$BODY_C" | grep -oiP '<title>[^<]+' | head -1)"
-    echo "  D title: $(echo "$BODY_D" | grep -oiP '<title>[^<]+' | head -1)"
-    echo "  E title: $(echo "$BODY_E" | grep -oiP '<title>[^<]+' | head -1)"
+    echo "  C title: $(grep -oiP '<title>[^<]+' "$FILE_C" | head -1)"
+    echo "  D title: $(grep -oiP '<title>[^<]+' "$FILE_D" | head -1)"
+    echo "  E title: $(grep -oiP '<title>[^<]+' "$FILE_E" | head -1)"
 fi
 
 # ============================================================

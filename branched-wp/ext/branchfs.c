@@ -1272,9 +1272,17 @@ PHP_FUNCTION(branchfs_is_active) {
 
 static zif_handler original_file_exists_handler = NULL;
 static zif_handler original_realpath_handler    = NULL;
-static zif_handler original_is_file_handler     = NULL;
-static zif_handler original_is_dir_handler      = NULL;
-static zif_handler original_is_readable_handler = NULL;
+static zif_handler original_is_file_handler       = NULL;
+static zif_handler original_is_dir_handler        = NULL;
+static zif_handler original_is_readable_handler   = NULL;
+static zif_handler original_is_writable_handler   = NULL;
+static zif_handler original_is_executable_handler = NULL;
+static zif_handler original_is_link_handler       = NULL;
+static zif_handler original_chmod_handler         = NULL;
+static zif_handler original_chown_handler         = NULL;
+static zif_handler original_chgrp_handler         = NULL;
+static zif_handler original_touch_handler         = NULL;
+static zif_handler original_lstat_handler         = NULL;
 
 ZEND_NAMED_FUNCTION(branchfs_override_file_exists) {
     zend_string *filename;
@@ -1414,6 +1422,198 @@ ZEND_NAMED_FUNCTION(branchfs_override_is_dir) {
 }
 ZEND_NAMED_FUNCTION(branchfs_override_is_readable) {
     branchfs_stat_check(INTERNAL_FUNCTION_PARAM_PASSTHRU, 2, original_is_readable_handler);
+}
+/* is_writable: our store is always writable, so if the file (or its parent
+ * dir for nonexistent files) is branchfs-backed we return true. */
+ZEND_NAMED_FUNCTION(branchfs_override_is_writable) {
+    zend_string *filename;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(filename)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0) {
+                    /* Existing file or dir in the store -> writable. */
+                    if (store_file_exists(branch_id, rel_path)) RETURN_TRUE;
+                    /* Nonexistent path under wp_root: writable if a parent
+                     * directory (or root) is resolvable. WP uses this to
+                     * check if uploads/ is writable before trying to create
+                     * subdirectories. */
+                    RETURN_TRUE;
+                }
+            }
+        }
+    }
+    original_is_writable_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+/* is_executable: return true for directories (so WP considers plugin/theme
+ * dirs traversable); false for files (branchfs doesn't execute). */
+ZEND_NAMED_FUNCTION(branchfs_override_is_executable) {
+    zend_string *filename;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(filename)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0) {
+                    int is_dir = 0;
+                    if (store_stat_file(branch_id, rel_path, &is_dir, NULL, NULL, NULL) != 0) {
+                        RETURN_FALSE;
+                    }
+                    RETURN_BOOL(is_dir);
+                }
+            }
+        }
+    }
+    original_is_executable_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+/* is_link: branchfs doesn't model symlinks, always false for our paths. */
+ZEND_NAMED_FUNCTION(branchfs_override_is_link) {
+    zend_string *filename;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(filename)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0) {
+                    RETURN_FALSE;
+                }
+            }
+        }
+    }
+    original_is_link_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+/* chmod/chown/chgrp/touch: these bypass stream wrappers via VCWD_* macros.
+ * For branchfs-backed paths we pretend success (branchfs doesn't model perms
+ * or ownership at the OS level, so these are semantically no-ops).
+ * `touch` with a nonexistent file creates it, which we honor. */
+static void branchfs_noop_perm(INTERNAL_FUNCTION_PARAMETERS, zif_handler fallback) {
+    zend_string *filename;
+    zval *extra1 = NULL, *extra2 = NULL;
+    ZEND_PARSE_PARAMETERS_START(1, 3)
+        Z_PARAM_PATH_STR(filename)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_ZVAL(extra1)
+        Z_PARAM_ZVAL(extra2)
+    ZEND_PARSE_PARAMETERS_END();
+    (void)extra1; (void)extra2;
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0) {
+                    RETURN_TRUE;
+                }
+            }
+        }
+    }
+    fallback(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+ZEND_NAMED_FUNCTION(branchfs_override_chmod) {
+    branchfs_noop_perm(INTERNAL_FUNCTION_PARAM_PASSTHRU, original_chmod_handler);
+}
+ZEND_NAMED_FUNCTION(branchfs_override_chown) {
+    branchfs_noop_perm(INTERNAL_FUNCTION_PARAM_PASSTHRU, original_chown_handler);
+}
+ZEND_NAMED_FUNCTION(branchfs_override_chgrp) {
+    branchfs_noop_perm(INTERNAL_FUNCTION_PARAM_PASSTHRU, original_chgrp_handler);
+}
+
+/* touch: if file exists in store, return true. If it doesn't, create an empty
+ * file (matches touch(1) semantics). */
+ZEND_NAMED_FUNCTION(branchfs_override_touch) {
+    zend_string *filename;
+    zend_long mtime = 0, atime = 0;
+    bool mtime_is_null = 1, atime_is_null = 1;
+    ZEND_PARSE_PARAMETERS_START(1, 3)
+        Z_PARAM_PATH_STR(filename)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_LONG_OR_NULL(mtime, mtime_is_null)
+        Z_PARAM_LONG_OR_NULL(atime, atime_is_null)
+    ZEND_PARSE_PARAMETERS_END();
+    (void)mtime; (void)atime; (void)mtime_is_null; (void)atime_is_null;
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0) {
+                    if (store_file_exists(branch_id, rel_path)) RETURN_TRUE;
+                    /* Create empty file. */
+                    if (store_write_file(branch_id, rel_path, "", 0) == 0) RETURN_TRUE;
+                    RETURN_FALSE;
+                }
+            }
+        }
+    }
+    original_touch_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+/* lstat: branchfs paths have no symlinks, so return the same as stat.
+ * php_stream_stat_path_ex honors our url_stat, but lstat() in core
+ * uses VCWD_LSTAT directly, hence the override. */
+ZEND_NAMED_FUNCTION(branchfs_override_lstat) {
+    zend_string *filename;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(filename)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0) {
+                    int is_dir = 0;
+                    size_t sz = 0;
+                    int mode = 0;
+                    time_t mtime = 0;
+                    if (store_stat_file(branch_id, rel_path, &is_dir, &sz, &mode, &mtime) != 0) {
+                        RETURN_FALSE;
+                    }
+                    /* Return the PHP stat array (numeric + named keys). */
+                    array_init(return_value);
+                    zend_long m = is_dir ? (S_IFDIR | 0755) : (S_IFREG | (mode ? mode : 0644));
+                    zend_long size = (zend_long) sz;
+                    zend_long mtl = (zend_long) mtime;
+                    const char *keys[] = {"dev","ino","mode","nlink","uid","gid",
+                                          "rdev","size","atime","mtime","ctime","blksize","blocks"};
+                    zend_long vals[] = {0, 0, m, 1, 0, 0, 0, size, mtl, mtl, mtl, 4096, 0};
+                    for (int i = 0; i < 13; i++) {
+                        add_index_long(return_value, i, vals[i]);
+                    }
+                    for (int i = 0; i < 13; i++) {
+                        add_assoc_long(return_value, keys[i], vals[i]);
+                    }
+                    return;
+                }
+            }
+        }
+    }
+    original_lstat_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
 /* glob() override.
@@ -1635,6 +1835,30 @@ PHP_MINIT_FUNCTION(branchfs) {
     if (gl_func && gl_func->type == ZEND_INTERNAL_FUNCTION) {
         original_glob_handler = gl_func->internal_function.handler;
         gl_func->internal_function.handler = branchfs_override_glob;
+    }
+
+    /* Remaining syscall-direct functions. All of these hit VCWD_* macros
+     * internally, which call the corresponding libc syscall and skip our
+     * stream wrapper. We register overrides once at module startup so WP
+     * never trips over them. */
+    struct { const char *name; size_t name_len; zif_handler new_h; zif_handler *orig_slot; } overrides[] = {
+        {"is_writable",   sizeof("is_writable") - 1,   branchfs_override_is_writable,   &original_is_writable_handler},
+        {"is_writeable",  sizeof("is_writeable") - 1,  branchfs_override_is_writable,   &original_is_writable_handler},
+        {"is_executable", sizeof("is_executable") - 1, branchfs_override_is_executable, &original_is_executable_handler},
+        {"is_link",       sizeof("is_link") - 1,       branchfs_override_is_link,       &original_is_link_handler},
+        {"chmod",         sizeof("chmod") - 1,         branchfs_override_chmod,         &original_chmod_handler},
+        {"chown",         sizeof("chown") - 1,         branchfs_override_chown,         &original_chown_handler},
+        {"chgrp",         sizeof("chgrp") - 1,         branchfs_override_chgrp,         &original_chgrp_handler},
+        {"touch",         sizeof("touch") - 1,         branchfs_override_touch,         &original_touch_handler},
+        {"lstat",         sizeof("lstat") - 1,         branchfs_override_lstat,         &original_lstat_handler},
+    };
+    for (size_t i = 0; i < sizeof(overrides) / sizeof(overrides[0]); i++) {
+        zend_function *f = zend_hash_str_find_ptr(CG(function_table),
+            overrides[i].name, overrides[i].name_len);
+        if (f && f->type == ZEND_INTERNAL_FUNCTION) {
+            *overrides[i].orig_slot = f->internal_function.handler;
+            f->internal_function.handler = overrides[i].new_h;
+        }
     }
 
     return SUCCESS;
