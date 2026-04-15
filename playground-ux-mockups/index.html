@@ -49,10 +49,12 @@
       margin: 0;
       padding: 0;
       box-sizing: border-box;
+      min-width: 0;
     }
 
     html {
       overflow-x: hidden;
+      max-width: 100%;
     }
 
     body {
@@ -62,7 +64,9 @@
       line-height: 1.5;
       -webkit-font-smoothing: antialiased;
       overflow-x: hidden;
-      width: 100%;
+      max-width: 100%;
+      word-break: break-word;
+      overflow-wrap: break-word;
     }
 
     /* Header */
@@ -71,7 +75,6 @@
       margin: 0 auto;
       padding: var(--space-8) var(--space-5) var(--space-7);
       text-align: center;
-      overflow: hidden;
     }
 
     .header-logo {
@@ -113,6 +116,8 @@
       max-width: 640px;
       margin: 0 auto var(--space-5);
       line-height: 1.6;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
     }
 
     .header-meta {
@@ -127,6 +132,8 @@
       max-width: 100%;
       flex-wrap: wrap;
       justify-content: center;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
     }
 
     .header-meta svg {
@@ -452,6 +459,8 @@
       line-height: 1.6;
       margin-bottom: var(--space-5);
       flex: 1;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
     }
 
     .card-cta {
@@ -605,7 +614,7 @@
       }
 
       .header {
-        padding: var(--space-6) var(--space-3) var(--space-5);
+        padding: var(--space-6) var(--space-5) var(--space-5);
       }
 
       .header-logo span {
@@ -613,7 +622,7 @@
       }
 
       .cards-section {
-        padding: 0 var(--space-3) var(--space-6);
+        padding: 0 var(--space-4) var(--space-6);
       }
 
       .card-body {
@@ -621,7 +630,7 @@
       }
 
       .rationale {
-        padding: 0 var(--space-3) var(--space-6);
+        padding: 0 var(--space-4) var(--space-6);
       }
 
       .rationale-inner {
@@ -633,7 +642,7 @@
       }
 
       .footer {
-        padding: var(--space-5) var(--space-3);
+        padding: var(--space-5) var(--space-4);
       }
     }
 
