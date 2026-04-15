@@ -1,0 +1,123 @@
+<?php
+/**
+ * Plugin Name: BranchFS WordPress Integration
+ * Description: Integrates BranchFS branch-scoped preview with WordPress.
+ *              Redirects uploads, adjusts filesystem operations, and provides
+ *              branch-aware admin UI hints.
+ * Version: 0.1.0
+ */
+
+if (!defined('ABSPATH')) exit;
+
+/**
+ * Redirect uploaded files into branchfs:// store.
+ * Uses the pre_move_uploaded_file hook (WP 5.7+) to intercept uploads
+ * before they hit the real filesystem.
+ */
+add_filter('pre_move_uploaded_file', function ($move_new_file, $file, $new_file, $type) {
+    if (!function_exists('branchfs_is_active') || !branchfs_is_active()) {
+        return $move_new_file;
+    }
+
+    $content = file_get_contents($file);
+    if ($content === false) {
+        return $move_new_file;
+    }
+
+    $dir = dirname($new_file);
+    if (!file_exists($dir)) {
+        mkdir($dir, 0755, true);
+    }
+
+    $result = file_put_contents($new_file, $content);
+    if ($result === false) {
+        return $move_new_file;
+    }
+
+    // Return new path to signal we handled the move
+    return $new_file;
+}, 10, 4);
+
+/**
+ * Override the WordPress filesystem method to 'direct' when branchfs is active.
+ * This ensures WP uses PHP file functions (which we intercept) rather than
+ * FTP/SSH methods.
+ */
+add_filter('filesystem_method', function ($method) {
+    if (function_exists('branchfs_is_active') && branchfs_is_active()) {
+        return 'direct';
+    }
+    return $method;
+});
+
+/**
+ * Ensure WP_Filesystem uses direct file access through our interceptor.
+ */
+add_filter('request_filesystem_credentials', function ($credentials) {
+    if (function_exists('branchfs_is_active') && branchfs_is_active()) {
+        return true;
+    }
+    return $credentials;
+});
+
+/**
+ * Add branch indicator to admin bar.
+ */
+add_action('admin_bar_menu', function ($wp_admin_bar) {
+    if (!function_exists('branchfs_get_branch')) return;
+
+    $branch = branchfs_get_branch();
+    if (!$branch || $branch === 'main') return;
+
+    $wp_admin_bar->add_node([
+        'id'    => 'branchfs-indicator',
+        'title' => '&#9733; Branch: ' . esc_html($branch),
+        'meta'  => ['class' => 'branchfs-branch-indicator'],
+    ]);
+}, 100);
+
+/**
+ * Style the branch indicator.
+ */
+add_action('admin_head', function () {
+    if (!function_exists('branchfs_get_branch')) return;
+    $branch = branchfs_get_branch();
+    if (!$branch || $branch === 'main') return;
+
+    echo '<style>
+        #wpadminbar .branchfs-branch-indicator .ab-item {
+            background: #2271b1 !important;
+            color: #fff !important;
+        }
+    </style>';
+});
+
+/**
+ * Configure Dolt branch for database operations.
+ * When using Dolt as the MySQL backend, this ensures the DB connection
+ * uses the correct branch.
+ */
+add_action('init', function () {
+    if (!function_exists('branchfs_get_branch')) return;
+
+    $branch = branchfs_get_branch();
+    if (!$branch || $branch === 'main') return;
+
+    global $wpdb;
+
+    // For Dolt: use branch-scoped connection via dbname/branch
+    // This is configured in wp-config.php using the BRANCHFS_DB_BRANCH constant
+    if (defined('BRANCHFS_DOLT_ENABLED') && BRANCHFS_DOLT_ENABLED) {
+        try {
+            $wpdb->query("CALL DOLT_CHECKOUT('$branch')");
+        } catch (Exception $e) {
+            // Branch may not exist in Dolt yet; create it
+            try {
+                $wpdb->query("CALL DOLT_BRANCH('$branch', 'main')");
+                $wpdb->query("CALL DOLT_CHECKOUT('$branch')");
+            } catch (Exception $e2) {
+                error_log("BranchFS: Could not switch Dolt to branch $branch: " . $e2->getMessage());
+            }
+        }
+    }
+}, 0); // Priority 0 = run before anything else

@@ -1,0 +1,1390 @@
+/*
+ * branchfs.c - PHP extension for branch-scoped WordPress preview
+ *
+ * Registers branchfs:// stream wrapper AND intercepts the plain files wrapper
+ * so that ALL filesystem operations under the configured WP root transparently
+ * route through a SQLite-backed content-addressed store with per-branch COW.
+ */
+
+#include "branchfs.h"
+
+ZEND_DECLARE_MODULE_GLOBALS(branchfs)
+
+/* Forward declarations */
+static php_stream *branchfs_stream_opener(php_stream_wrapper *wrapper, const char *filename,
+    const char *mode, int options, zend_string **opened_path,
+    php_stream_context *context STREAMS_DC);
+static int branchfs_url_stat(php_stream_wrapper *wrapper, const char *url, int flags,
+    php_stream_statbuf *ssb, php_stream_context *context);
+static php_stream *branchfs_dir_opener(php_stream_wrapper *wrapper, const char *filename,
+    const char *mode, int options, zend_string **opened_path,
+    php_stream_context *context STREAMS_DC);
+static int branchfs_unlink(php_stream_wrapper *wrapper, const char *url, int options,
+    php_stream_context *context);
+static int branchfs_rename(php_stream_wrapper *wrapper, const char *url_from, const char *url_to,
+    int options, php_stream_context *context);
+static int branchfs_mkdir(php_stream_wrapper *wrapper, const char *url, int mode, int options,
+    php_stream_context *context);
+static int branchfs_rmdir(php_stream_wrapper *wrapper, const char *url, int options,
+    php_stream_context *context);
+static int branchfs_metadata(php_stream_wrapper *wrapper, const char *url, int options,
+    void *value, php_stream_context *context);
+
+/* ================================================================
+ * Section 1: FNV-1a hash for content addressing
+ * ================================================================ */
+
+static uint64_t fnv1a_64(const char *data, size_t len) {
+    uint64_t hash = 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (uint8_t)data[i];
+        hash *= 0x100000001b3ULL;
+    }
+    return hash;
+}
+
+char *store_compute_hash(const char *data, size_t size) {
+    uint64_t h1 = fnv1a_64(data, size);
+    /* Mix in size for extra collision resistance */
+    uint64_t h2 = fnv1a_64((const char *)&size, sizeof(size));
+    h1 ^= h2;
+    char *hash = emalloc(BRANCHFS_HASH_LEN);
+    snprintf(hash, BRANCHFS_HASH_LEN, "%016llx", (unsigned long long)h1);
+    return hash;
+}
+
+/* ================================================================
+ * Section 2: SQLite store operations
+ * ================================================================ */
+
+int store_open(const char *db_path) {
+    if (BRANCHFS_G(db)) return 0;
+    int rc = sqlite3_open(db_path, &BRANCHFS_G(db));
+    if (rc != SQLITE_OK) {
+        php_error_docref(NULL, E_WARNING, "branchfs: cannot open db %s: %s",
+            db_path, sqlite3_errmsg(BRANCHFS_G(db)));
+        BRANCHFS_G(db) = NULL;
+        return -1;
+    }
+    sqlite3_exec(BRANCHFS_G(db), "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+    sqlite3_exec(BRANCHFS_G(db), "PRAGMA foreign_keys=ON", NULL, NULL, NULL);
+    sqlite3_busy_timeout(BRANCHFS_G(db), 5000);
+    return 0;
+}
+
+void store_close(void) {
+    if (BRANCHFS_G(db)) {
+        sqlite3_close(BRANCHFS_G(db));
+        BRANCHFS_G(db) = NULL;
+    }
+}
+
+int store_get_branch_id(const char *branch_name) {
+    if (!BRANCHFS_G(db) || !branch_name) return -1;
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+        "SELECT id FROM branches WHERE name = ?", -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, branch_name, -1, SQLITE_STATIC);
+    int branch_id = -1;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        branch_id = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return branch_id;
+}
+
+int store_create_branch(const char *name, const char *parent) {
+    if (!BRANCHFS_G(db)) return -1;
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+        "INSERT OR IGNORE INTO branches (name, parent_branch) VALUES (?, ?)",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+    if (parent) {
+        sqlite3_bind_text(stmt, 2, parent, -1, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(stmt, 2);
+    }
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? store_get_branch_id(name) : -1;
+}
+
+/* Walk up branch chain to find a file (COW read) */
+static int resolve_branch_chain(int branch_id, const char *path,
+    char **out_data, size_t *out_size, int *out_is_dir, int *out_mode, time_t *out_mtime)
+{
+    if (!BRANCHFS_G(db)) return -1;
+
+    int current_bid = branch_id;
+    while (current_bid > 0) {
+        sqlite3_stmt *stmt;
+        int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+            "SELECT f.blob_hash, f.is_dir, f.mode, f.mtime, b.data, b.size "
+            "FROM files f LEFT JOIN blobs b ON f.blob_hash = b.hash "
+            "WHERE f.branch_id = ? AND f.path = ?",
+            -1, &stmt, NULL);
+        if (rc != SQLITE_OK) return -1;
+
+        sqlite3_bind_int(stmt, 1, current_bid);
+        sqlite3_bind_text(stmt, 2, path, -1, SQLITE_STATIC);
+
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *blob_hash = (const char *)sqlite3_column_text(stmt, 0);
+            int is_dir = sqlite3_column_int(stmt, 1);
+            int mode = sqlite3_column_int(stmt, 2);
+            time_t mtime = (time_t)sqlite3_column_int64(stmt, 3);
+
+            if (out_is_dir) *out_is_dir = is_dir;
+            if (out_mode) *out_mode = mode;
+            if (out_mtime) *out_mtime = mtime;
+
+            /* Tombstone: file explicitly deleted on this branch */
+            if (!blob_hash && !is_dir) {
+                sqlite3_finalize(stmt);
+                return -2;
+            }
+
+            if (is_dir) {
+                if (out_data) *out_data = NULL;
+                if (out_size) *out_size = 0;
+                sqlite3_finalize(stmt);
+                return 0;
+            }
+
+            if (out_data && out_size) {
+                int bsize = sqlite3_column_int(stmt, 5);
+                const void *bdata = sqlite3_column_blob(stmt, 4);
+                *out_size = bsize;
+                *out_data = emalloc(bsize + 1);
+                if (bdata) memcpy(*out_data, bdata, bsize);
+                (*out_data)[bsize] = '\0';
+            }
+            sqlite3_finalize(stmt);
+            return 0;
+        }
+        sqlite3_finalize(stmt);
+
+        /* Walk to parent branch */
+        sqlite3_stmt *pstmt;
+        rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+            "SELECT b2.id FROM branches b1 JOIN branches b2 ON b1.parent_branch = b2.name "
+            "WHERE b1.id = ?",
+            -1, &pstmt, NULL);
+        if (rc != SQLITE_OK) return -1;
+        sqlite3_bind_int(pstmt, 1, current_bid);
+        if (sqlite3_step(pstmt) == SQLITE_ROW) {
+            current_bid = sqlite3_column_int(pstmt, 0);
+        } else {
+            current_bid = -1;
+        }
+        sqlite3_finalize(pstmt);
+    }
+    return -1; /* Not found in any branch */
+}
+
+int store_read_file(int branch_id, const char *path, char **data, size_t *size) {
+    return resolve_branch_chain(branch_id, path, data, size, NULL, NULL, NULL);
+}
+
+int store_write_file(int branch_id, const char *path, const char *data, size_t size) {
+    if (!BRANCHFS_G(db)) return -1;
+
+    char *hash = store_compute_hash(data, size);
+
+    /* Insert blob (ignore if duplicate) */
+    sqlite3_stmt *bstmt;
+    int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+        "INSERT OR IGNORE INTO blobs (hash, data, size) VALUES (?, ?, ?)",
+        -1, &bstmt, NULL);
+    if (rc != SQLITE_OK) { efree(hash); return -1; }
+    sqlite3_bind_text(bstmt, 1, hash, -1, SQLITE_STATIC);
+    sqlite3_bind_blob(bstmt, 2, data, (int)size, SQLITE_STATIC);
+    sqlite3_bind_int(bstmt, 3, (int)size);
+    sqlite3_step(bstmt);
+    sqlite3_finalize(bstmt);
+
+    /* Upsert file entry */
+    sqlite3_stmt *fstmt;
+    rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+        "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
+        "VALUES (?, ?, ?, 33188, strftime('%s','now'), 0)",
+        -1, &fstmt, NULL);
+    if (rc != SQLITE_OK) { efree(hash); return -1; }
+    sqlite3_bind_int(fstmt, 1, branch_id);
+    sqlite3_bind_text(fstmt, 2, path, -1, SQLITE_STATIC);
+    sqlite3_bind_text(fstmt, 3, hash, -1, SQLITE_STATIC);
+    rc = sqlite3_step(fstmt);
+    sqlite3_finalize(fstmt);
+    efree(hash);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int store_stat_file(int branch_id, const char *path, int *is_dir, size_t *size, int *mode, time_t *mtime) {
+    int ret = resolve_branch_chain(branch_id, path, NULL, size, is_dir, mode, mtime);
+    if (ret == 0 && size && !(*is_dir)) {
+        /* We didn't fetch size in stat-only mode; do it now */
+        char *tmp_data = NULL;
+        size_t tmp_size = 0;
+        int r = resolve_branch_chain(branch_id, path, &tmp_data, &tmp_size, NULL, NULL, NULL);
+        if (r == 0) {
+            *size = tmp_size;
+            if (tmp_data) efree(tmp_data);
+        }
+    }
+    return ret;
+}
+
+int store_file_exists(int branch_id, const char *path) {
+    int is_dir = 0;
+    return resolve_branch_chain(branch_id, path, NULL, NULL, &is_dir, NULL, NULL) == 0;
+}
+
+int store_list_dir(int branch_id, const char *dir_path, char ***entries, int *count) {
+    if (!BRANCHFS_G(db)) return -1;
+
+    *entries = NULL;
+    *count = 0;
+
+    /* Collect from all branches in the chain */
+    int capacity = 64;
+    char **result = emalloc(sizeof(char*) * capacity);
+    int n = 0;
+
+    /* Track seen paths to handle COW overrides */
+    char **seen = emalloc(sizeof(char*) * capacity);
+    int nseen = 0;
+
+    int current_bid = branch_id;
+    while (current_bid > 0) {
+        sqlite3_stmt *stmt;
+        /* Match direct children: dir_path/X but not dir_path/X/Y */
+        char like_pattern[BRANCHFS_MAX_PATH];
+        size_t dirlen = strlen(dir_path);
+
+        if (dirlen == 0) {
+            /* Root directory - match paths without any '/' */
+            snprintf(like_pattern, sizeof(like_pattern), "%%");
+        } else {
+            snprintf(like_pattern, sizeof(like_pattern), "%s/%%", dir_path);
+        }
+
+        int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+            "SELECT path, blob_hash, is_dir FROM files WHERE branch_id = ? AND path LIKE ?",
+            -1, &stmt, NULL);
+        if (rc != SQLITE_OK) break;
+
+        sqlite3_bind_int(stmt, 1, current_bid);
+        sqlite3_bind_text(stmt, 2, like_pattern, -1, SQLITE_STATIC);
+
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *fpath = (const char *)sqlite3_column_text(stmt, 0);
+            if (!fpath) continue;
+
+            /* Extract the basename (direct child only) */
+            const char *child_start;
+            if (dirlen == 0) {
+                child_start = fpath;
+            } else {
+                if (strncmp(fpath, dir_path, dirlen) != 0 || fpath[dirlen] != '/') continue;
+                child_start = fpath + dirlen + 1;
+            }
+
+            /* Skip if has more slashes (not a direct child) */
+            if (strchr(child_start, '/') != NULL) continue;
+            if (*child_start == '\0') continue;
+
+            /* Check if already seen (higher-priority branch) */
+            int already = 0;
+            for (int i = 0; i < nseen; i++) {
+                if (strcmp(seen[i], child_start) == 0) { already = 1; break; }
+            }
+            if (already) continue;
+
+            /* Track as seen */
+            if (nseen >= capacity) {
+                capacity *= 2;
+                seen = erealloc(seen, sizeof(char*) * capacity);
+                result = erealloc(result, sizeof(char*) * capacity);
+            }
+            seen[nseen] = estrdup(child_start);
+            nseen++;
+
+            /* Skip tombstones */
+            const char *blob_hash = (const char *)sqlite3_column_text(stmt, 1);
+            int is_dir = sqlite3_column_int(stmt, 2);
+            if (!blob_hash && !is_dir) continue;
+
+            result[n] = estrdup(child_start);
+            n++;
+        }
+        sqlite3_finalize(stmt);
+
+        /* Walk to parent */
+        sqlite3_stmt *pstmt;
+        rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+            "SELECT b2.id FROM branches b1 JOIN branches b2 ON b1.parent_branch = b2.name WHERE b1.id = ?",
+            -1, &pstmt, NULL);
+        if (rc != SQLITE_OK) break;
+        sqlite3_bind_int(pstmt, 1, current_bid);
+        if (sqlite3_step(pstmt) == SQLITE_ROW) {
+            current_bid = sqlite3_column_int(pstmt, 0);
+        } else {
+            current_bid = -1;
+        }
+        sqlite3_finalize(pstmt);
+    }
+
+    for (int i = 0; i < nseen; i++) efree(seen[i]);
+    efree(seen);
+
+    *entries = result;
+    *count = n;
+    return 0;
+}
+
+int store_mkdir(int branch_id, const char *path, int mode) {
+    if (!BRANCHFS_G(db)) return -1;
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+        "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
+        "VALUES (?, ?, NULL, ?, strftime('%s','now'), 1)",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, branch_id);
+    sqlite3_bind_text(stmt, 2, path, -1, SQLITE_STATIC);
+    sqlite3_bind_int(stmt, 3, mode ? mode : 16877); /* 040755 */
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int store_unlink(int branch_id, const char *path) {
+    if (!BRANCHFS_G(db)) return -1;
+    /* Insert a tombstone */
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+        "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
+        "VALUES (?, ?, NULL, 0, strftime('%s','now'), 0)",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_int(stmt, 1, branch_id);
+    sqlite3_bind_text(stmt, 2, path, -1, SQLITE_STATIC);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+int store_rename(int branch_id, const char *from, const char *to) {
+    char *data = NULL;
+    size_t size = 0;
+    if (store_read_file(branch_id, from, &data, &size) != 0) return -1;
+    if (store_write_file(branch_id, to, data, size) != 0) { if (data) efree(data); return -1; }
+    if (data) efree(data);
+    return store_unlink(branch_id, from);
+}
+
+int store_rmdir(int branch_id, const char *path) {
+    return store_unlink(branch_id, path);
+}
+
+/* ================================================================
+ * Section 3: Path resolution helpers
+ * ================================================================ */
+
+/* Parse branchfs://branch/path → branch name + relative path */
+static int parse_branchfs_url(const char *url, char *branch, size_t branch_len,
+    char *path, size_t path_len)
+{
+    const char *prefix = BRANCHFS_PROTO "://";
+    size_t plen = strlen(prefix);
+    if (strncmp(url, prefix, plen) != 0) return -1;
+
+    const char *rest = url + plen;
+    const char *slash = strchr(rest, '/');
+    if (!slash) {
+        /* Just branch name, root path */
+        snprintf(branch, branch_len, "%.*s", (int)(strlen(rest)), rest);
+        path[0] = '\0';
+        return 0;
+    }
+    snprintf(branch, branch_len, "%.*s", (int)(slash - rest), rest);
+    snprintf(path, path_len, "%s", slash + 1);
+    /* Remove trailing slash */
+    size_t pl = strlen(path);
+    while (pl > 0 && path[pl - 1] == '/') path[--pl] = '\0';
+    return 0;
+}
+
+/* Resolve a path to branch-relative. Returns 1 if under WP root, 0 otherwise. */
+static int resolve_to_wp_relative(const char *filename, char *rel_path, size_t rel_len) {
+    if (!BRANCHFS_G(wp_root) || !BRANCHFS_G(active)) return 0;
+
+    char resolved[BRANCHFS_MAX_PATH];
+    const char *abs_path;
+
+    if (filename[0] == '/') {
+        abs_path = filename;
+    } else {
+        char cwd[BRANCHFS_MAX_PATH];
+        if (getcwd(cwd, sizeof(cwd)) == NULL) return 0;
+        snprintf(resolved, sizeof(resolved), "%s/%s", cwd, filename);
+        abs_path = resolved;
+    }
+
+    size_t root_len = strlen(BRANCHFS_G(wp_root));
+    if (strncmp(abs_path, BRANCHFS_G(wp_root), root_len) != 0) return 0;
+
+    /* Must be exactly at root or followed by / */
+    if (abs_path[root_len] == '/') {
+        snprintf(rel_path, rel_len, "%s", abs_path + root_len + 1);
+    } else if (abs_path[root_len] == '\0') {
+        rel_path[0] = '\0';
+    } else {
+        return 0;
+    }
+
+    /* Remove trailing slash */
+    size_t pl = strlen(rel_path);
+    while (pl > 0 && rel_path[pl - 1] == '/') rel_path[--pl] = '\0';
+    return 1;
+}
+
+/* Check if path should be excluded from interception (e.g., the SQLite DB itself) */
+static int should_exclude(const char *filename) {
+    if (!filename) return 1;
+    if (BRANCHFS_G(db_path) && strcmp(filename, BRANCHFS_G(db_path)) == 0) return 1;
+    /* Exclude WAL/SHM files */
+    if (BRANCHFS_G(db_path)) {
+        size_t dblen = strlen(BRANCHFS_G(db_path));
+        if (strncmp(filename, BRANCHFS_G(db_path), dblen) == 0) {
+            const char *suffix = filename + dblen;
+            if (strcmp(suffix, "-wal") == 0 || strcmp(suffix, "-shm") == 0 ||
+                strcmp(suffix, "-journal") == 0) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Get current branch ID */
+static int get_current_branch_id(void) {
+    if (!BRANCHFS_G(current_branch)) return -1;
+    return store_get_branch_id(BRANCHFS_G(current_branch));
+}
+
+/* ================================================================
+ * Section 4: Stream ops for open file handles
+ * ================================================================ */
+
+static ssize_t branchfs_stream_read(php_stream *stream, char *buf, size_t count) {
+    branchfs_stream_data_t *sd = (branchfs_stream_data_t *)stream->abstract;
+    if (!sd || !sd->data) return -1;
+
+    size_t remaining = sd->size - sd->position;
+    if (count > remaining) count = remaining;
+    if (count == 0) {
+        stream->eof = 1;
+        return 0;
+    }
+    memcpy(buf, sd->data + sd->position, count);
+    sd->position += count;
+    if (sd->position >= sd->size) stream->eof = 1;
+    return (ssize_t)count;
+}
+
+static ssize_t branchfs_stream_write(php_stream *stream, const char *buf, size_t count) {
+    branchfs_stream_data_t *sd = (branchfs_stream_data_t *)stream->abstract;
+    if (!sd || !sd->writable) return -1;
+
+    size_t needed = sd->position + count;
+    if (needed > sd->alloc) {
+        size_t new_alloc = needed * 2;
+        if (new_alloc < 4096) new_alloc = 4096;
+        sd->data = erealloc(sd->data, new_alloc + 1);
+        sd->alloc = new_alloc;
+    }
+
+    /* Fill gap with zeros if writing past end */
+    if (sd->position > sd->size) {
+        memset(sd->data + sd->size, 0, sd->position - sd->size);
+    }
+
+    memcpy(sd->data + sd->position, buf, count);
+    sd->position += count;
+    if (sd->position > sd->size) sd->size = sd->position;
+    sd->data[sd->size] = '\0';
+    sd->modified = 1;
+    return (ssize_t)count;
+}
+
+static int branchfs_stream_close(php_stream *stream, int close_handle) {
+    branchfs_stream_data_t *sd = (branchfs_stream_data_t *)stream->abstract;
+    if (!sd) return 0;
+
+    /* Flush modified data back to store */
+    if (sd->modified && sd->writable && sd->path && sd->branch_id > 0) {
+        store_write_file(sd->branch_id, sd->path, sd->data ? sd->data : "", sd->size);
+        php_clear_stat_cache(1, NULL, 0);
+    }
+
+    if (sd->data) efree(sd->data);
+    if (sd->path) efree(sd->path);
+    efree(sd);
+    stream->abstract = NULL;
+    return 0;
+}
+
+static int branchfs_stream_flush(php_stream *stream) {
+    branchfs_stream_data_t *sd = (branchfs_stream_data_t *)stream->abstract;
+    if (!sd) return -1;
+
+    if (sd->modified && sd->writable && sd->path && sd->branch_id > 0) {
+        store_write_file(sd->branch_id, sd->path, sd->data ? sd->data : "", sd->size);
+        sd->modified = 0;
+    }
+    return 0;
+}
+
+static int branchfs_stream_seek(php_stream *stream, zend_off_t offset, int whence,
+    zend_off_t *newoffset)
+{
+    branchfs_stream_data_t *sd = (branchfs_stream_data_t *)stream->abstract;
+    if (!sd) return -1;
+
+    zend_off_t new_pos;
+    switch (whence) {
+        case SEEK_SET: new_pos = offset; break;
+        case SEEK_CUR: new_pos = (zend_off_t)sd->position + offset; break;
+        case SEEK_END: new_pos = (zend_off_t)sd->size + offset; break;
+        default: return -1;
+    }
+    if (new_pos < 0) return -1;
+    sd->position = (size_t)new_pos;
+    if (sd->position < sd->size) stream->eof = 0;
+    *newoffset = new_pos;
+    return 0;
+}
+
+static int branchfs_stream_stat(php_stream *stream, php_stream_statbuf *ssb) {
+    branchfs_stream_data_t *sd = (branchfs_stream_data_t *)stream->abstract;
+    if (!sd) return -1;
+
+    memset(&ssb->sb, 0, sizeof(ssb->sb));
+    ssb->sb.st_size = sd->size;
+    ssb->sb.st_mode = S_IFREG | 0644;
+    ssb->sb.st_nlink = 1;
+    ssb->sb.st_mtime = time(NULL);
+    ssb->sb.st_atime = ssb->sb.st_mtime;
+    ssb->sb.st_ctime = ssb->sb.st_mtime;
+    return 0;
+}
+
+static int branchfs_stream_set_option(php_stream *stream, int option, int value, void *ptrparam) {
+    return PHP_STREAM_OPTION_RETURN_NOTIMPL;
+}
+
+static const php_stream_ops branchfs_stream_ops = {
+    branchfs_stream_write,
+    branchfs_stream_read,
+    branchfs_stream_close,
+    branchfs_stream_flush,
+    "branchfs/file",
+    branchfs_stream_seek,
+    NULL, /* cast */
+    branchfs_stream_stat,
+    branchfs_stream_set_option
+};
+
+/* ================================================================
+ * Section 5: Directory stream ops
+ * ================================================================ */
+
+static ssize_t branchfs_dirstream_read(php_stream *stream, char *buf, size_t count) {
+    branchfs_dir_data_t *dd = (branchfs_dir_data_t *)stream->abstract;
+    if (!dd) return 0;
+
+    if (count < sizeof(php_stream_dirent)) return 0;
+    if (dd->position >= dd->count) return 0;
+
+    php_stream_dirent *ent = (php_stream_dirent *)buf;
+    snprintf(ent->d_name, sizeof(ent->d_name), "%s", dd->entries[dd->position]);
+    dd->position++;
+    return sizeof(php_stream_dirent);
+}
+
+static int branchfs_dirstream_close(php_stream *stream, int close_handle) {
+    branchfs_dir_data_t *dd = (branchfs_dir_data_t *)stream->abstract;
+    if (!dd) return 0;
+    for (int i = 0; i < dd->count; i++) {
+        if (dd->entries[i]) efree(dd->entries[i]);
+    }
+    if (dd->entries) efree(dd->entries);
+    efree(dd);
+    stream->abstract = NULL;
+    return 0;
+}
+
+static int branchfs_dirstream_seek(php_stream *stream, zend_off_t offset, int whence,
+    zend_off_t *newoffset)
+{
+    branchfs_dir_data_t *dd = (branchfs_dir_data_t *)stream->abstract;
+    if (!dd) return -1;
+    if (whence == SEEK_SET && offset == 0) {
+        dd->position = 0;
+        *newoffset = 0;
+        return 0;
+    }
+    return -1;
+}
+
+static const php_stream_ops branchfs_dirstream_ops = {
+    NULL, /* write */
+    branchfs_dirstream_read,
+    branchfs_dirstream_close,
+    NULL, /* flush */
+    "branchfs/dir",
+    branchfs_dirstream_seek,
+    NULL, NULL, NULL
+};
+
+/* ================================================================
+ * Section 6: Internal open helpers (shared by branchfs:// and interceptor)
+ * ================================================================ */
+
+static php_stream *do_open_file(int branch_id, const char *rel_path, const char *mode,
+    int options, zend_string **opened_path STREAMS_DC)
+{
+    branchfs_stream_data_t *sd = ecalloc(1, sizeof(branchfs_stream_data_t));
+    sd->path = estrdup(rel_path);
+    sd->branch_id = branch_id;
+    sd->writable = (strchr(mode, 'w') || strchr(mode, 'a') || strchr(mode, '+') ||
+                    strchr(mode, 'x') || strchr(mode, 'c'));
+
+    if (strchr(mode, 'w') || strchr(mode, 'x')) {
+        /* Write/create: start empty */
+        sd->data = emalloc(4096);
+        sd->data[0] = '\0';
+        sd->size = 0;
+        sd->alloc = 4096;
+        sd->position = 0;
+        sd->modified = 1;
+    } else if (strchr(mode, 'c')) {
+        /* Open for writing, create if not exist, don't truncate */
+        char *existing = NULL;
+        size_t esize = 0;
+        if (store_read_file(branch_id, rel_path, &existing, &esize) == 0 && existing) {
+            sd->data = existing;
+            sd->size = esize;
+            sd->alloc = esize;
+        } else {
+            sd->data = emalloc(4096);
+            sd->data[0] = '\0';
+            sd->size = 0;
+            sd->alloc = 4096;
+        }
+        sd->position = 0;
+        sd->modified = 0;
+    } else {
+        /* Read: load from store */
+        char *data = NULL;
+        size_t size = 0;
+        int rc = store_read_file(branch_id, rel_path, &data, &size);
+        if (rc != 0) {
+            if (options & REPORT_ERRORS) {
+                php_error_docref(NULL, E_WARNING, "branchfs: file not found: %s", rel_path);
+            }
+            efree(sd->path);
+            efree(sd);
+            return NULL;
+        }
+        sd->data = data;
+        sd->size = size;
+        sd->alloc = size;
+        sd->position = 0;
+
+        if (strchr(mode, 'a')) {
+            sd->position = size;
+            sd->modified = 0;
+        }
+    }
+
+    php_stream *stream = php_stream_alloc(&branchfs_stream_ops, sd, NULL, mode);
+    if (!stream) {
+        if (sd->data) efree(sd->data);
+        efree(sd->path);
+        efree(sd);
+        return NULL;
+    }
+
+    return stream;
+}
+
+static php_stream *do_open_dir(int branch_id, const char *rel_path STREAMS_DC) {
+    char **entries = NULL;
+    int count = 0;
+    if (store_list_dir(branch_id, rel_path, &entries, &count) != 0) return NULL;
+
+    branchfs_dir_data_t *dd = ecalloc(1, sizeof(branchfs_dir_data_t));
+    dd->entries = entries;
+    dd->count = count;
+    dd->position = 0;
+
+    php_stream *stream = php_stream_alloc(&branchfs_dirstream_ops, dd, NULL, "r");
+    if (!stream) {
+        for (int i = 0; i < count; i++) efree(entries[i]);
+        efree(entries);
+        efree(dd);
+        return NULL;
+    }
+    stream->flags |= PHP_STREAM_FLAG_IS_DIR;
+    return stream;
+}
+
+static int do_url_stat(int branch_id, const char *rel_path, php_stream_statbuf *ssb) {
+    int is_dir = 0;
+    size_t size = 0;
+    int mode = 0;
+    time_t mtime = 0;
+
+    int rc = store_stat_file(branch_id, rel_path, &is_dir, &size, &mode, &mtime);
+    if (rc != 0) return -1;
+
+    memset(&ssb->sb, 0, sizeof(ssb->sb));
+    if (is_dir) {
+        ssb->sb.st_mode = S_IFDIR | 0755;
+        ssb->sb.st_size = 0;
+    } else {
+        ssb->sb.st_mode = S_IFREG | (mode & 0777 ? mode & 0777 : 0644);
+        ssb->sb.st_size = size;
+    }
+    ssb->sb.st_nlink = 1;
+    ssb->sb.st_mtime = mtime ? mtime : time(NULL);
+    ssb->sb.st_atime = ssb->sb.st_mtime;
+    ssb->sb.st_ctime = ssb->sb.st_mtime;
+    ssb->sb.st_uid = getuid();
+    ssb->sb.st_gid = getgid();
+    return 0;
+}
+
+/* ================================================================
+ * Section 7: branchfs:// wrapper ops
+ * ================================================================ */
+
+static php_stream *branchfs_stream_opener(php_stream_wrapper *wrapper, const char *filename,
+    const char *mode, int options, zend_string **opened_path,
+    php_stream_context *context STREAMS_DC)
+{
+    char branch[256], path[BRANCHFS_MAX_PATH];
+    if (parse_branchfs_url(filename, branch, sizeof(branch), path, sizeof(path)) != 0) return NULL;
+
+    int branch_id = store_get_branch_id(branch);
+    if (branch_id < 0) return NULL;
+
+    return do_open_file(branch_id, path, mode, options, opened_path STREAMS_REL_CC);
+}
+
+static int branchfs_url_stat(php_stream_wrapper *wrapper, const char *url, int flags,
+    php_stream_statbuf *ssb, php_stream_context *context)
+{
+    char branch[256], path[BRANCHFS_MAX_PATH];
+    if (parse_branchfs_url(url, branch, sizeof(branch), path, sizeof(path)) != 0) return -1;
+    int branch_id = store_get_branch_id(branch);
+    if (branch_id < 0) return -1;
+    return do_url_stat(branch_id, path, ssb);
+}
+
+static php_stream *branchfs_dir_opener(php_stream_wrapper *wrapper, const char *filename,
+    const char *mode, int options, zend_string **opened_path,
+    php_stream_context *context STREAMS_DC)
+{
+    char branch[256], path[BRANCHFS_MAX_PATH];
+    if (parse_branchfs_url(filename, branch, sizeof(branch), path, sizeof(path)) != 0) return NULL;
+    int branch_id = store_get_branch_id(branch);
+    if (branch_id < 0) return NULL;
+    return do_open_dir(branch_id, path STREAMS_REL_CC);
+}
+
+static int branchfs_unlink(php_stream_wrapper *wrapper, const char *url, int options,
+    php_stream_context *context)
+{
+    char branch[256], path[BRANCHFS_MAX_PATH];
+    if (parse_branchfs_url(url, branch, sizeof(branch), path, sizeof(path)) != 0) return 0;
+    int branch_id = store_get_branch_id(branch);
+    if (branch_id < 0) return 0;
+    int ret = store_unlink(branch_id, path) == 0 ? 1 : 0;
+    if (ret) php_clear_stat_cache(1, NULL, 0);
+    return ret;
+}
+
+static int branchfs_rename(php_stream_wrapper *wrapper, const char *url_from, const char *url_to,
+    int options, php_stream_context *context)
+{
+    char branch1[256], path1[BRANCHFS_MAX_PATH];
+    char branch2[256], path2[BRANCHFS_MAX_PATH];
+    if (parse_branchfs_url(url_from, branch1, sizeof(branch1), path1, sizeof(path1)) != 0) return 0;
+    if (parse_branchfs_url(url_to, branch2, sizeof(branch2), path2, sizeof(path2)) != 0) return 0;
+    int branch_id = store_get_branch_id(branch1);
+    if (branch_id < 0) return 0;
+    int ret = store_rename(branch_id, path1, path2) == 0 ? 1 : 0;
+    if (ret) php_clear_stat_cache(1, NULL, 0);
+    return ret;
+}
+
+static int branchfs_mkdir(php_stream_wrapper *wrapper, const char *url, int mode, int options,
+    php_stream_context *context)
+{
+    char branch[256], path[BRANCHFS_MAX_PATH];
+    if (parse_branchfs_url(url, branch, sizeof(branch), path, sizeof(path)) != 0) return 0;
+    int branch_id = store_get_branch_id(branch);
+    if (branch_id < 0) return 0;
+
+    if (options & PHP_STREAM_MKDIR_RECURSIVE) {
+        char tmp[BRANCHFS_MAX_PATH];
+        snprintf(tmp, sizeof(tmp), "%s", path);
+        for (char *p = tmp + 1; *p; p++) {
+            if (*p == '/') {
+                *p = '\0';
+                store_mkdir(branch_id, tmp, mode);
+                *p = '/';
+            }
+        }
+    }
+    int ret = store_mkdir(branch_id, path, mode) == 0 ? 1 : 0;
+    if (ret) php_clear_stat_cache(1, NULL, 0);
+    return ret;
+}
+
+static int branchfs_rmdir(php_stream_wrapper *wrapper, const char *url, int options,
+    php_stream_context *context)
+{
+    char branch[256], path[BRANCHFS_MAX_PATH];
+    if (parse_branchfs_url(url, branch, sizeof(branch), path, sizeof(path)) != 0) return 0;
+    int branch_id = store_get_branch_id(branch);
+    if (branch_id < 0) return 0;
+    return store_rmdir(branch_id, path) == 0 ? 1 : 0;
+}
+
+static int branchfs_metadata(php_stream_wrapper *wrapper, const char *url, int options,
+    void *value, php_stream_context *context)
+{
+    return 1; /* Success - metadata changes are no-ops for now */
+}
+
+static const php_stream_wrapper_ops branchfs_wrapper_ops = {
+    branchfs_stream_opener,
+    NULL, /* stream_closer */
+    NULL, /* stream_stat */
+    branchfs_url_stat,
+    branchfs_dir_opener,
+    BRANCHFS_PROTO,
+    branchfs_unlink,
+    branchfs_rename,
+    branchfs_mkdir,
+    branchfs_rmdir,
+    branchfs_metadata
+};
+
+static php_stream_wrapper branchfs_wrapper = {
+    &branchfs_wrapper_ops,
+    NULL,
+    0  /* not a URL wrapper */
+};
+
+/* ================================================================
+ * Section 8: Plain files wrapper interception
+ * ================================================================ */
+
+static php_stream *intercept_stream_opener(php_stream_wrapper *wrapper, const char *filename,
+    const char *mode, int options, zend_string **opened_path,
+    php_stream_context *context STREAMS_DC)
+{
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        char rel_path[BRANCHFS_MAX_PATH];
+
+        /* Skip protocol URLs */
+        if (strstr(filename, "://") != NULL) goto passthrough;
+
+        /* Skip excluded paths */
+        if (filename[0] == '/' && should_exclude(filename)) goto passthrough;
+
+        if (resolve_to_wp_relative(filename, rel_path, sizeof(rel_path))) {
+            int branch_id = get_current_branch_id();
+            if (branch_id > 0) {
+                BRANCHFS_G(intercepting) = 1;
+                php_stream *s = do_open_file(branch_id, rel_path, mode, options, opened_path STREAMS_REL_CC);
+                BRANCHFS_G(intercepting) = 0;
+                if (s) {
+                    /* Set orig_path to the real filesystem path so __FILE__/__DIR__ work */
+                    if (opened_path && filename[0] == '/') {
+                        *opened_path = zend_string_init(filename, strlen(filename), 0);
+                    }
+                    return s;
+                }
+                /* If not found in store and mode is read, fall through to real FS as fallback */
+                if (!strchr(mode, 'w') && !strchr(mode, 'a') && !strchr(mode, 'x') && !strchr(mode, 'c')) {
+                    goto passthrough;
+                }
+                return NULL;
+            }
+        }
+    }
+
+passthrough:
+    if (BRANCHFS_G(orig_plain_ops) && BRANCHFS_G(orig_plain_ops)->stream_opener) {
+        return BRANCHFS_G(orig_plain_ops)->stream_opener(wrapper, filename, mode, options,
+            opened_path, context STREAMS_REL_CC);
+    }
+    return NULL;
+}
+
+static int intercept_url_stat(php_stream_wrapper *wrapper, const char *url, int flags,
+    php_stream_statbuf *ssb, php_stream_context *context)
+{
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        char rel_path[BRANCHFS_MAX_PATH];
+        if (strstr(url, "://") != NULL) goto passthrough;
+        if (url[0] == '/' && should_exclude(url)) goto passthrough;
+
+        if (resolve_to_wp_relative(url, rel_path, sizeof(rel_path))) {
+            int branch_id = get_current_branch_id();
+            if (branch_id > 0) {
+                BRANCHFS_G(intercepting) = 1;
+                int rc = do_url_stat(branch_id, rel_path, ssb);
+                BRANCHFS_G(intercepting) = 0;
+                if (rc == 0) return 0;
+                /* Fall through to real FS */
+            }
+        }
+    }
+
+passthrough:
+    if (BRANCHFS_G(orig_plain_ops) && BRANCHFS_G(orig_plain_ops)->url_stat) {
+        return BRANCHFS_G(orig_plain_ops)->url_stat(wrapper, url, flags, ssb, context);
+    }
+    return -1;
+}
+
+static php_stream *intercept_dir_opener(php_stream_wrapper *wrapper, const char *filename,
+    const char *mode, int options, zend_string **opened_path,
+    php_stream_context *context STREAMS_DC)
+{
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        char rel_path[BRANCHFS_MAX_PATH];
+        if (strstr(filename, "://") != NULL) goto passthrough;
+        if (filename[0] == '/' && should_exclude(filename)) goto passthrough;
+
+        if (resolve_to_wp_relative(filename, rel_path, sizeof(rel_path))) {
+            int branch_id = get_current_branch_id();
+            if (branch_id > 0) {
+                BRANCHFS_G(intercepting) = 1;
+                php_stream *s = do_open_dir(branch_id, rel_path STREAMS_REL_CC);
+                BRANCHFS_G(intercepting) = 0;
+                if (s) return s;
+            }
+        }
+    }
+
+passthrough:
+    if (BRANCHFS_G(orig_plain_ops) && BRANCHFS_G(orig_plain_ops)->dir_opener) {
+        return BRANCHFS_G(orig_plain_ops)->dir_opener(wrapper, filename, mode, options,
+            opened_path, context STREAMS_REL_CC);
+    }
+    return NULL;
+}
+
+static int intercept_unlink(php_stream_wrapper *wrapper, const char *url, int options,
+    php_stream_context *context)
+{
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        char rel_path[BRANCHFS_MAX_PATH];
+        if (strstr(url, "://") != NULL) goto passthrough;
+        if (resolve_to_wp_relative(url, rel_path, sizeof(rel_path))) {
+            int branch_id = get_current_branch_id();
+            if (branch_id > 0) {
+                int ret = store_unlink(branch_id, rel_path) == 0 ? 1 : 0;
+                if (ret) php_clear_stat_cache(1, NULL, 0);
+                return ret;
+            }
+        }
+    }
+passthrough:
+    if (BRANCHFS_G(orig_plain_ops) && BRANCHFS_G(orig_plain_ops)->unlink) {
+        return BRANCHFS_G(orig_plain_ops)->unlink(wrapper, url, options, context);
+    }
+    return 0;
+}
+
+static int intercept_rename(php_stream_wrapper *wrapper, const char *url_from, const char *url_to,
+    int options, php_stream_context *context)
+{
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        char rel_from[BRANCHFS_MAX_PATH], rel_to[BRANCHFS_MAX_PATH];
+        if (resolve_to_wp_relative(url_from, rel_from, sizeof(rel_from)) &&
+            resolve_to_wp_relative(url_to, rel_to, sizeof(rel_to))) {
+            int branch_id = get_current_branch_id();
+            if (branch_id > 0) {
+                int ret = store_rename(branch_id, rel_from, rel_to) == 0 ? 1 : 0;
+                if (ret) php_clear_stat_cache(1, NULL, 0);
+                return ret;
+            }
+        }
+    }
+    if (BRANCHFS_G(orig_plain_ops) && BRANCHFS_G(orig_plain_ops)->rename) {
+        return BRANCHFS_G(orig_plain_ops)->rename(wrapper, url_from, url_to, options, context);
+    }
+    return 0;
+}
+
+static int intercept_mkdir(php_stream_wrapper *wrapper, const char *url, int mode, int options,
+    php_stream_context *context)
+{
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        char rel_path[BRANCHFS_MAX_PATH];
+        if (strstr(url, "://") != NULL) goto passthrough;
+        if (resolve_to_wp_relative(url, rel_path, sizeof(rel_path))) {
+            int branch_id = get_current_branch_id();
+            if (branch_id > 0) {
+                if (options & PHP_STREAM_MKDIR_RECURSIVE) {
+                    char tmp[BRANCHFS_MAX_PATH];
+                    snprintf(tmp, sizeof(tmp), "%s", rel_path);
+                    for (char *p = tmp + 1; *p; p++) {
+                        if (*p == '/') {
+                            *p = '\0';
+                            store_mkdir(branch_id, tmp, mode);
+                            *p = '/';
+                        }
+                    }
+                }
+                int ret = store_mkdir(branch_id, rel_path, mode) == 0 ? 1 : 0;
+                if (ret) php_clear_stat_cache(1, NULL, 0);
+                return ret;
+            }
+        }
+    }
+passthrough:
+    if (BRANCHFS_G(orig_plain_ops) && BRANCHFS_G(orig_plain_ops)->stream_mkdir) {
+        return BRANCHFS_G(orig_plain_ops)->stream_mkdir(wrapper, url, mode, options, context);
+    }
+    return 0;
+}
+
+static int intercept_rmdir(php_stream_wrapper *wrapper, const char *url, int options,
+    php_stream_context *context)
+{
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        char rel_path[BRANCHFS_MAX_PATH];
+        if (resolve_to_wp_relative(url, rel_path, sizeof(rel_path))) {
+            int branch_id = get_current_branch_id();
+            if (branch_id > 0) return store_rmdir(branch_id, rel_path) == 0 ? 1 : 0;
+        }
+    }
+    if (BRANCHFS_G(orig_plain_ops) && BRANCHFS_G(orig_plain_ops)->stream_rmdir) {
+        return BRANCHFS_G(orig_plain_ops)->stream_rmdir(wrapper, url, options, context);
+    }
+    return 0;
+}
+
+static int intercept_metadata(php_stream_wrapper *wrapper, const char *url, int options,
+    void *value, php_stream_context *context)
+{
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        char rel_path[BRANCHFS_MAX_PATH];
+        if (resolve_to_wp_relative(url, rel_path, sizeof(rel_path))) {
+            int branch_id = get_current_branch_id();
+            if (branch_id > 0) return 1; /* Pretend success */
+        }
+    }
+    if (BRANCHFS_G(orig_plain_ops) && BRANCHFS_G(orig_plain_ops)->stream_metadata) {
+        return BRANCHFS_G(orig_plain_ops)->stream_metadata(wrapper, url, options, value, context);
+    }
+    return 0;
+}
+
+static const php_stream_wrapper_ops intercept_plain_ops = {
+    intercept_stream_opener,
+    NULL,
+    NULL,
+    intercept_url_stat,
+    intercept_dir_opener,
+    "plainfile/branchfs",
+    intercept_unlink,
+    intercept_rename,
+    intercept_mkdir,
+    intercept_rmdir,
+    intercept_metadata
+};
+
+/* ================================================================
+ * Section 9: PHP userland functions
+ * ================================================================ */
+
+PHP_FUNCTION(branchfs_set_db) {
+    char *path;
+    size_t path_len;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_STRING(path, path_len)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(db_path)) efree(BRANCHFS_G(db_path));
+    BRANCHFS_G(db_path) = estrndup(path, path_len);
+
+    store_close();
+    if (store_open(BRANCHFS_G(db_path)) == 0) {
+        RETURN_TRUE;
+    }
+    RETURN_FALSE;
+}
+
+PHP_FUNCTION(branchfs_set_root) {
+    char *path;
+    size_t path_len;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_STRING(path, path_len)
+    ZEND_PARSE_PARAMETERS_END();
+
+    /* Remove trailing slash */
+    while (path_len > 1 && path[path_len - 1] == '/') path_len--;
+
+    if (BRANCHFS_G(wp_root)) efree(BRANCHFS_G(wp_root));
+    BRANCHFS_G(wp_root) = estrndup(path, path_len);
+    RETURN_TRUE;
+}
+
+PHP_FUNCTION(branchfs_set_branch) {
+    char *branch;
+    size_t branch_len;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_STRING(branch, branch_len)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(current_branch)) efree(BRANCHFS_G(current_branch));
+    BRANCHFS_G(current_branch) = estrndup(branch, branch_len);
+    RETURN_TRUE;
+}
+
+PHP_FUNCTION(branchfs_get_branch) {
+    ZEND_PARSE_PARAMETERS_NONE();
+    if (BRANCHFS_G(current_branch)) {
+        RETURN_STRING(BRANCHFS_G(current_branch));
+    }
+    RETURN_NULL();
+}
+
+PHP_FUNCTION(branchfs_activate) {
+    ZEND_PARSE_PARAMETERS_NONE();
+    if (!BRANCHFS_G(db) || !BRANCHFS_G(wp_root) || !BRANCHFS_G(current_branch)) {
+        php_error_docref(NULL, E_WARNING,
+            "branchfs: must set db, root, and branch before activating");
+        RETURN_FALSE;
+    }
+    BRANCHFS_G(active) = 1;
+    RETURN_TRUE;
+}
+
+PHP_FUNCTION(branchfs_deactivate) {
+    ZEND_PARSE_PARAMETERS_NONE();
+    BRANCHFS_G(active) = 0;
+    RETURN_TRUE;
+}
+
+PHP_FUNCTION(branchfs_create_branch) {
+    char *name, *parent = NULL;
+    size_t name_len, parent_len = 0;
+    ZEND_PARSE_PARAMETERS_START(1, 2)
+        Z_PARAM_STRING(name, name_len)
+        Z_PARAM_OPTIONAL
+        Z_PARAM_STRING_OR_NULL(parent, parent_len)
+    ZEND_PARSE_PARAMETERS_END();
+
+    int id = store_create_branch(name, parent);
+    if (id > 0) {
+        RETURN_LONG(id);
+    }
+    RETURN_FALSE;
+}
+
+PHP_FUNCTION(branchfs_import_file) {
+    char *real_path, *branch, *virtual_path;
+    size_t rp_len, br_len, vp_len;
+    ZEND_PARSE_PARAMETERS_START(3, 3)
+        Z_PARAM_STRING(real_path, rp_len)
+        Z_PARAM_STRING(branch, br_len)
+        Z_PARAM_STRING(virtual_path, vp_len)
+    ZEND_PARSE_PARAMETERS_END();
+
+    int branch_id = store_get_branch_id(branch);
+    if (branch_id < 0) RETURN_FALSE;
+
+    /* Read the real file (bypass our interceptor) */
+    BRANCHFS_G(intercepting) = 1;
+    php_stream *stream = php_stream_open_wrapper(real_path, "rb",
+        REPORT_ERRORS, NULL);
+    BRANCHFS_G(intercepting) = 0;
+
+    if (!stream) RETURN_FALSE;
+
+    zend_string *contents = php_stream_copy_to_mem(stream, PHP_STREAM_COPY_ALL, 0);
+    php_stream_close(stream);
+
+    if (!contents) RETURN_FALSE;
+
+    int rc = store_write_file(branch_id, virtual_path,
+        ZSTR_VAL(contents), ZSTR_LEN(contents));
+    zend_string_release(contents);
+    RETURN_BOOL(rc == 0);
+}
+
+PHP_FUNCTION(branchfs_import_dir) {
+    char *branch, *virtual_path;
+    size_t br_len, vp_len;
+    ZEND_PARSE_PARAMETERS_START(2, 2)
+        Z_PARAM_STRING(branch, br_len)
+        Z_PARAM_STRING(virtual_path, vp_len)
+    ZEND_PARSE_PARAMETERS_END();
+
+    int branch_id = store_get_branch_id(branch);
+    if (branch_id < 0) RETURN_FALSE;
+
+    RETURN_BOOL(store_mkdir(branch_id, virtual_path, 16877) == 0);
+}
+
+PHP_FUNCTION(branchfs_is_active) {
+    ZEND_PARSE_PARAMETERS_NONE();
+    RETURN_BOOL(BRANCHFS_G(active));
+}
+
+/* ================================================================
+ * Section 9b: Override file_exists / is_readable / is_writable
+ *
+ * PHP's file_exists() uses access(2) syscall for the plain files wrapper,
+ * bypassing the stream wrapper's url_stat entirely. We must override these
+ * PHP functions to intercept calls for paths under the WP root.
+ * ================================================================ */
+
+static zif_handler original_file_exists_handler = NULL;
+
+ZEND_NAMED_FUNCTION(branchfs_override_file_exists) {
+    zend_string *filename;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(filename)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *path = ZSTR_VAL(filename);
+        /* Skip protocol URLs - let original handler deal with them */
+        if (strstr(path, "://") == NULL) {
+            char rel_path[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
+                int branch_id = get_current_branch_id();
+                if (branch_id > 0) {
+                    RETURN_BOOL(store_file_exists(branch_id, rel_path));
+                }
+            }
+        }
+    }
+    original_file_exists_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+/* ================================================================
+ * Section 10: Module lifecycle
+ * ================================================================ */
+
+static const zend_function_entry branchfs_functions[] = {
+    PHP_FE(branchfs_set_db, NULL)
+    PHP_FE(branchfs_set_root, NULL)
+    PHP_FE(branchfs_set_branch, NULL)
+    PHP_FE(branchfs_get_branch, NULL)
+    PHP_FE(branchfs_activate, NULL)
+    PHP_FE(branchfs_deactivate, NULL)
+    PHP_FE(branchfs_create_branch, NULL)
+    PHP_FE(branchfs_import_file, NULL)
+    PHP_FE(branchfs_import_dir, NULL)
+    PHP_FE(branchfs_is_active, NULL)
+    PHP_FE_END
+};
+
+static void php_branchfs_globals_ctor(zend_branchfs_globals *g) {
+    memset(g, 0, sizeof(*g));
+}
+
+static void php_branchfs_globals_dtor(zend_branchfs_globals *g) {
+    (void)g;
+}
+
+PHP_MINIT_FUNCTION(branchfs) {
+    ZEND_INIT_MODULE_GLOBALS(branchfs, php_branchfs_globals_ctor, php_branchfs_globals_dtor);
+
+    /* Register branchfs:// stream wrapper */
+    if (php_register_url_stream_wrapper(BRANCHFS_PROTO, &branchfs_wrapper) == FAILURE) {
+        return FAILURE;
+    }
+
+    /* Intercept plain files wrapper */
+    BRANCHFS_G(orig_plain_ops) = php_plain_files_wrapper.wops;
+    php_plain_files_wrapper.wops = &intercept_plain_ops;
+
+    /* Override file_exists: PHP uses access(2) for plain wrapper, bypassing url_stat */
+    zend_function *fe_func = zend_hash_str_find_ptr(CG(function_table),
+        "file_exists", sizeof("file_exists") - 1);
+    if (fe_func && fe_func->type == ZEND_INTERNAL_FUNCTION) {
+        original_file_exists_handler = fe_func->internal_function.handler;
+        fe_func->internal_function.handler = branchfs_override_file_exists;
+    }
+
+    return SUCCESS;
+}
+
+PHP_MSHUTDOWN_FUNCTION(branchfs) {
+    /* Restore original plain files wrapper */
+    if (BRANCHFS_G(orig_plain_ops)) {
+        php_plain_files_wrapper.wops = BRANCHFS_G(orig_plain_ops);
+        BRANCHFS_G(orig_plain_ops) = NULL;
+    }
+
+    php_unregister_url_stream_wrapper(BRANCHFS_PROTO);
+    return SUCCESS;
+}
+
+PHP_RINIT_FUNCTION(branchfs) {
+    BRANCHFS_G(active) = 0;
+    BRANCHFS_G(intercepting) = 0;
+    return SUCCESS;
+}
+
+PHP_RSHUTDOWN_FUNCTION(branchfs) {
+    store_close();
+    if (BRANCHFS_G(db_path)) { efree(BRANCHFS_G(db_path)); BRANCHFS_G(db_path) = NULL; }
+    if (BRANCHFS_G(wp_root)) { efree(BRANCHFS_G(wp_root)); BRANCHFS_G(wp_root) = NULL; }
+    if (BRANCHFS_G(current_branch)) { efree(BRANCHFS_G(current_branch)); BRANCHFS_G(current_branch) = NULL; }
+    BRANCHFS_G(active) = 0;
+    return SUCCESS;
+}
+
+PHP_MINFO_FUNCTION(branchfs) {
+    php_info_print_table_start();
+    php_info_print_table_header(2, "branchfs support", "enabled");
+    php_info_print_table_row(2, "Version", PHP_BRANCHFS_VERSION);
+    php_info_print_table_row(2, "Branch", BRANCHFS_G(current_branch) ? BRANCHFS_G(current_branch) : "(none)");
+    php_info_print_table_row(2, "WP Root", BRANCHFS_G(wp_root) ? BRANCHFS_G(wp_root) : "(none)");
+    php_info_print_table_row(2, "Active", BRANCHFS_G(active) ? "yes" : "no");
+    php_info_print_table_end();
+}
+
+zend_module_entry branchfs_module_entry = {
+    STANDARD_MODULE_HEADER,
+    "branchfs",
+    branchfs_functions,
+    PHP_MINIT(branchfs),
+    PHP_MSHUTDOWN(branchfs),
+    PHP_RINIT(branchfs),
+    PHP_RSHUTDOWN(branchfs),
+    PHP_MINFO(branchfs),
+    PHP_BRANCHFS_VERSION,
+    STANDARD_MODULE_PROPERTIES
+};
+
+#ifdef COMPILE_DL_BRANCHFS
+ZEND_GET_MODULE(branchfs)
+#endif

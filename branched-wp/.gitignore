@@ -1,0 +1,5 @@
+ext/branchfs.so
+*.o
+*.lo
+*.la
+/tmp/branchfs*.db
