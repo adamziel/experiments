@@ -118,7 +118,7 @@ ob_start();
 require_once $wp_root . '/wp-load.php';
 require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 
-$result = wp_install($site_title, 'admin', 'test@test.com', false, '', 'admin123');
+$result = wp_install($site_title, 'admin', 'test@test.com', false, '', 'admin');
 ob_end_clean();
 
 if (!empty($result['user_id']) && $result['user_id'] > 0) {
