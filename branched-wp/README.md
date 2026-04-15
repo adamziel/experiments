@@ -173,10 +173,12 @@ docker compose exec dev bin/branchctl delete feature
 
 **Caveats**:
 
-- `reset` and `rollback` only rewind Dolt. The filesystem overlay has no
-  per-file history yet, so files you wrote on the branch stay as they
-  were. If that matters for your use case, re-import them or merge from a
-  known-good branch.
+- `reset` and `rollback` rewind BOTH Dolt AND the file overlay — each
+  `branchctl commit` records an `fs_commits` snapshot paired with the new
+  Dolt hash, so reset restores the file tree from the snapshot. `log`
+  marks commits that have a paired snapshot (`*` in the FS column).
+  Reset/rollback refuse to run if the branch has uncommitted file-side
+  changes; pass `--force` to discard them.
 - `merge` conflicts: Dolt surfaces them through `dolt_conflicts`. `merge.php`
   prints "WARNING: conflict on table X" when any are detected; resolve via
   standard Dolt SQL (update/delete from the conflict tables) before the

@@ -134,3 +134,31 @@ while ($wpdb->dbh->next_result()) { $r = $wpdb->dbh->store_result(); if ($r) $r-
 $wpdb->query("CALL DOLT_COMMIT('-am', 'Initial WordPress install')");
 while ($wpdb->dbh->next_result()) { $r = $wpdb->dbh->store_result(); if ($r) $r->free(); }
 echo "  Dolt initial commit created\n";
+
+// --- Pair a branchfs fs_commit so reset/rollback has something to land on ---
+$r = $wpdb->dbh->query("SELECT hash FROM dolt_branches WHERE name = 'main' LIMIT 1");
+$hrow = $r ? $r->fetch_assoc() : null;
+if ($r) $r->free();
+while ($wpdb->dbh->next_result()) { $r = $wpdb->dbh->store_result(); if ($r) $r->free(); }
+if (!empty($hrow['hash'])) {
+    $sd = new SQLite3($db_path, SQLITE3_OPEN_READWRITE);
+    $sd->exec("CREATE TABLE IF NOT EXISTS fs_commits (id INTEGER PRIMARY KEY AUTOINCREMENT, branch_id INTEGER NOT NULL, dolt_hash TEXT NOT NULL, parent_id INTEGER, message TEXT, created_at TEXT DEFAULT (datetime('now')), UNIQUE (branch_id, dolt_hash))");
+    $sd->exec("CREATE INDEX IF NOT EXISTS idx_fs_commits_branch ON fs_commits(branch_id)");
+    $sd->exec("CREATE INDEX IF NOT EXISTS idx_fs_commits_dolt ON fs_commits(branch_id, dolt_hash)");
+    $sd->exec("CREATE TABLE IF NOT EXISTS fs_commit_files (commit_id INTEGER NOT NULL, path TEXT NOT NULL, blob_hash TEXT, mode INTEGER, mtime INTEGER, is_dir INTEGER DEFAULT 0, PRIMARY KEY (commit_id, path))");
+    $bid = (int)$sd->querySingle("SELECT id FROM branches WHERE name = 'main'");
+    if ($bid) {
+        $existing = (int)$sd->querySingle("SELECT id FROM fs_commits WHERE branch_id = $bid AND dolt_hash = '" . $sd->escapeString($hrow['hash']) . "'");
+        if (!$existing) {
+            $sd->exec("INSERT INTO fs_commits (branch_id, dolt_hash, message) VALUES ($bid, '" . $sd->escapeString($hrow['hash']) . "', 'Initial WordPress install')");
+            $cid = $sd->lastInsertRowID();
+            $sd->exec('BEGIN');
+            $sd->exec("INSERT INTO fs_commit_files (commit_id, path, blob_hash, mode, mtime, is_dir) "
+                . "SELECT $cid, path, blob_hash, mode, mtime, is_dir FROM files WHERE branch_id = $bid");
+            $sd->exec('COMMIT');
+            $n = (int)$sd->querySingle("SELECT COUNT(*) FROM fs_commit_files WHERE commit_id = $cid");
+            echo "  branchfs fs_commit #$cid recorded ($n files) paired with dolt " . substr($hrow['hash'], 0, 12) . "\n";
+        }
+    }
+    $sd->close();
+}
