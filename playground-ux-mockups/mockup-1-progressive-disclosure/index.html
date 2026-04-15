@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Direction 1: Progressive Disclosure — WP Playground Redesign</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  :root { --blue: #3858e9; --blue-dark: #2c46b8; --gray-50: #f9f9f9; --gray-100: #f0f0f0; --gray-200: #ddd; --gray-600: #555; --gray-900: #1e1e1e; --sidebar-w: 320px; --topbar-h: 52px; --radius: 8px; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--gray-50); color: var(--gray-900); line-height: 1.5; }
+
+  /* --- Top Bar --- */
+  .topbar { position: fixed; top: 0; left: 0; right: 0; height: var(--topbar-h); background: #fff; border-bottom: 1px solid var(--gray-200); display: flex; align-items: center; padding: 0 1rem; z-index: 100; gap: .75rem; }
+  .topbar-logo { font-weight: 700; font-size: 1rem; color: var(--blue); white-space: nowrap; }
+  .topbar-logo span { color: var(--gray-900); }
+  .topbar-spacer { flex: 1; }
+  .topbar-btn { background: none; border: 1px solid var(--gray-200); border-radius: 6px; padding: .35rem .7rem; font-size: .82rem; cursor: pointer; color: var(--gray-600); display: flex; align-items: center; gap: .3rem; transition: background .12s; }
+  .topbar-btn:hover { background: var(--gray-100); }
+  .topbar-btn:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .topbar-btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+  .topbar-btn.primary:hover { background: var(--blue-dark); }
+  .hamburger { display: none; background: none; border: none; font-size: 1.4rem; cursor: pointer; padding: .2rem; }
+  .hamburger:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  /* --- Sidebar --- */
+  .sidebar { position: fixed; top: var(--topbar-h); left: 0; bottom: 0; width: var(--sidebar-w); background: #fff; border-right: 1px solid var(--gray-200); overflow-y: auto; z-index: 90; transition: transform .25s ease; }
+  .sidebar.closed { transform: translateX(-100%); }
+  .sidebar-section { border-bottom: 1px solid var(--gray-100); }
+  .sidebar-header { display: flex; align-items: center; justify-content: space-between; padding: .85rem 1rem; cursor: pointer; user-select: none; font-weight: 600; font-size: .9rem; }
+  .sidebar-header:hover { background: var(--gray-50); }
+  .sidebar-header:focus-visible { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .sidebar-header .arrow { transition: transform .2s; font-size: .7rem; color: var(--gray-600); }
+  .sidebar-header.open .arrow { transform: rotate(90deg); }
+  .sidebar-content { padding: 0 1rem .85rem; display: none; }
+  .sidebar-header.open + .sidebar-content { display: block; }
+  .field { margin-bottom: .65rem; }
+  .field label { display: block; font-size: .8rem; color: var(--gray-600); margin-bottom: .2rem; }
+  .field select, .field input[type="text"] { width: 100%; padding: .4rem .5rem; border: 1px solid var(--gray-200); border-radius: 5px; font-size: .85rem; background: #fff; }
+  .field select:focus, .field input:focus { outline: 2px solid var(--blue); outline-offset: -1px; }
+  .toggle-row { display: flex; align-items: center; justify-content: space-between; font-size: .85rem; padding: .25rem 0; }
+  .toggle { width: 36px; height: 20px; background: var(--gray-200); border-radius: 10px; position: relative; cursor: pointer; border: none; transition: background .15s; }
+  .toggle::after { content: ""; position: absolute; width: 16px; height: 16px; background: #fff; border-radius: 50%; top: 2px; left: 2px; transition: transform .15s; }
+  .toggle.on { background: var(--blue); }
+  .toggle.on::after { transform: translateX(16px); }
+  .toggle:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+  .site-card { background: var(--gray-50); border: 1px solid var(--gray-200); border-radius: var(--radius); padding: .75rem; margin-bottom: .5rem; cursor: pointer; transition: border-color .12s; }
+  .site-card:hover { border-color: var(--blue); }
+  .site-card h4 { font-size: .85rem; margin-bottom: .15rem; }
+  .site-card p { font-size: .75rem; color: var(--gray-600); }
+  .btn-sm { display: inline-flex; align-items: center; gap: .3rem; padding: .4rem .7rem; font-size: .82rem; background: var(--blue); color: #fff; border: none; border-radius: 5px; cursor: pointer; margin-top: .35rem; }
+  .btn-sm:hover { background: var(--blue-dark); }
+  .btn-sm:focus-visible { outline: 2px solid var(--blue); outline-offset: 2px; }
+
+  /* --- Main --- */
+  .main { margin-left: var(--sidebar-w); margin-top: var(--topbar-h); min-height: calc(100vh - var(--topbar-h)); display: flex; flex-direction: column; }
+
+  /* Welcome overlay */
+  .welcome { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 2rem 1rem; }
+  .welcome.hidden { display: none; }
+  .welcome h2 { font-size: clamp(1.3rem, 3vw, 1.8rem); margin-bottom: .5rem; }
+  .welcome p { color: var(--gray-600); max-width: 440px; margin-bottom: 1.5rem; font-size: .95rem; }
+  .launch-btn { padding: .8rem 2rem; font-size: 1.05rem; font-weight: 600; background: var(--blue); color: #fff; border: none; border-radius: var(--radius); cursor: pointer; transition: background .12s, transform .1s; }
+  .launch-btn:hover { background: var(--blue-dark); transform: scale(1.02); }
+  .launch-btn:focus-visible { outline: 3px solid var(--blue); outline-offset: 3px; }
+  .welcome-hint { margin-top: 1rem; font-size: .82rem; color: var(--gray-600); }
+
+  /* WP Preview */
+  .wp-preview { flex: 1; display: none; flex-direction: column; }
+  .wp-preview.visible { display: flex; }
+  .preview-chrome { background: var(--gray-100); border-bottom: 1px solid var(--gray-200); padding: .35rem .75rem; display: flex; align-items: center; gap: .5rem; font-size: .78rem; color: var(--gray-600); }
+  .preview-chrome .dots { display: flex; gap: 4px; }
+  .preview-chrome .dot { width: 10px; height: 10px; border-radius: 50%; }
+  .preview-chrome .dot:nth-child(1) { background: #ff5f57; }
+  .preview-chrome .dot:nth-child(2) { background: #febc2e; }
+  .preview-chrome .dot:nth-child(3) { background: #28c840; }
+  .preview-chrome .url { flex: 1; background: #fff; border: 1px solid var(--gray-200); border-radius: 4px; padding: .2rem .5rem; }
+  .preview-body { flex: 1; background: #fff; display: flex; align-items: center; justify-content: center; min-height: 400px; }
+  .preview-body .fake-wp { text-align: center; color: var(--gray-600); }
+  .preview-body .fake-wp .dashicon { font-size: 3rem; margin-bottom: .5rem; color: var(--blue); }
+  .preview-body .fake-wp p { font-size: .9rem; }
+
+  /* Direction banner */
+  .direction-banner { background: #e8f5e9; color: #2e7d32; text-align: center; padding: .4rem; font-size: .78rem; font-weight: 600; }
+
+  /* Toast */
+  .toast { position: fixed; bottom: 1.5rem; left: 50%; transform: translateX(-50%) translateY(80px); background: var(--gray-900); color: #fff; padding: .6rem 1.2rem; border-radius: 6px; font-size: .85rem; opacity: 0; transition: transform .3s, opacity .3s; z-index: 200; pointer-events: none; }
+  .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+
+  /* Responsive */
+  @media (max-width: 768px) {
+    .hamburger { display: block; }
+    .sidebar { transform: translateX(-100%); }
+    .sidebar.open { transform: translateX(0); }
+    .main { margin-left: 0; }
+    .topbar-btn.hide-mobile { display: none; }
+  }
+  @media (max-width: 400px) {
+    .topbar-logo span { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="direction-banner">Direction: Progressive Disclosure</div>
+
+<header class="topbar">
+  <button class="hamburger" aria-label="Toggle sidebar" onclick="toggleSidebar()">&#9776;</button>
+  <div class="topbar-logo">&#9679; Playground <span>for WordPress</span></div>
+  <div class="topbar-spacer"></div>
+  <button class="topbar-btn hide-mobile" onclick="showToast('Share link copied!')" aria-label="Share">&#128279; Share</button>
+  <button class="topbar-btn hide-mobile" onclick="showToast('Download started')" aria-label="Download">&#8615; Export</button>
+  <button class="topbar-btn primary" id="topLaunchBtn" onclick="launchWP()">&#9654; Launch</button>
+</header>
+
+<aside class="sidebar" id="sidebar" role="complementary" aria-label="Settings sidebar">
+  <div class="sidebar-section">
+    <div class="sidebar-header open" tabindex="0" role="button" aria-expanded="true" onclick="toggleAccordion(this)" onkeydown="if(event.key==='Enter')toggleAccordion(this)">
+      Your Sites <span class="arrow">&#9654;</span>
+    </div>
+    <div class="sidebar-content">
+      <div class="site-card" onclick="launchWP()"><h4>My Test Site</h4><p>WordPress 6.7 &middot; Temporary storage</p></div>
+      <div class="site-card" onclick="launchWP()"><h4>Theme Preview</h4><p>WordPress 6.7 &middot; Browser storage</p></div>
+      <button class="btn-sm" onclick="launchWP()">+ New site</button>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-header" tabindex="0" role="button" aria-expanded="false" onclick="toggleAccordion(this)" onkeydown="if(event.key==='Enter')toggleAccordion(this)">
+      WordPress Version <span class="arrow">&#9654;</span>
+    </div>
+    <div class="sidebar-content">
+      <div class="field"><label for="wp-ver">WordPress</label><select id="wp-ver"><option>6.7 (latest)</option><option>6.6</option><option>6.5</option><option>6.4</option><option>Nightly</option></select></div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-header" tabindex="0" role="button" aria-expanded="false" onclick="toggleAccordion(this)" onkeydown="if(event.key==='Enter')toggleAccordion(this)">
+      Storage &amp; Persistence <span class="arrow">&#9654;</span>
+    </div>
+    <div class="sidebar-content">
+      <div class="field"><label for="storage">Storage mode</label><select id="storage"><option>Temporary (resets on reload)</option><option>Browser (IndexedDB)</option><option>Device (OPFS)</option></select></div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-header" tabindex="0" role="button" aria-expanded="false" onclick="toggleAccordion(this)" onkeydown="if(event.key==='Enter')toggleAccordion(this)">
+      Advanced (PHP &amp; Network) <span class="arrow">&#9654;</span>
+    </div>
+    <div class="sidebar-content">
+      <div class="field"><label for="php-ver">PHP version</label><select id="php-ver"><option>8.2</option><option>8.1</option><option>8.0</option><option>7.4</option></select></div>
+      <div class="field"><label for="extensions">PHP extensions</label><select id="extensions"><option>Default bundle</option><option>Kitchen sink</option><option>Minimal</option></select></div>
+      <div class="toggle-row">Networking <button class="toggle" aria-label="Toggle networking" onclick="this.classList.toggle('on')"></button></div>
+      <div class="toggle-row">Multisite <button class="toggle" aria-label="Toggle multisite" onclick="this.classList.toggle('on')"></button></div>
+      <div class="field"><label for="lang">Language</label><input type="text" id="lang" value="English (en_US)" /></div>
+    </div>
+  </div>
+
+  <div class="sidebar-section">
+    <div class="sidebar-header" tabindex="0" role="button" aria-expanded="false" onclick="toggleAccordion(this)" onkeydown="if(event.key==='Enter')toggleAccordion(this)">
+      Import / Blueprint <span class="arrow">&#9654;</span>
+    </div>
+    <div class="sidebar-content">
+      <button class="btn-sm" onclick="showToast('Blueprint editor opened')">&#128196; Load Blueprint JSON</button>
+      <br>
+      <button class="btn-sm" onclick="showToast('File picker opened')" style="margin-top:.4rem">&#128228; Import from ZIP</button>
+      <br>
+      <button class="btn-sm" onclick="showToast('GitHub import opened')" style="margin-top:.4rem">&#128025; Import from GitHub</button>
+    </div>
+  </div>
+</aside>
+
+<main class="main">
+  <div class="welcome" id="welcome">
+    <h2>Try WordPress instantly</h2>
+    <p>No server, no installation. WordPress runs right in your browser powered by WebAssembly. Launch a fresh site in one click.</p>
+    <button class="launch-btn" onclick="launchWP()">&#9654; Launch WordPress</button>
+    <p class="welcome-hint">Or pick a saved site from the sidebar</p>
+  </div>
+
+  <div class="wp-preview" id="preview">
+    <div class="preview-chrome">
+      <div class="dots"><span class="dot"></span><span class="dot"></span><span class="dot"></span></div>
+      <span class="url">playground.wordpress.net/scope/abc123/wp-admin/</span>
+    </div>
+    <div class="preview-body">
+      <div class="fake-wp">
+        <div class="dashicon">&#9881;</div>
+        <p><strong>WordPress Dashboard</strong></p>
+        <p>Your site is running (simulated preview)</p>
+      </div>
+    </div>
+  </div>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+function toggleAccordion(header) {
+  const isOpen = header.classList.toggle('open');
+  header.setAttribute('aria-expanded', isOpen);
+}
+
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+}
+
+function launchWP() {
+  document.getElementById('welcome').classList.add('hidden');
+  document.getElementById('preview').classList.add('visible');
+  document.getElementById('topLaunchBtn').textContent = '\u25A0 Restart';
+  if (window.innerWidth < 769) {
+    document.getElementById('sidebar').classList.remove('open');
+  }
+}
+
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  setTimeout(() => t.classList.remove('show'), 2000);
+}
+
+document.addEventListener('click', function(e) {
+  if (window.innerWidth < 769) {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar.classList.contains('open') && !sidebar.contains(e.target) && !e.target.classList.contains('hamburger')) {
+      sidebar.classList.remove('open');
+    }
+  }
+});
+</script>
+</body>
+</html>

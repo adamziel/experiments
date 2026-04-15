@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WordPress Playground UX Redesign — 3 Directions</title>
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, sans-serif; color: #1e1e1e; background: #f9f9f9; line-height: 1.6; }
+  .hero { background: linear-gradient(135deg, #3858e9 0%, #1e4bd8 100%); color: #fff; padding: 3rem 1.5rem; text-align: center; }
+  .hero h1 { font-size: clamp(1.5rem, 4vw, 2.4rem); font-weight: 700; margin-bottom: .75rem; }
+  .hero p { max-width: 640px; margin: 0 auto; font-size: clamp(.95rem, 2vw, 1.1rem); opacity: .92; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr)); gap: 1.5rem; max-width: 1100px; margin: -2rem auto 3rem; padding: 0 1.5rem; position: relative; z-index: 1; }
+  .card { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px rgba(0,0,0,.08); overflow: hidden; transition: transform .15s, box-shadow .15s; display: flex; flex-direction: column; }
+  .card:hover { transform: translateY(-3px); box-shadow: 0 6px 20px rgba(0,0,0,.12); }
+  .card-preview { height: 180px; display: flex; align-items: center; justify-content: center; font-size: 3rem; }
+  .card-preview.c1 { background: linear-gradient(135deg, #e8f5e9, #c8e6c9); }
+  .card-preview.c2 { background: linear-gradient(135deg, #e3f2fd, #bbdefb); }
+  .card-preview.c3 { background: linear-gradient(135deg, #fff3e0, #ffe0b2); }
+  .card-body { padding: 1.25rem; flex: 1; display: flex; flex-direction: column; }
+  .card-body h2 { font-size: 1.15rem; margin-bottom: .35rem; }
+  .card-body .tag { display: inline-block; font-size: .75rem; font-weight: 600; padding: .15rem .5rem; border-radius: 4px; margin-bottom: .5rem; }
+  .tag.t1 { background: #e8f5e9; color: #2e7d32; }
+  .tag.t2 { background: #e3f2fd; color: #1565c0; }
+  .tag.t3 { background: #fff3e0; color: #e65100; }
+  .card-body p { font-size: .9rem; color: #555; flex: 1; }
+  .card-body a { display: inline-block; margin-top: .75rem; font-weight: 600; color: #3858e9; text-decoration: none; font-size: .95rem; }
+  .card-body a:hover { text-decoration: underline; }
+  .card-body a:focus-visible { outline: 2px solid #3858e9; outline-offset: 2px; border-radius: 3px; }
+  footer { text-align: center; padding: 2rem 1rem; font-size: .85rem; color: #888; }
+</style>
+</head>
+<body>
+  <div class="hero">
+    <h1>WordPress Playground UX Redesign</h1>
+    <p>playground.wordpress.net packs powerful features behind a cluttered interface. Too many icon-only buttons, technical settings front-and-center, and no clear starting point for newcomers. Below are three distinct design directions that explore different ways to fix these friction points.</p>
+  </div>
+
+  <div class="cards">
+    <div class="card">
+      <div class="card-preview c1" aria-hidden="true">&#9998;</div>
+      <div class="card-body">
+        <span class="tag t1">Direction 1</span>
+        <h2>Progressive Disclosure</h2>
+        <p>One big "Launch WordPress" button. Technical settings are tucked into expandable accordion sections that reveal themselves only when you need them.</p>
+        <a href="mockup-1-progressive-disclosure/index.html">Open mockup &rarr;</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-preview c2" aria-hidden="true">&#8984;</div>
+      <div class="card-body">
+        <span class="tag t2">Direction 2</span>
+        <h2>Command Palette</h2>
+        <p>Full-bleed WordPress preview with a floating mini-toolbar. Press Ctrl/Cmd+K to open a searchable command palette that replaces menus and modals.</p>
+        <a href="mockup-2-command-palette/index.html">Open mockup &rarr;</a>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-preview c3" aria-hidden="true">&#9638;</div>
+      <div class="card-body">
+        <span class="tag t3">Direction 3</span>
+        <h2>Dashboard with Cards</h2>
+        <p>A home screen showing your sites as cards alongside starter templates. Click a card to open its WordPress instance. Manage everything from the dashboard.</p>
+        <a href="mockup-3-dashboard/index.html">Open mockup &rarr;</a>
+      </div>
+    </div>
+  </div>
+
+  <footer>WordPress Playground UX Exploration &middot; 2026</footer>
+</body>
+</html>
