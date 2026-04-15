@@ -1514,6 +1514,26 @@ input, select, textarea {
   }
 }
 
+/* Overflow menu button for narrow toolbar */
+.toolbar-overflow-btn {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  min-width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 16px;
+  font-weight: bold;
+  letter-spacing: 1px;
+  flex-shrink: 0;
+}
+.toolbar-overflow-btn:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 @media (max-width: 600px) {
   .header {
     padding: 0 var(--space-2);
@@ -1550,6 +1570,7 @@ input, select, textarea {
   .toolbar {
     padding-left: var(--space-2);
     gap: 0;
+    overflow: hidden;
   }
 
   .toolbar-separator.hide-mobile {
@@ -1557,6 +1578,18 @@ input, select, textarea {
   }
 
   .toolbar-group.hide-mobile {
+    display: none;
+  }
+
+  .hide-small {
+    display: none !important;
+  }
+
+  .toolbar-overflow-btn {
+    display: flex;
+  }
+
+  .toolbar-spacer {
     display: none;
   }
 
@@ -1584,6 +1617,7 @@ input, select, textarea {
 
   .statusbar {
     font-size: 10px;
+    overflow: hidden;
   }
 }
 
@@ -1631,6 +1665,15 @@ input, select, textarea {
 
   .settings-sidebar.open {
     width: 100%;
+  }
+
+  .menubar {
+    display: none;
+  }
+
+  .toolbar {
+    padding-left: var(--space-2);
+    padding-right: var(--space-2);
   }
 }
 </style>
@@ -2063,10 +2106,10 @@ input, select, textarea {
       </div>
     </div>
 
-    <div class="toolbar-separator"></div>
+    <div class="toolbar-separator hide-small"></div>
 
     <!-- Text formatting -->
-    <div class="toolbar-group">
+    <div class="toolbar-group hide-small">
       <button class="toolbar-btn" title="Bold (Ctrl+B)" aria-label="Bold">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M15.6 10.79c.97-.67 1.65-1.77 1.65-2.79 0-2.26-1.75-4-4-4H7v14h7.04c2.09 0 3.71-1.7 3.71-3.79 0-1.52-.86-2.82-2.15-3.42zM10 6.5h3c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5h-3v-3zm3.5 9H10v-3h3.5c.83 0 1.5.67 1.5 1.5s-.67 1.5-1.5 1.5z"/></svg>
       </button>
@@ -2081,10 +2124,10 @@ input, select, textarea {
       </button>
     </div>
 
-    <div class="toolbar-separator"></div>
+    <div class="toolbar-separator hide-small"></div>
 
     <!-- Color & highlight -->
-    <div class="toolbar-group">
+    <div class="toolbar-group hide-small">
       <button class="toolbar-btn" title="Text color" aria-label="Text color">
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M11 2L5.5 16h2.25l1.12-3h6.25l1.12 3h2.25L13 2h-2zm-1.38 9L12 4.67 14.38 11H9.62z"/><rect x="3" y="18" width="18" height="3" fill="#1a73e8"/></svg>
       </button>
@@ -2092,6 +2135,11 @@ input, select, textarea {
         <svg viewBox="0 0 24 24" fill="currentColor"><path d="M16.56 8.94L7.62 0 6.21 1.41l2.38 2.38-5.15 5.15c-.59.59-.59 1.54 0 2.12l5.5 5.5c.29.29.68.44 1.06.44s.77-.15 1.06-.44l5.5-5.5c.59-.58.59-1.53 0-2.12zM5.21 10L10 5.21 14.79 10H5.21zM19 11.5s-2 2.17-2 3.5c0 1.1.9 2 2 2s2-.9 2-2c0-1.33-2-3.5-2-3.5z"/><rect x="3" y="19" width="18" height="3" fill="#fdd663"/></svg>
       </button>
     </div>
+
+    <!-- Overflow button for narrow screens -->
+    <button class="toolbar-overflow-btn" title="More formatting options" aria-label="More formatting options">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="16" height="16"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+    </button>
 
     <div class="toolbar-separator hide-mobile"></div>
 
@@ -2471,11 +2519,11 @@ input, select, textarea {
       </div>
       <div class="statusbar-item" id="statusStorage">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg>
-        <span>Browser Storage (OPFS)</span>
+        <span>Browser<span class="hide-small"> Storage (OPFS)</span></span>
       </div>
       <div class="statusbar-item" id="statusPluginCount">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2L2 7l10 5 10-5-10-5z"/><path d="M2 17l10 5 10-5"/><path d="M2 12l10 5 10-5"/></svg>
-        <span id="statusPluginLabel">0 active plugins</span>
+        <span id="statusPluginLabel">0<span class="hide-small"> active</span> plugins</span>
       </div>
     </div>
     <div class="statusbar-right">

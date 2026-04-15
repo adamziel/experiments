@@ -979,10 +979,14 @@ html, body {
 }
 
 @media (max-width: 768px) {
-  .sidebar { position: fixed; top: calc(var(--toolbar-h) + var(--space-2) + var(--space-2)); bottom: var(--statusbar-h); left: 0; z-index: 90; width: var(--sidebar-w); box-shadow: var(--shadow-lg); }
-  .sidebar.collapsed { width: 0; }
-  .inspector { position: fixed; top: calc(var(--toolbar-h) + var(--space-2) + var(--space-2)); bottom: var(--statusbar-h); right: 0; z-index: 90; width: var(--inspector-w); box-shadow: var(--shadow-lg); }
-  .inspector.collapsed { width: 0; }
+  .sidebar { position: fixed; top: calc(var(--toolbar-h) + var(--space-2) + var(--space-2)); bottom: var(--statusbar-h); left: 0; z-index: 90; width: var(--sidebar-w); box-shadow: var(--shadow-lg); transform: translateX(0); }
+  .sidebar.animated { transition: transform .25s ease, opacity .2s; }
+  .sidebar.collapsed { transform: translateX(-100%); opacity: 0; pointer-events: none; width: var(--sidebar-w); }
+  .inspector { position: fixed; top: calc(var(--toolbar-h) + var(--space-2) + var(--space-2)); bottom: var(--statusbar-h); right: 0; z-index: 90; width: var(--inspector-w); box-shadow: var(--shadow-lg); transform: translateX(0); }
+  .inspector.animated { transition: transform .25s ease, opacity .2s; }
+  .inspector.collapsed { transform: translateX(100%); opacity: 0; pointer-events: none; width: var(--inspector-w); }
+  .sidebar-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.4); z-index: 89; }
+  .sidebar-overlay.visible { display: block; }
   .toolbar-menus { display: none; }
   .toolbar-filename .filename-text { max-width: 120px; }
   .wp-dashboard-widgets { grid-template-columns: 1fr; }
@@ -1003,7 +1007,8 @@ html, body {
   .btn-primary span { display: none; }
   .btn-primary svg { margin: 0; }
   .canvas-frame { width: 95%; height: 75%; }
-  .statusbar { gap: var(--space-2); overflow-x: auto; }
+  .statusbar { gap: var(--space-2); overflow: hidden; }
+  .zoom-controls { display: none; }
 }
 
 @media (max-width: 500px) {
@@ -1207,7 +1212,8 @@ button:focus:not(:focus-visible) { outline: none; }
   <div class="main">
 
     <!-- LEFT SIDEBAR -->
-    <aside class="sidebar" id="sidebar">
+    <div class="sidebar-overlay" id="sidebarOverlay"></div>
+    <aside class="sidebar collapsed" id="sidebar">
       <div class="sidebar-header">
         <h3>Layers</h3>
         <button class="icon-btn" id="sidebarCollapseBtn" title="Close sidebar">
@@ -1620,10 +1626,11 @@ button:focus:not(:focus-visible) { outline: none; }
   'use strict';
 
   // ===== STATE =====
+  var isNarrow = function() { return window.innerWidth <= 768; };
   const state = {
     unsaved: false,
     zoom: 1,
-    sidebarOpen: true,
+    sidebarOpen: !isNarrow(),
     inspectorOpen: false,
     installedPlugins: [],
     siteName: 'Untitled site',
@@ -1908,12 +1915,33 @@ button:focus:not(:focus-visible) { outline: none; }
   });
 
   // ===== SETTINGS (INSPECTOR) PANEL =====
+  function updateOverlay() {
+    var overlay = document.getElementById('sidebarOverlay');
+    if (isNarrow() && (state.sidebarOpen || state.inspectorOpen)) {
+      overlay.classList.add('visible');
+    } else {
+      overlay.classList.remove('visible');
+    }
+  }
+
   function toggleInspector() {
     state.inspectorOpen = !state.inspectorOpen;
+    els.inspector.classList.add('animated');
+    if (state.inspectorOpen && isNarrow() && state.sidebarOpen) {
+      state.sidebarOpen = false;
+      els.sidebar.classList.add('collapsed');
+    }
     els.inspector.classList.toggle('collapsed', !state.inspectorOpen);
+    updateOverlay();
   }
 
   els.settingsBtn.addEventListener('click', toggleInspector);
+
+  document.getElementById('sidebarOverlay').addEventListener('click', function() {
+    if (state.sidebarOpen) { state.sidebarOpen = false; els.sidebar.classList.add('collapsed'); }
+    if (state.inspectorOpen) { state.inspectorOpen = false; els.inspector.classList.add('collapsed'); }
+    updateOverlay();
+  });
 
   // Inspector tabs
   $$('.inspector-tab').forEach(function(tab) {
@@ -1971,7 +1999,13 @@ button:focus:not(:focus-visible) { outline: none; }
   // ===== SIDEBAR =====
   function toggleSidebar() {
     state.sidebarOpen = !state.sidebarOpen;
+    els.sidebar.classList.add('animated');
+    if (state.sidebarOpen && isNarrow() && state.inspectorOpen) {
+      state.inspectorOpen = false;
+      els.inspector.classList.add('collapsed');
+    }
     els.sidebar.classList.toggle('collapsed', !state.sidebarOpen);
+    updateOverlay();
   }
 
   els.sidebarCollapseBtn.addEventListener('click', toggleSidebar);
@@ -2140,8 +2174,7 @@ button:focus:not(:focus-visible) { outline: none; }
 
   // ===== RESPONSIVE — auto-collapse on narrow =====
   function handleResize() {
-    var w = window.innerWidth;
-    if (w <= 768) {
+    if (isNarrow()) {
       if (state.sidebarOpen) {
         state.sidebarOpen = false;
         els.sidebar.classList.add('collapsed');
@@ -2150,12 +2183,16 @@ button:focus:not(:focus-visible) { outline: none; }
         state.inspectorOpen = false;
         els.inspector.classList.add('collapsed');
       }
+      updateOverlay();
     }
   }
   window.addEventListener('resize', handleResize);
-  handleResize();
 
   // ===== INIT =====
+  if (!isNarrow()) {
+    state.sidebarOpen = true;
+    els.sidebar.classList.remove('collapsed');
+  }
   updateStatusBar();
 
 })();
