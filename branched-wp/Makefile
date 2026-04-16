@@ -63,6 +63,10 @@ test-all: ext/branchfs.so
 	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_wp_boot.php
 	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_realpath.php
 	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_syscall_overrides.php
+	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_opcache_keys.php
+	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_merge.php
+	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_gc.php
+	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_push_auth.php
 
 clean:
 	rm -f ext/branchfs.so /tmp/branchfs_test*.db /tmp/branchfs_wp*.db

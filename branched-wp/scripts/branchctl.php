@@ -49,9 +49,10 @@ Usage:
   branchctl commit  <name>  [-m "message"]
   branchctl log     <name>  [-n <count>]
   branchctl diff    <a> <b>
-  branchctl merge   <from>  --into <target>
+  branchctl merge   <from>  --into <target>  [--strategy=abort|ours|theirs]
   branchctl reset   <name>  <commit-hash-or-ref>  [--force]
   branchctl rollback <name>  [--force]
+  branchctl gc              [--dry-run]
 
 Flags:
   --db <path>          override BRANCHFS_DB (default: /tmp/branchfs-dev/branchfs.db)
@@ -76,6 +77,8 @@ Workflow:
              unless --force is given.
   rollback shortcut for `reset <name> HEAD~1`.
   delete   drops the overlay and the Dolt branch. Main is protected.
+  gc       deletes blobs not referenced by any live file or fs_commit.
+             --dry-run prints what would be freed without deleting.
 
 USAGE);
     exit($code);
@@ -175,6 +178,19 @@ function branchfs_file_count(SQLite3 $db, int $branch_id): int {
 
 function valid_branch_name(string $name): bool {
     return (bool)preg_match('/^[a-zA-Z0-9_\-]{1,63}$/', $name);
+}
+
+/**
+ * Names reserved for HTTP routing / well-known subdomains. Creating a
+ * branch with any of these would collide with the router's host parsing
+ * (www.wp.localhost, admin.wp.localhost, etc.). Finding #11.
+ */
+function reserved_branch_names(): array {
+    return ['www', 'admin', 'api', 'mail', 'localhost', 'wp'];
+}
+
+function is_reserved_branch_name(string $name): bool {
+    return in_array(strtolower($name), reserved_branch_names(), true);
 }
 
 /* ================================================================
@@ -438,6 +454,10 @@ case 'create': {
     $from = (string)($flags['from'] ?? 'main');
     if (!valid_branch_name($name)) die_usage("invalid branch name: $name");
     if ($name === 'main') die_usage("'main' is reserved");
+    if (is_reserved_branch_name($name)) {
+        die_usage("'$name' is reserved (collides with HTTP routing); reserved names are: "
+            . implode(', ', reserved_branch_names()));
+    }
 
     branchfs_set_db($DB_PATH);
     branchfs_create_branch($name, $from);
@@ -446,7 +466,23 @@ case 'create': {
     $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
     $esc_name = $c->real_escape_string($name);
     $esc_from = $c->real_escape_string($from);
-    dolt_query($c, "CALL DOLT_BRANCH('$esc_name', '$esc_from')");
+    // Finding #12: tolerate pre-existing Dolt branch with a one-line
+    // error, not a stack trace. The branchfs overlay will have been
+    // created (above) or found via INSERT OR IGNORE regardless.
+    mysqli_report(MYSQLI_REPORT_OFF);
+    $r = @$c->query("CALL DOLT_BRANCH('$esc_name', '$esc_from')");
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+    if ($r === false) {
+        $err = $c->error ?: 'unknown error';
+        if (stripos($err, 'already exists') !== false || stripos($err, 'fatal') !== false) {
+            fwrite(STDERR, "branchctl: dolt branch '$name' already exists — nothing to do on the Dolt side.\n");
+            $c->close();
+            exit(5);
+        }
+        fwrite(STDERR, "branchctl: dolt branch create failed: $err\n");
+        $c->close();
+        exit(4);
+    }
     drain($c);
     echo "dolt:     forked '$from' -> '$name'\n";
 
@@ -480,7 +516,13 @@ case 'commit': {
     dolt_query($c, "CALL DOLT_ADD('-A')"); drain($c);
 
     $dolt_committed = false;
-    $r = $c->query("CALL DOLT_COMMIT('-am', '$esc_msg')");
+    // Under mysqli strict mode (default since PHP 8.1) DOLT_COMMIT's
+    // "nothing to commit" signal is thrown as an exception rather than
+    // returned as false. Switch to legacy reporting for just this call
+    // so we can distinguish "nothing to commit" from a real failure.
+    mysqli_report(MYSQLI_REPORT_OFF);
+    $r = @$c->query("CALL DOLT_COMMIT('-am', '$esc_msg')");
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
     if ($r === false) {
         if (strpos($c->error, 'nothing to commit') !== false) {
             echo "dolt:     nothing to commit on '$name'\n";
@@ -496,18 +538,41 @@ case 'commit': {
     }
 
     /* Snapshot the branch's file tree paired with the current Dolt HEAD.
-     * We snapshot even when the DB had "nothing to commit" if the file tree
-     * diverges from the last fs_commit — otherwise file-side changes could
-     * never get recorded through branchctl. */
+     *
+     * Finding #10: the "no-changes" decision must compare against the
+     * snapshot paired with the CURRENT Dolt HEAD (fs_current_commit), not
+     * "highest id" (fs_last_commit). After a backward reset, last_commit
+     * is newer than HEAD's snapshot, and the old logic would declare
+     * "no changes" when the overlay genuinely diverges from the rewound
+     * HEAD. */
     $head = dolt_head_hash($c, $name);
     $db = sqlite_open($DB_PATH);
     $bid = fs_branch_id($db, $name);
     if ($bid > 0 && $head !== '') {
-        $existing = fs_find_commit_by_dolt_hash($db, $bid, $head);
         $current_digest = fs_tree_digest(fs_resolve_tree($db, $bid));
-        $last = fs_last_commit($db, $bid);
-        $last_digest = $last ? fs_digest_of_commit($db, (int)$last['id']) : '';
+        $current_snap   = fs_current_commit($db, $bid, $c, $name);
+        $anchor_digest  = $current_snap ? fs_digest_of_commit($db, (int)$current_snap['id']) : '';
 
+        // File-side diverged from the snapshot at current Dolt HEAD but
+        // Dolt itself had no row changes: force --allow-empty so the new
+        // fs_commit can be paired with a fresh Dolt hash. Without this,
+        // the UNIQUE (branch_id, dolt_hash) constraint on fs_commits
+        // blocks recording file-only changes after a backward reset
+        // (finding #10).
+        if (!$dolt_committed && $current_digest !== $anchor_digest && $current_snap !== null) {
+            mysqli_report(MYSQLI_REPORT_OFF);
+            $r = @$c->query("CALL DOLT_COMMIT('--allow-empty', '-am', '$esc_msg')");
+            mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
+            if ($r !== false) {
+                if ($r instanceof mysqli_result) $r->free();
+                drain($c);
+                $head = dolt_head_hash($c, $name);
+                $dolt_committed = true;
+                echo "dolt:     --allow-empty commit to pair fs changes on '$name'\n";
+            }
+        }
+
+        $existing = fs_find_commit_by_dolt_hash($db, $bid, $head);
         if ($existing && $existing['dolt_hash'] === $head) {
             if ($current_digest !== fs_digest_of_commit($db, (int)$existing['id'])) {
                 echo "branchfs: WARNING: file tree diverges from existing fs_commit at this Dolt hash.\n";
@@ -515,7 +580,7 @@ case 'commit': {
             } else {
                 echo "branchfs: no file-side changes.\n";
             }
-        } elseif ($dolt_committed || $current_digest !== $last_digest) {
+        } elseif ($dolt_committed || $current_digest !== $anchor_digest) {
             $cid = fs_record_snapshot($db, $bid, $head, $msg);
             echo "branchfs: snapshot #$cid paired with dolt " . substr($head, 0, 12) . "\n";
         } else {
@@ -839,6 +904,67 @@ case 'rollback': {
         echo "branchfs: no paired fs_commit for HEAD~1 — file overlay unchanged.\n";
     }
     $c->close();
+    break;
+}
+
+case 'gc': {
+    /* Collect the set of blob hashes still referenced by either the live
+     * per-branch `files` table or any historical fs_commit's snapshot.
+     * Anything outside that set is unreachable and safe to delete. */
+    $dry = !empty($flags['dry-run']);
+
+    $db = sqlite_open($DB_PATH);
+
+    $live = [];
+    $r = $db->query("SELECT DISTINCT blob_hash FROM files WHERE blob_hash IS NOT NULL");
+    while ($row = $r->fetchArray(SQLITE3_NUM)) $live[$row[0]] = true;
+    $r2 = $db->query("SELECT DISTINCT blob_hash FROM fs_commit_files WHERE blob_hash IS NOT NULL");
+    while ($row = $r2->fetchArray(SQLITE3_NUM)) $live[$row[0]] = true;
+
+    $total_before = (int)$db->querySingle("SELECT COUNT(*) FROM blobs");
+    $bytes_before = (int)$db->querySingle("SELECT COALESCE(SUM(size), 0) FROM blobs");
+
+    $to_delete = [];
+    $bytes_free = 0;
+    $r3 = $db->query("SELECT hash, size FROM blobs");
+    while ($row = $r3->fetchArray(SQLITE3_ASSOC)) {
+        if (!isset($live[$row['hash']])) {
+            $to_delete[] = $row['hash'];
+            $bytes_free += (int)$row['size'];
+        }
+    }
+
+    if ($dry) {
+        printf("branchctl gc (--dry-run): would delete %d blobs, freeing %d bytes\n",
+            count($to_delete), $bytes_free);
+        printf("  total blobs: %d (%d bytes) -> %d bytes after gc\n",
+            $total_before, $bytes_before, $bytes_before - $bytes_free);
+        break;
+    }
+
+    if (empty($to_delete)) {
+        printf("branchctl gc: nothing to reclaim (%d blobs, %d bytes)\n",
+            $total_before, $bytes_before);
+        break;
+    }
+
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $del = $db->prepare("DELETE FROM blobs WHERE hash = :h");
+        foreach ($to_delete as $h) {
+            $del->bindValue(':h', $h, SQLITE3_TEXT);
+            $del->execute();
+            $del->reset();
+        }
+        $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        $db->exec('ROLLBACK');
+        fwrite(STDERR, "branchctl: gc failed: " . $e->getMessage() . "\n");
+        exit(4);
+    }
+
+    printf("branchctl gc: deleted %d blobs, reclaimed %d bytes (before: %d blobs / %d bytes)\n",
+        count($to_delete), $bytes_free, $total_before, $bytes_before);
     break;
 }
 

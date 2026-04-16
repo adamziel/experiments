@@ -49,13 +49,17 @@ function git_server_handle(string $db_path, string $wp_root, string $git_path, s
         $endpoint_path .= '?' . $query_string;
     }
 
-    // Build or refresh the cached git repository
-    $cache_dir = sys_get_temp_dir() . '/branchfs-git-cache';
-    if (!is_dir($cache_dir)) {
-        mkdir($cache_dir, 0755, true);
-    }
-
-    $repo_dir = $cache_dir . '/repo';
+    // Per-request cache dir — two concurrent clones must not trample each
+    // other's working tree (finding #2). Rebuild the repo from scratch each
+    // request; the heavy work is Dolt export, not filesystem layout.
+    $cache_root = sys_get_temp_dir() . '/branchfs-git-' . bin2hex(random_bytes(8));
+    mkdir($cache_root, 0700, true);
+    register_shutdown_function(function() use ($cache_root) {
+        if (is_dir($cache_root)) {
+            git_rmrf($cache_root);
+        }
+    });
+    $repo_dir = $cache_root . '/repo';
 
     // Determine request type
     $is_post_receive = ($git_path === '/git-receive-pack');
@@ -72,6 +76,15 @@ function git_server_handle(string $db_path, string $wp_root, string $git_path, s
             $dolt->close();
             return;
         }
+    }
+
+    // Capture pre-push state. On post_receive we buffer all output so a
+    // mid-flight failure can replace the success response with a rejection
+    // AND roll branchfs + Dolt back to their pre-push hashes (finding #3).
+    $pre_state = null;
+    if ($is_post_receive) {
+        $pre_state = git_capture_pre_state($sqlite, $dolt);
+        ob_start();
     }
 
     // Build the repository from branchfs state
@@ -93,24 +106,177 @@ function git_server_handle(string $db_path, string $wp_root, string $git_path, s
         error_log("Git server error: " . $e->getMessage() . "\n" . $e->getTraceAsString());
     }
 
-    // After push: apply changes back to branchfs + Dolt
+    // After push: apply changes back to branchfs + Dolt, transactionally.
     if ($is_post_receive && $auth_user !== null) {
+        $push_error = null;
         try {
-            git_process_push($repo_dir, $fs, $repo, $sqlite, $dolt, $dolt_db, $auth_user);
+            git_process_push($repo_dir, $fs, $repo, $sqlite, $dolt, $dolt_db, $auth_user, $pre_state);
         } catch (\Throwable $e) {
-            error_log("Push processing error: " . $e->getMessage() . "\n" . $e->getTraceAsString());
+            $push_error = $e->getMessage();
+            error_log("Push processing error: $push_error\n" . $e->getTraceAsString());
         }
+
+        if ($push_error !== null) {
+            // Roll back branchfs + Dolt, replace the buffered (likely-success)
+            // response with an explicit HTTP 500 so the git client sees
+            // "! [remote rejected]".
+            git_rollback_to_state($pre_state, $sqlite, $dolt);
+            if (ob_get_level() > 0) ob_end_clean();
+            http_response_code(500);
+            header('Content-Type: text/plain');
+            $short = substr(str_replace(["\n", "\r"], ' ', $push_error), 0, 500);
+            echo "branchfs: push rejected: $short\n";
+            $dolt->close();
+            return;
+        }
+
+        // Success: flush the buffered git protocol response to the client.
+        if (ob_get_level() > 0) ob_end_flush();
     }
 
     $dolt->close();
 }
 
+/**
+ * Capture per-branch pre-push state for transactional rollback (finding #3).
+ * Records current Dolt HEAD hash for every branchfs branch. Branches that
+ * don't exist yet are implicitly NEW and will be deleted on rollback.
+ */
+function git_capture_pre_state(SQLite3 $sqlite, mysqli $dolt): array {
+    $state = ['branches' => []];
+    $r = $sqlite->query("SELECT id, name FROM branches");
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $name = $row['name'];
+        $bid  = (int)$row['id'];
+        $dolt_hash = git_dolt_head_hash($dolt, $name);
+        $fs_commit = git_fs_find_commit_by_dolt_hash($sqlite, $bid, $dolt_hash);
+        $state['branches'][$name] = [
+            'bid'        => $bid,
+            'dolt_hash'  => $dolt_hash,
+            'fs_commit'  => $fs_commit ? (int)$fs_commit['id'] : null,
+        ];
+    }
+    return $state;
+}
+
+/**
+ * Roll branchfs + Dolt back to the captured pre-push state (finding #3).
+ * For branches that existed: DOLT_RESET --hard to pre_hash, restore fs files.
+ * For branches created by the push but not in pre_state: delete them entirely.
+ */
+function git_rollback_to_state(?array $state, SQLite3 $sqlite, mysqli $dolt): void {
+    if (!$state) return;
+
+    // 1) Delete NEW branches that weren't in pre_state.
+    $r = $sqlite->query("SELECT id, name FROM branches");
+    $current = [];
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $current[] = $row;
+    foreach ($current as $row) {
+        if (!isset($state['branches'][$row['name']])) {
+            $bid = (int)$row['id'];
+            $sqlite->exec("DELETE FROM fs_commit_files WHERE commit_id IN (SELECT id FROM fs_commits WHERE branch_id=$bid)");
+            $sqlite->exec("DELETE FROM fs_commits WHERE branch_id = $bid");
+            $sqlite->exec("DELETE FROM files WHERE branch_id = $bid");
+            $sqlite->exec("DELETE FROM branches WHERE id = $bid");
+            $esc = $dolt->real_escape_string($row['name']);
+            @$dolt->query("CALL DOLT_CHECKOUT('main')"); git_drain($dolt);
+            @$dolt->query("CALL DOLT_BRANCH('-D', '$esc')"); git_drain($dolt);
+        }
+    }
+
+    // 2) Reset EXISTING branches to their pre-push Dolt hash + restore files.
+    foreach ($state['branches'] as $name => $b) {
+        if (!$b['dolt_hash']) continue;
+        $esc = $dolt->real_escape_string($name);
+        @$dolt->query("CALL DOLT_CHECKOUT('$esc')"); git_drain($dolt);
+        $esc_hash = $dolt->real_escape_string($b['dolt_hash']);
+        @$dolt->query("CALL DOLT_RESET('--hard', '$esc_hash')"); git_drain($dolt);
+
+        if ($b['fs_commit'] !== null) {
+            git_fs_restore_from_commit($sqlite, (int)$b['bid'], (int)$b['fs_commit']);
+        }
+    }
+}
+
+/**
+ * Restore branch overlay from a specific fs_commit id (rollback helper).
+ * Intentionally independent of branchctl's helper so the web request path
+ * has no CLI dependency.
+ */
+function git_fs_restore_from_commit(SQLite3 $db, int $branch_id, int $commit_id): void {
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $db->exec("DELETE FROM files WHERE branch_id = $branch_id");
+        $ins = $db->prepare(
+            "INSERT INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
+          . "VALUES (:b, :p, :bh, :md, :mt, :d)"
+        );
+        $r = $db->query("SELECT path, blob_hash, mode, mtime, is_dir FROM fs_commit_files WHERE commit_id = $commit_id");
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $ins->bindValue(':b',  $branch_id, SQLITE3_INTEGER);
+            $ins->bindValue(':p',  $row['path'], SQLITE3_TEXT);
+            $ins->bindValue(':bh', $row['blob_hash'] ?? null,
+                $row['blob_hash'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $ins->bindValue(':md', (int)($row['mode']  ?? 0), SQLITE3_INTEGER);
+            $ins->bindValue(':mt', (int)($row['mtime'] ?? 0), SQLITE3_INTEGER);
+            $ins->bindValue(':d',  (int)($row['is_dir']?? 0), SQLITE3_INTEGER);
+            $ins->execute();
+            $ins->reset();
+        }
+        $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
+
+/**
+ * Reserved names that conflict with HTTP routing or well-known subdomains.
+ * Pushes creating a branch with any of these names are rejected with 400.
+ */
+function git_reserved_branch_names(): array {
+    return ['www', 'admin', 'api', 'mail', 'localhost', 'wp'];
+}
+
+/**
+ * Validate push auth against BRANCHFS_GIT_USER / BRANCHFS_GIT_PASSWORD_HASH.
+ * Defaults to admin/admin for dev. BRANCHFS_PROD=1 forces non-default creds.
+ *
+ * Returns the authenticated username on success, null on failure.
+ */
 function git_check_auth(): ?string {
     if (!isset($_SERVER['PHP_AUTH_USER'])) {
         return null;
     }
-    // Accept any username/password for dev. In production this would validate.
-    return $_SERVER['PHP_AUTH_USER'];
+
+    $user = (string)($_SERVER['PHP_AUTH_USER'] ?? '');
+    $pass = (string)($_SERVER['PHP_AUTH_PW']   ?? '');
+
+    $env_user = getenv('BRANCHFS_GIT_USER')          ?: 'admin';
+    $env_hash = getenv('BRANCHFS_GIT_PASSWORD_HASH') ?: '';
+
+    // In prod we REFUSE the built-in default creds. Better to explicitly
+    // break than silently accept admin/admin.
+    $prod = getenv('BRANCHFS_PROD') === '1';
+    if ($prod) {
+        if (!getenv('BRANCHFS_GIT_USER') || !getenv('BRANCHFS_GIT_PASSWORD_HASH')) {
+            error_log('BRANCHFS_PROD=1 but BRANCHFS_GIT_USER/BRANCHFS_GIT_PASSWORD_HASH not both set — refusing push');
+            return null;
+        }
+    }
+
+    if ($env_hash !== '') {
+        if ($user === $env_user && password_verify($pass, $env_hash)) {
+            return $user;
+        }
+        return null;
+    }
+
+    // Dev default: admin / admin. Rejected when BRANCHFS_PROD=1 (checked above).
+    if ($user === 'admin' && $pass === 'admin') {
+        return $user;
+    }
+    return null;
 }
 
 /**
@@ -314,13 +480,18 @@ function git_auto_snapshot(SQLite3 $sqlite, mysqli $dolt, string $branch_name, i
         }
     }
 
-    // Dolt commit first
+    // Dolt commit first — tolerate "nothing to commit" (happens when the
+    // overlay diverged but no DB rows moved, e.g. second clone after WP
+    // settled). We still record the fs_commit below against the unchanged
+    // Dolt HEAD so the git tree stays paired.
     $esc = $dolt->real_escape_string($branch_name);
     $dolt->query("CALL DOLT_CHECKOUT('$esc')");
     git_drain($dolt);
     $dolt->query("CALL DOLT_ADD('-A')");
     git_drain($dolt);
-    $r = $dolt->query("CALL DOLT_COMMIT('-am', 'Auto-snapshot for git')");
+    mysqli_report(MYSQLI_REPORT_OFF);
+    $r = @$dolt->query("CALL DOLT_COMMIT('-am', 'Auto-snapshot for git')");
+    mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
     if ($r instanceof mysqli_result) $r->free();
     git_drain($dolt);
 
@@ -336,8 +507,9 @@ function git_auto_snapshot(SQLite3 $sqlite, mysqli $dolt, string $branch_name, i
 
 /**
  * Process push: apply received git changes back to branchfs + Dolt.
+ * Throws \RuntimeException on unrecoverable errors; the caller rolls back.
  */
-function git_process_push(string $repo_dir, $fs, GitRepository $repo, SQLite3 $sqlite, mysqli $dolt, string $dolt_db, string $auth_user): void {
+function git_process_push(string $repo_dir, $fs, GitRepository $repo, SQLite3 $sqlite, mysqli $dolt, string $dolt_db, string $auth_user, ?array $pre_state = null): void {
     $wp_tables = [
         'wp_options', 'wp_posts', 'wp_postmeta', 'wp_users', 'wp_usermeta',
         'wp_comments', 'wp_commentmeta', 'wp_terms', 'wp_termmeta',
@@ -358,7 +530,8 @@ function git_process_push(string $repo_dir, $fs, GitRepository $repo, SQLite3 $s
         'wp_links' => 'link_id',
     ];
 
-    // Find all branches and their tips
+    $reserved = git_reserved_branch_names();
+
     $refs_dir = $repo_dir . '/refs/heads';
     if (!is_dir($refs_dir)) return;
 
@@ -369,10 +542,17 @@ function git_process_push(string $repo_dir, $fs, GitRepository $repo, SQLite3 $s
 
         if (Commit::is_null_hash($tip_hash)) continue;
 
+        // Reject reserved names that would conflict with HTTP routing.
+        if (in_array(strtolower($branch_name), $reserved, true)) {
+            throw new \RuntimeException(
+                "refusing to push to reserved branch name '$branch_name' (conflicts with routing)"
+            );
+        }
+
         // Ensure the branchfs branch exists
         $branch_id = git_fs_branch_id($sqlite, $branch_name);
-        if ($branch_id === 0) {
-            // New branch - create it
+        $branch_is_new = ($branch_id === 0);
+        if ($branch_is_new) {
             if (extension_loaded('branchfs')) {
                 $db_path_env = getenv('BRANCHFS_DB');
                 if ($db_path_env) {
@@ -380,13 +560,17 @@ function git_process_push(string $repo_dir, $fs, GitRepository $repo, SQLite3 $s
                     branchfs_create_branch($branch_name, 'main');
                 }
             }
-            // Also create Dolt branch
             $esc = $dolt->real_escape_string($branch_name);
-            $dolt->query("CALL DOLT_BRANCH('$esc', 'main')");
+            // Tolerate pre-existing Dolt branch (from a previous attempt).
+            mysqli_report(MYSQLI_REPORT_OFF);
+            @$dolt->query("CALL DOLT_BRANCH('$esc', 'main')");
+            mysqli_report(MYSQLI_REPORT_ERROR | MYSQLI_REPORT_STRICT);
             git_drain($dolt);
 
             $branch_id = git_fs_branch_id($sqlite, $branch_name);
-            if ($branch_id === 0) continue;
+            if ($branch_id === 0) {
+                throw new \RuntimeException("cannot create branchfs branch '$branch_name'");
+            }
         }
 
         // Read the pushed commit
@@ -394,12 +578,10 @@ function git_process_push(string $repo_dir, $fs, GitRepository $repo, SQLite3 $s
             $commit_obj = $repo->read_object($tip_hash);
             $commit = $commit_obj->as_commit();
         } catch (\Throwable $e) {
-            error_log("Cannot read pushed commit $tip_hash: " . $e->getMessage());
-            continue;
+            throw new \RuntimeException("cannot read pushed commit $tip_hash: " . $e->getMessage());
         }
 
         $message = $commit->message ?? 'Push via git';
-        // Strip Dolt-Commit trailer if present
         $message = preg_replace('/\n\nDolt-Commit:.*$/s', '', $message);
 
         // Extract the tree
@@ -421,18 +603,35 @@ function git_process_push(string $repo_dir, $fs, GitRepository $repo, SQLite3 $s
         // Apply file changes to branchfs overlay
         git_apply_file_changes($sqlite, $branch_id, $wp_files, $repo);
 
-        // Apply DB changes from ndjson files
+        // Apply DB changes from ndjson files. Partitioned exports are
+        // stored as `<table>-NNNN.ndjson`; concatenate parts into one
+        // logical ndjson stream per table (finding #7).
         $esc_branch = $dolt->real_escape_string($branch_name);
         $dolt->query("CALL DOLT_CHECKOUT('$esc_branch')");
         git_drain($dolt);
 
+        $table_parts = []; // [table => [sorted part filenames => blob_hash]]
         foreach ($db_files as $filename => $blob_hash) {
             if (substr($filename, -7) !== '.ndjson') continue;
-            $table_name = substr($filename, 0, -7); // strip .ndjson
+            $stem = substr($filename, 0, -7);
+            if (preg_match('/^(.+)-(\d{4,})$/', $stem, $m)) {
+                $table_name = $m[1];
+            } else {
+                $table_name = $stem;
+            }
             if (!in_array($table_name, $wp_tables)) continue;
+            $table_parts[$table_name][$filename] = $blob_hash;
+        }
 
-            $new_content = $repo->read_object($blob_hash)->consume_all();
-            git_apply_ndjson_changes($dolt, $dolt_db, $branch_name, $table_name, $new_content, $table_pk[$table_name] ?? null);
+        foreach ($table_parts as $table_name => $parts) {
+            ksort($parts); // ensure partitions apply in filename order
+            $buf = '';
+            foreach ($parts as $blob_hash) {
+                $chunk = $repo->read_object($blob_hash)->consume_all();
+                $buf .= $chunk;
+                if ($buf !== '' && substr($buf, -1) !== "\n") $buf .= "\n";
+            }
+            git_apply_ndjson_changes($dolt, $dolt_db, $branch_name, $table_name, $buf, $table_pk[$table_name] ?? null);
         }
 
         // Dolt commit
@@ -528,11 +727,24 @@ function git_apply_ndjson_changes(mysqli $dolt, string $dolt_db, string $branch,
 
     $lines = explode("\n", trim($ndjson));
     $new_rows = [];
+    $line_num = 0;
     foreach ($lines as $line) {
+        $line_num++;
         $line = trim($line);
         if ($line === '') continue;
         $row = json_decode($line, true);
-        if ($row === null) continue;
+        // Strict: malformed NDJSON must fail the push so the caller can
+        // roll back rather than silently dropping rows (finding #3).
+        if ($row === null && json_last_error() !== JSON_ERROR_NONE) {
+            throw new \RuntimeException(
+                "invalid NDJSON in db/$table.ndjson line $line_num: " . json_last_error_msg()
+            );
+        }
+        if (!is_array($row)) {
+            throw new \RuntimeException(
+                "invalid NDJSON in db/$table.ndjson line $line_num: expected object, got " . gettype($row)
+            );
+        }
         $new_rows[] = $row;
     }
 
@@ -540,21 +752,12 @@ function git_apply_ndjson_changes(mysqli $dolt, string $dolt_db, string $branch,
 
     $esc_table = $dolt->real_escape_string($table);
 
-    // Use REPLACE INTO for each row (handles both inserts and updates)
-    // First, delete rows not present in the new data
     $pk_cols = array_map('trim', explode(',', $pk));
 
-    // Collect all PK values from the new data
-    $new_pk_values = [];
-    foreach ($new_rows as $row) {
-        $pk_val = [];
-        foreach ($pk_cols as $col) {
-            $pk_val[] = $row[trim($col)] ?? '';
-        }
-        $new_pk_values[] = $pk_val;
-    }
-
-    // Delete rows not in the new data (for single PK column)
+    // Delete rows not in the new data (for single PK column). For
+    // wp_options we exclude transients from the delete set — they're
+    // omitted from git export (finding #7) so we must not wipe live
+    // WordPress-generated transients on import.
     if (count($pk_cols) === 1) {
         $pk_col = trim($pk_cols[0]);
         $esc_pk = $dolt->real_escape_string($pk_col);
@@ -565,7 +768,13 @@ function git_apply_ndjson_changes(mysqli $dolt, string $dolt_db, string $branch,
             $chunks = array_chunk($pk_vals, 500);
             foreach ($chunks as $chunk) {
                 $in_list = implode(',', $chunk);
-                $dolt->query("DELETE FROM `$esc_table` WHERE `$esc_pk` NOT IN ($in_list)");
+                $where = "`$esc_pk` NOT IN ($in_list)";
+                if ($table === 'wp_options') {
+                    $where .= " AND `option_name` NOT LIKE '\\_transient\\_%' ESCAPE '\\\\'"
+                           .  " AND `option_name` NOT LIKE '\\_site\\_transient\\_%' ESCAPE '\\\\'"
+                           .  " AND `option_name` NOT LIKE '\\_transient\\_timeout\\_%' ESCAPE '\\\\'";
+                }
+                $dolt->query("DELETE FROM `$esc_table` WHERE $where");
                 git_drain($dolt);
             }
         }
@@ -597,7 +806,16 @@ function git_apply_ndjson_changes(mysqli $dolt, string $dolt_db, string $branch,
 
 /**
  * Export Dolt tables as NDJSON + schema.
+ *
+ * Finding #7:
+ *   - Tables with > NDJSON_PART_SIZE rows split into `<table>-NNNN.ndjson`
+ *     chunks of NDJSON_PART_SIZE rows each.
+ *   - wp_options transients (`_transient_%`, `_site_transient_%`,
+ *     `_transient_timeout_%`) are omitted from the export so WordPress's
+ *     ephemeral state doesn't churn the git repo on every pull.
  */
+const NDJSON_PART_SIZE = 5000;
+
 function git_export_dolt_tables(mysqli $dolt, string $dolt_db, string $branch, array $tables, array $table_pk): array {
     $result = [];
 
@@ -624,7 +842,13 @@ function git_export_dolt_tables(mysqli $dolt, string $dolt_db, string $branch, a
     // NDJSON exports
     foreach ($tables as $table) {
         $pk = $table_pk[$table] ?? 'id';
-        $r = $dolt->query("SELECT * FROM `$table` ORDER BY $pk");
+        $where = '';
+        if ($table === 'wp_options') {
+            $where = " WHERE `option_name` NOT LIKE '\\_transient\\_%' ESCAPE '\\\\'"
+                   .  " AND `option_name` NOT LIKE '\\_site\\_transient\\_%' ESCAPE '\\\\'"
+                   .  " AND `option_name` NOT LIKE '\\_transient\\_timeout\\_%' ESCAPE '\\\\'";
+        }
+        $r = $dolt->query("SELECT * FROM `$table`$where ORDER BY $pk");
         if (!($r instanceof mysqli_result)) {
             $result[$table . '.ndjson'] = '';
             git_drain($dolt);
@@ -634,7 +858,6 @@ function git_export_dolt_tables(mysqli $dolt, string $dolt_db, string $branch, a
         $fields = $r->fetch_fields();
         $lines = [];
         while ($row = $r->fetch_assoc()) {
-            // Detect and base64-encode binary fields
             foreach ($fields as $field) {
                 $name = $field->name;
                 if (isset($row[$name]) && ($field->type === MYSQLI_TYPE_BLOB || $field->type === MYSQLI_TYPE_LONG_BLOB || $field->type === MYSQLI_TYPE_MEDIUM_BLOB || $field->type === MYSQLI_TYPE_TINY_BLOB)) {
@@ -647,7 +870,16 @@ function git_export_dolt_tables(mysqli $dolt, string $dolt_db, string $branch, a
         }
         $r->free();
         git_drain($dolt);
-        $result[$table . '.ndjson'] = implode("\n", $lines) . ($lines ? "\n" : '');
+
+        if (count($lines) <= NDJSON_PART_SIZE) {
+            $result[$table . '.ndjson'] = implode("\n", $lines) . ($lines ? "\n" : '');
+        } else {
+            $chunks = array_chunk($lines, NDJSON_PART_SIZE);
+            foreach ($chunks as $i => $chunk) {
+                $name = sprintf('%s-%04d.ndjson', $table, $i + 1);
+                $result[$name] = implode("\n", $chunk) . "\n";
+            }
+        }
     }
 
     return $result;

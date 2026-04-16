@@ -298,13 +298,25 @@ dolt_session \
 FB=$(fetch_to_file step4body "http://127.0.0.1:$PHP_PORT/")
 FC=$(fetch_to_file step4css "http://127.0.0.1:$PHP_PORT/wp-content/themes/twentytwentyfour/style.css")
 
-if grep -qi "Preview A Site" "$FB" && grep -q "preview-a marker" "$FC"; then
-    echo "STEP 4 PASS: merge preview-a -> main completed, main reflects changes"
+# Finding #14: also verify the underlying Dolt row reflects the merged value.
+# A correctly-merged title isn't just a rendering artifact — the wp_options
+# row on main must now carry 'Preview A Site'.
+MERGED_BLOGNAME=$($PHP_BIN -r '
+    $c = new mysqli("127.0.0.1", "root", "", "wordpress/main", '"$DOLT_PORT"');
+    if ($c->connect_error) { echo "CONNECT_ERROR"; exit; }
+    $r = $c->query("SELECT option_value FROM wp_options WHERE option_name = \"blogname\" LIMIT 1");
+    if ($r && $row = $r->fetch_assoc()) { echo $row["option_value"]; }
+    $c->close();
+' 2>/dev/null)
+
+if grep -qi "Preview A Site" "$FB" && grep -q "preview-a marker" "$FC" && [ "$MERGED_BLOGNAME" = "Preview A Site" ]; then
+    echo "STEP 4 PASS: merge preview-a -> main completed (title rendered AND wp_options.blogname='Preview A Site')"
     S4=1
 else
     echo "STEP 4 FAIL: merge did not propagate changes to main"
     echo "  Title: $(grep -oiP '<title>[^<]+' "$FB" | head -1)"
     echo "  CSS marker: $(grep 'preview-a marker' "$FC" | head -1)"
+    echo "  wp_options.blogname in Dolt: '$MERGED_BLOGNAME' (expected 'Preview A Site')"
 fi
 
 # ============================================================

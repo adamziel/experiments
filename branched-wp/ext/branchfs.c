@@ -1283,6 +1283,10 @@ static zif_handler original_chown_handler         = NULL;
 static zif_handler original_chgrp_handler         = NULL;
 static zif_handler original_touch_handler         = NULL;
 static zif_handler original_lstat_handler         = NULL;
+static zif_handler original_link_handler          = NULL;
+static zif_handler original_symlink_handler       = NULL;
+static zif_handler original_readlink_handler      = NULL;
+static zif_handler original_linkinfo_handler      = NULL;
 
 ZEND_NAMED_FUNCTION(branchfs_override_file_exists) {
     zend_string *filename;
@@ -1616,6 +1620,90 @@ ZEND_NAMED_FUNCTION(branchfs_override_lstat) {
     original_lstat_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
 }
 
+/* link/symlink/readlink/linkinfo: branchfs doesn't model links. For
+ * paths that resolve under wp_root we short-circuit to the "no link"
+ * reply (false/0); everything else falls through to the OS handler so
+ * operations outside the overlay keep working. */
+ZEND_NAMED_FUNCTION(branchfs_override_link) {
+    zend_string *target;
+    zend_string *linkname;
+    ZEND_PARSE_PARAMETERS_START(2, 2)
+        Z_PARAM_PATH_STR(target)
+        Z_PARAM_PATH_STR(linkname)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *t = ZSTR_VAL(target);
+        const char *l = ZSTR_VAL(linkname);
+        if (strstr(t, "://") == NULL && strstr(l, "://") == NULL) {
+            char rel[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(t, rel, sizeof(rel)) ||
+                resolve_to_wp_relative(l, rel, sizeof(rel))) {
+                RETURN_FALSE;
+            }
+        }
+    }
+    original_link_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+ZEND_NAMED_FUNCTION(branchfs_override_symlink) {
+    zend_string *target;
+    zend_string *linkname;
+    ZEND_PARSE_PARAMETERS_START(2, 2)
+        Z_PARAM_PATH_STR(target)
+        Z_PARAM_PATH_STR(linkname)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *t = ZSTR_VAL(target);
+        const char *l = ZSTR_VAL(linkname);
+        if (strstr(t, "://") == NULL && strstr(l, "://") == NULL) {
+            char rel[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(t, rel, sizeof(rel)) ||
+                resolve_to_wp_relative(l, rel, sizeof(rel))) {
+                RETURN_FALSE;
+            }
+        }
+    }
+    original_symlink_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+ZEND_NAMED_FUNCTION(branchfs_override_readlink) {
+    zend_string *path;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(path)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *p = ZSTR_VAL(path);
+        if (strstr(p, "://") == NULL) {
+            char rel[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(p, rel, sizeof(rel))) {
+                RETURN_FALSE;
+            }
+        }
+    }
+    original_readlink_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
+ZEND_NAMED_FUNCTION(branchfs_override_linkinfo) {
+    zend_string *path;
+    ZEND_PARSE_PARAMETERS_START(1, 1)
+        Z_PARAM_PATH_STR(path)
+    ZEND_PARSE_PARAMETERS_END();
+
+    if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
+        const char *p = ZSTR_VAL(path);
+        if (strstr(p, "://") == NULL) {
+            char rel[BRANCHFS_MAX_PATH];
+            if (resolve_to_wp_relative(p, rel, sizeof(rel))) {
+                RETURN_LONG(0);
+            }
+        }
+    }
+    original_linkinfo_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
+}
+
 /* glob() override: see doc in branchfs.h.
  *
  * Supports wildcards at ANY path depth, matching PHP glob semantics where a
@@ -1905,6 +1993,10 @@ PHP_MINIT_FUNCTION(branchfs) {
         {"chgrp",         sizeof("chgrp") - 1,         branchfs_override_chgrp,         &original_chgrp_handler},
         {"touch",         sizeof("touch") - 1,         branchfs_override_touch,         &original_touch_handler},
         {"lstat",         sizeof("lstat") - 1,         branchfs_override_lstat,         &original_lstat_handler},
+        {"link",          sizeof("link") - 1,          branchfs_override_link,          &original_link_handler},
+        {"symlink",       sizeof("symlink") - 1,       branchfs_override_symlink,       &original_symlink_handler},
+        {"readlink",      sizeof("readlink") - 1,      branchfs_override_readlink,      &original_readlink_handler},
+        {"linkinfo",      sizeof("linkinfo") - 1,      branchfs_override_linkinfo,      &original_linkinfo_handler},
     };
     for (size_t i = 0; i < sizeof(overrides) / sizeof(overrides[0]); i++) {
         zend_function *f = zend_hash_str_find_ptr(CG(function_table),

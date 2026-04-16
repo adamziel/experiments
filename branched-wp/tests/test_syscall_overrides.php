@@ -135,11 +135,21 @@ $s2 = stat($css);
 assert_true(is_array($s2) && $s2['size'] === $s['size'], 'stat agrees with lstat');
 assert_true(filesize($css) === strlen('body{color:red}'), 'filesize works');
 
+echo "# link / symlink / readlink / linkinfo (branchfs doesn't model links)\n";
+$link_dst = "$ROOT/wp-content/uploads/linkdst.txt";
+assert_true(link($css, $link_dst) === false,    'link: returns false for branchfs paths');
+assert_true(symlink($css, $link_dst) === false, 'symlink: returns false for branchfs paths');
+assert_true(@readlink($css) === false,          'readlink: returns false for branchfs path');
+assert_true(linkinfo($css) === 0,               'linkinfo: returns 0 for branchfs path');
+
 echo "# path outside wp_root falls through to OS\n";
 assert_true(file_exists('/etc/hostname') || file_exists('/etc/passwd'),
                                                 'file_exists outside wp_root defers to OS');
 $os_glob = glob('/etc/*.conf');
 assert_true($os_glob !== false,                 'glob outside wp_root defers to OS');
+// readlink/linkinfo on an OS path should fall through (even if returns false there
+// due to non-link target — that's the right fallback behavior).
+assert_true(@readlink('/etc/nosuchlink') === false, 'readlink outside wp_root defers to OS');
 
 branchfs_deactivate();
 @unlink($DB); @unlink($DB . '-wal'); @unlink($DB . '-shm');

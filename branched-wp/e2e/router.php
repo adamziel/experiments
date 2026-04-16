@@ -14,6 +14,11 @@
  * (or use dnsmasq for true wildcarding) and visit
  *     http://wp.localhost:18080/            -> main
  *     http://feature.wp.localhost:18080/    -> branch "feature"
+ *
+ * OPcache note: WordPress is loaded via `branchfs://<branch>/` URLs so
+ * that OPcache keys compiled bytecode per branch. Using a single
+ * absolute wp_root path across branches would let branch B serve branch
+ * A's cached bytecode — see finding #1 in the review.
  */
 
 error_reporting(E_ALL & ~E_WARNING & ~E_NOTICE & ~E_DEPRECATED);
@@ -36,7 +41,6 @@ if (!extension_loaded('branchfs')) {
 // --- Branch resolution from HTTP Host header ---
 
 $host = $_SERVER['HTTP_HOST'] ?? '';
-// Strip :port
 $host_noport = preg_replace('/:\d+$/', '', $host);
 $host_noport = strtolower($host_noport);
 $root_host_lc = strtolower($root_host);
@@ -46,7 +50,6 @@ if ($host_noport === $root_host_lc || $host_noport === '' || $host_noport === '1
     $branch = 'main';
 } elseif (substr($host_noport, -strlen('.' . $root_host_lc)) === '.' . $root_host_lc) {
     $sub = substr($host_noport, 0, -strlen('.' . $root_host_lc));
-    // sub must be a single label (no further dots) and match our name regex
     if (strpos($sub, '.') === false && preg_match('/^[a-zA-Z0-9_\-]{1,63}$/', $sub)) {
         $branch = $sub;
     }
@@ -58,9 +61,10 @@ branchfs_set_root($wp_root);
 branchfs_set_branch($branch);
 branchfs_activate();
 
+// chdir keeps relative-path-based libraries happy; PHP requires go through
+// branchfs:// URLs below so OPcache keys per-branch.
 chdir($wp_root);
 
-// Expose branch for mu-plugin / debugging
 $_SERVER['BRANCHFS_BRANCH'] = $branch;
 header('X-BranchFS-Branch: ' . $branch);
 
@@ -70,27 +74,33 @@ $path = parse_url($uri, PHP_URL_PATH) ?: '/';
 $query = parse_url($uri, PHP_URL_QUERY) ?: '';
 
 if (preg_match('|^/([a-zA-Z0-9_\-]+)\.git(/.*)?$|', $path, $git_match)) {
-    $git_site = $git_match[1]; // unused for now; single store
+    $git_site = $git_match[1];
     $git_path = $git_match[2] ?? '/';
     require_once __DIR__ . '/../scripts/git_server/server.php';
     git_server_handle($db_path, $wp_root, $git_path, $query);
     return true;
 }
 
-// --- Route request ---
-$file = $wp_root . $path;
+// --- Route request via branchfs:// URL so OPcache keys per branch ---
+$branch_root = "branchfs://$branch";
+$file_url    = $branch_root . $path;
 
 if (substr($path, -1) === '/') {
-    $file .= 'index.php';
+    $file_url .= 'index.php';
 }
 
-if (file_exists($file) && !is_dir($file)) {
-    $ext = strtolower(pathinfo($file, PATHINFO_EXTENSION));
+if (file_exists($file_url) && !is_dir($file_url)) {
+    $ext = strtolower(pathinfo($file_url, PATHINFO_EXTENSION));
 
     if ($ext === 'php') {
+        // Intentionally DO NOT pre-define ABSPATH here: wp-cron.php and
+        // friends guard `if (!defined('ABSPATH')) require wp-load.php` and
+        // must run that require. wp-config.php sets ABSPATH from __DIR__,
+        // which is `branchfs://$branch` for this require — so OPcache keys
+        // stay per-branch without us forcing the constant.
         $_SERVER['DOCUMENT_ROOT']   = $wp_root;
-        $_SERVER['SCRIPT_FILENAME'] = $file;
-        require $file;
+        $_SERVER['SCRIPT_FILENAME'] = $file_url;
+        require $file_url;
         return true;
     }
 
@@ -114,7 +124,7 @@ if (file_exists($file) && !is_dir($file)) {
     ];
 
     header('Content-Type: ' . ($mimes[$ext] ?? 'application/octet-stream'));
-    $content = file_get_contents($file);
+    $content = file_get_contents($file_url);
     if ($content !== false) {
         header('Content-Length: ' . strlen($content));
         echo $content;
@@ -124,17 +134,24 @@ if (file_exists($file) && !is_dir($file)) {
     return true;
 }
 
-if (is_dir($file)) {
-    $index = rtrim($file, '/') . '/index.php';
-    if (file_exists($index)) {
+if (is_dir($file_url)) {
+    $index_url = rtrim($file_url, '/') . '/index.php';
+    if (file_exists($index_url)) {
+        if (!defined('ABSPATH')) {
+            define('ABSPATH', "$branch_root/");
+        }
         $_SERVER['DOCUMENT_ROOT']   = $wp_root;
-        $_SERVER['SCRIPT_FILENAME'] = $index;
-        require $index;
+        $_SERVER['SCRIPT_FILENAME'] = $index_url;
+        require $index_url;
         return true;
     }
 }
 
+// Fallback: WP pretty permalinks — defer to wp-blog-header via branchfs://
+if (!defined('ABSPATH')) {
+    define('ABSPATH', "$branch_root/");
+}
 $_SERVER['DOCUMENT_ROOT']   = $wp_root;
-$_SERVER['SCRIPT_FILENAME'] = $wp_root . '/index.php';
-require $wp_root . '/wp-blog-header.php';
+$_SERVER['SCRIPT_FILENAME'] = "$branch_root/index.php";
+require "$branch_root/wp-blog-header.php";
 return true;

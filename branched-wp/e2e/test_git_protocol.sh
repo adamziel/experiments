@@ -17,11 +17,59 @@ CLONE_DIR="/tmp/wp-clone-$$"
 PASS=0
 FAIL=0
 TOTAL=13
+# Side branches this test creates. Deleted at teardown so re-runs from a
+# non-fresh state succeed (finding #15).
+SIDE_BRANCHES=("marketing")
+BRANCHCTL="$BASE_DIR/bin/branchctl"
+
+revert_main_to_known_state() {
+    # Restore main to the bootstrap state (blogname='Branched WP Dev', no
+    # git-pushed marker in style.css). Called at BOTH teardown and setup so
+    # re-runs from a non-fresh state behave like first runs. Finding #15.
+    php -r '
+        $c = new mysqli("127.0.0.1", "root", "", "wordpress/main", '"${DOLT_PORT:-13306}"');
+        if ($c->connect_error) exit(0);
+        $c->query("UPDATE wp_options SET option_value = \"Branched WP Dev\" WHERE option_name = \"blogname\"");
+        while ($c->next_result()) { $r = $c->store_result(); if ($r) $r->free(); }
+        $c->query("CALL DOLT_ADD(\"-A\")");
+        while ($c->next_result()) { $r = $c->store_result(); if ($r) $r->free(); }
+        mysqli_report(MYSQLI_REPORT_OFF);
+        @$c->query("CALL DOLT_COMMIT(\"-am\", \"test_git_protocol: revert blogname to bootstrap state\")");
+        while ($c->next_result()) { $r = $c->store_result(); if ($r) $r->free(); }
+        $c->close();
+    ' 2>/dev/null
+
+    # Revert the css on main — strip any git-pushed marker lines we left.
+    php -d extension="$BASE_DIR/ext/branchfs.so" -r '
+        branchfs_set_db("/tmp/branchfs-dev/branchfs.db");
+        $p = "branchfs://main/wp-content/themes/twentytwentyfour/style.css";
+        $c = @file_get_contents($p);
+        if ($c !== false) {
+            $c2 = preg_replace("#/\* git-pushed marker \*/\n?#", "", $c);
+            if ($c2 !== $c) file_put_contents($p, $c2);
+        }
+    ' 2>/dev/null
+}
+
+pre_cleanup_side_branches() {
+    # Pre-emptively delete any side branches left over from a prior run so
+    # step-13's push-to-new-branch is a clean create.
+    for b in "${SIDE_BRANCHES[@]}"; do
+        "$BRANCHCTL" delete "$b" > /dev/null 2>&1 || true
+    done
+    revert_main_to_known_state
+}
 
 cleanup() {
     rm -rf "$CLONE_DIR"
+    for b in "${SIDE_BRANCHES[@]}"; do
+        "$BRANCHCTL" delete "$b" > /dev/null 2>&1 || true
+    done
+    revert_main_to_known_state
 }
 trap cleanup EXIT
+
+pre_cleanup_side_branches
 
 step() {
     local n="$1"

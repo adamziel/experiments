@@ -111,7 +111,43 @@ parent, apply file changes to the branchfs overlay and DB changes as
 INSERT/UPDATE/DELETE against the target Dolt branch. Record a paired
 `fs_commits` + `DOLT_COMMIT`. `schema.sql` changes apply as `ALTER TABLE`
 before row changes. Auth is HTTP basic; username becomes the Dolt commit
-author.
+author. **Push is transactional**: if any apply step fails (bad NDJSON,
+schema mismatch, Dolt error, reserved branch name), the git ref is rewound,
+`DOLT_RESET --hard` restores the pre-push Dolt HEAD, and the client sees a
+500 with the failure message — no half-applied state.
+
+### Auth
+
+- **Read access** (`upload-pack`): anonymous.
+- **Push access** (`receive-pack`): HTTP basic. Default dev credentials are
+  `admin` / `admin`. Override via env on the PHP server:
+  - `BRANCHFS_GIT_USER=<username>`
+  - `BRANCHFS_GIT_PASSWORD_HASH=<php password_hash() output>` —
+    generate with `php -r "echo password_hash('your-pass', PASSWORD_DEFAULT);"`
+  - `BRANCHFS_PROD=1` switches the server to production-mode auth: pushes
+    are refused unless both env vars are set, and the default
+    `admin/admin` is no longer accepted.
+
+### Reserved branch names
+
+Branch names `www`, `admin`, `api`, `mail`, `localhost`, `wp` are refused by
+both `bin/branchctl create` and `git push <…>:<reserved-name>` — those
+labels would shadow router host parsing and silently route traffic to the
+wrong overlay.
+
+### NDJSON layout details
+
+- **Sorted by primary key** so diffs are deterministic.
+- **Tables with > 5000 rows are partitioned** as `<table>-NNNN.ndjson`
+  chunks of 5000 each (e.g. `wp_posts-0001.ndjson`, `wp_posts-0002.ndjson`).
+  Small tables stay as a single `<table>.ndjson`. The push handler
+  concatenates all `<table>*.ndjson` parts in order before diffing.
+- **Transients are filtered out** of `wp_options.ndjson`: rows whose
+  `option_name` matches `_transient_%`, `_site_transient_%`, or
+  `_transient_timeout_%` are omitted on export and preserved across pushes
+  (the import step skips them when computing deletes), so transient churn
+  doesn't show up as spurious diffs.
+- **Binary BLOB columns** are base64-encoded; the push side decodes back.
 
 ### Library
 
@@ -136,15 +172,38 @@ Until the PR merges, changes live in `vendor/wordpress-php-toolkit/`.
 
 ### Testing
 
-`e2e/test_git_protocol.sh` runs 13 acceptance steps against a live dev stack,
-covering clone, log inspection, file edits, DB row edits, push, new-branch
-push, and subdomain verification.
+Two end-to-end suites cover the git protocol against a live dev stack:
+
+- **`e2e/test_git_protocol.sh`** — 13 acceptance steps: clone, log
+  inspection, file edits, DB row edits, push, new-branch push, subdomain
+  verification. Idempotent — re-runs without manual cleanup.
+- **`e2e/test_findings_live.sh`** — 17 assertions: parallel clones,
+  push-rejection on bad NDJSON (rollback verified), custom-creds auth,
+  backward-reset-then-edit-then-commit, reserved branch names, duplicate
+  create exits cleanly.
 
 ```bash
 bash e2e/dev.sh &                  # in one shell
 bash e2e/test_git_protocol.sh      # in another
 # -> RESULTS: 13 passed, 0 failed out of 13
+bash e2e/test_findings_live.sh
+# -> RESULTS: 17 passed, 0 failed
 ```
+
+**Note on `wp-debug.log` warnings:** `wp-config.php` defines
+`WP_HTTP_BLOCK_EXTERNAL` to keep WordPress from reaching out to
+wordpress.org / api.wordpress.com / Gravatar during dev. As a side effect
+`wp-debug.log` will contain noisy "could not establish secure connection
+to WordPress.org" warnings — those are **expected** and don't indicate a
+problem.
+
+### Performance note
+
+The git server rebuilds a virtual repository on every request from the
+current branchfs + Dolt state — exporting 13 WP tables and ~3300 files.
+On a default WP install this is roughly 60-120 s per clone or push.
+Acceptable for individual deploys; not a CI hot path. The cache directory
+is per-request (random suffix) so concurrent operations don't collide.
 
 ## Quickest path: Docker (works on Mac)
 
