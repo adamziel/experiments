@@ -208,7 +208,6 @@ runtime bundle.
 Build it from the repo root:
 
 ```bash
-```bash
 rustup target add x86_64-unknown-linux-musl
 cargo build --release -p gitpress
 # or
