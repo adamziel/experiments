@@ -425,6 +425,30 @@ static int branchfs_canonicalize(const char *in, char *out, size_t out_len);
 static int resolve_to_wp_relative(const char *filename, char *rel_path, size_t rel_len) {
     if (!BRANCHFS_G(wp_root) || !BRANCHFS_G(active)) return 0;
 
+    /* Accept "branchfs://<branch>/<path>" as an alias for "<wp_root>/<path>".
+     * This is what shows up after the OPcache fix, where ABSPATH is set to
+     * "branchfs://main/" so opcache keys per branch. WP then constructs
+     * paths like "branchfs://main/wp-includes/blocks/..." and passes them
+     * to glob/realpath/file_exists/etc. Without this, those calls would
+     * fall through to the OS handler (which can't see the store). */
+    const char *proto = "branchfs://";
+    size_t proto_len = strlen(proto);
+    if (strncmp(filename, proto, proto_len) == 0) {
+        const char *after = filename + proto_len;
+        const char *slash = strchr(after, '/');
+        const char *path_part;
+        if (slash) {
+            /* "branchfs://branch/foo" -> path_part = "/foo" */
+            path_part = slash;
+        } else {
+            /* "branchfs://branch" -> root */
+            path_part = "/";
+        }
+        char joined[BRANCHFS_MAX_PATH];
+        snprintf(joined, sizeof(joined), "%s%s", BRANCHFS_G(wp_root), path_part);
+        return resolve_to_wp_relative(joined, rel_path, rel_len);
+    }
+
     char joined[BRANCHFS_MAX_PATH];
     const char *abs_in;
 
@@ -1297,7 +1321,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_file_exists) {
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
         /* Skip protocol URLs - let original handler deal with them */
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
@@ -1362,17 +1386,30 @@ ZEND_NAMED_FUNCTION(branchfs_override_realpath) {
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
                 if (branch_id > 0 && store_file_exists(branch_id, rel_path)) {
-                    /* Reassemble the canonical absolute path from wp_root + rel. */
+                    /* Mirror the input scheme: branchfs:// in -> branchfs:// out;
+                     * plain path in -> wp_root absolute path. Mixing the two
+                     * breaks string concat in callers like WP's
+                     * get_block_patterns. */
+                    char prefix[BRANCHFS_MAX_PATH];
+                    if (strncmp(path, "branchfs://", 11) == 0) {
+                        const char *after = path + 11;
+                        const char *slash = strchr(after, '/');
+                        size_t blen = slash ? (size_t)(slash - after) : strlen(after);
+                        snprintf(prefix, sizeof(prefix), "branchfs://%.*s",
+                            (int)blen, after);
+                    } else {
+                        snprintf(prefix, sizeof(prefix), "%s", BRANCHFS_G(wp_root));
+                    }
                     char canon[BRANCHFS_MAX_PATH];
                     if (rel_path[0] == '\0') {
-                        snprintf(canon, sizeof(canon), "%s", BRANCHFS_G(wp_root));
+                        snprintf(canon, sizeof(canon), "%s", prefix);
                     } else {
-                        snprintf(canon, sizeof(canon), "%s/%s", BRANCHFS_G(wp_root), rel_path);
+                        snprintf(canon, sizeof(canon), "%s/%s", prefix, rel_path);
                     }
                     RETURN_STRING(canon);
                 }
@@ -1391,7 +1428,7 @@ static void branchfs_stat_check(INTERNAL_FUNCTION_PARAMETERS, int want_dir, zif_
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
@@ -1437,7 +1474,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_is_writable) {
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
@@ -1465,7 +1502,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_is_executable) {
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
@@ -1490,7 +1527,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_is_link) {
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
@@ -1520,7 +1557,7 @@ static void branchfs_noop_perm(INTERNAL_FUNCTION_PARAMETERS, zif_handler fallbac
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
@@ -1559,7 +1596,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_touch) {
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
@@ -1586,7 +1623,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_lstat) {
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *path = ZSTR_VAL(filename);
-        if (strstr(path, "://") == NULL) {
+        if ((strstr(path, "branchfs://") == path || strstr(path, "://") == NULL)) {
             char rel_path[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(path, rel_path, sizeof(rel_path))) {
                 int branch_id = get_current_branch_id();
@@ -1635,7 +1672,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_link) {
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *t = ZSTR_VAL(target);
         const char *l = ZSTR_VAL(linkname);
-        if (strstr(t, "://") == NULL && strstr(l, "://") == NULL) {
+        if ((strstr(t, "branchfs://") == t || strstr(t, "://") == NULL) && (strstr(l, "branchfs://") == l || strstr(l, "://") == NULL)) {
             char rel[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(t, rel, sizeof(rel)) ||
                 resolve_to_wp_relative(l, rel, sizeof(rel))) {
@@ -1657,7 +1694,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_symlink) {
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *t = ZSTR_VAL(target);
         const char *l = ZSTR_VAL(linkname);
-        if (strstr(t, "://") == NULL && strstr(l, "://") == NULL) {
+        if ((strstr(t, "branchfs://") == t || strstr(t, "://") == NULL) && (strstr(l, "branchfs://") == l || strstr(l, "://") == NULL)) {
             char rel[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(t, rel, sizeof(rel)) ||
                 resolve_to_wp_relative(l, rel, sizeof(rel))) {
@@ -1676,7 +1713,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_readlink) {
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *p = ZSTR_VAL(path);
-        if (strstr(p, "://") == NULL) {
+        if ((strstr(p, "branchfs://") == p || strstr(p, "://") == NULL)) {
             char rel[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(p, rel, sizeof(rel))) {
                 RETURN_FALSE;
@@ -1694,7 +1731,7 @@ ZEND_NAMED_FUNCTION(branchfs_override_linkinfo) {
 
     if (BRANCHFS_G(active) && BRANCHFS_G(current_branch) && !BRANCHFS_G(intercepting)) {
         const char *p = ZSTR_VAL(path);
-        if (strstr(p, "://") == NULL) {
+        if ((strstr(p, "branchfs://") == p || strstr(p, "://") == NULL)) {
             char rel[BRANCHFS_MAX_PATH];
             if (resolve_to_wp_relative(p, rel, sizeof(rel))) {
                 RETURN_LONG(0);
@@ -1718,8 +1755,14 @@ static zif_handler original_glob_handler = NULL;
 /* Recursive helper: rel_dir is the current directory (relative to wp_root),
  * segs[seg_idx..seg_count-1] are the remaining pattern segments. Appends
  * matching canonical absolute paths to return_value. */
+/* If the original glob pattern was "branchfs://<branch>/...", emit results
+ * with the same branchfs:// prefix so callers that string-concat against
+ * the pattern's own prefix (like WP's get_block_patterns + str_replace at
+ * class-wp-theme.php:1954) work correctly. The result_prefix is set by the
+ * caller. */
 static void branchfs_glob_walk(zval *return_value, int branch_id,
-    const char *rel_dir, char **segs, int seg_count, int seg_idx, int depth)
+    const char *rel_dir, char **segs, int seg_count, int seg_idx, int depth,
+    const char *result_prefix)
 {
     if (depth > 64) return; /* paranoia */
     if (seg_idx >= seg_count) return;
@@ -1742,11 +1785,11 @@ static void branchfs_glob_walk(zval *return_value, int branch_id,
         if (is_last) {
             /* Final literal segment: if it exists, include it. */
             char abs[BRANCHFS_MAX_PATH];
-            snprintf(abs, sizeof(abs), "%s/%s", BRANCHFS_G(wp_root), next_rel);
+            snprintf(abs, sizeof(abs), "%s/%s", result_prefix, next_rel);
             add_next_index_string(return_value, abs);
         } else {
             if (is_dir) {
-                branchfs_glob_walk(return_value, branch_id, next_rel, segs, seg_count, seg_idx + 1, depth + 1);
+                branchfs_glob_walk(return_value, branch_id, next_rel, segs, seg_count, seg_idx + 1, depth + 1, result_prefix);
             }
         }
         return;
@@ -1773,10 +1816,10 @@ static void branchfs_glob_walk(zval *return_value, int branch_id,
 
         if (is_last) {
             char abs[BRANCHFS_MAX_PATH];
-            snprintf(abs, sizeof(abs), "%s/%s", BRANCHFS_G(wp_root), child_rel);
+            snprintf(abs, sizeof(abs), "%s/%s", result_prefix, child_rel);
             add_next_index_string(return_value, abs);
         } else if (is_dir) {
-            branchfs_glob_walk(return_value, branch_id, child_rel, segs, seg_count, seg_idx + 1, depth + 1);
+            branchfs_glob_walk(return_value, branch_id, child_rel, segs, seg_count, seg_idx + 1, depth + 1, result_prefix);
         }
     }
     for (int i = 0; i < count; i++) efree(entries[i]);
@@ -1799,7 +1842,10 @@ ZEND_NAMED_FUNCTION(branchfs_override_glob) {
     }
 
     const char *pat = ZSTR_VAL(pat_z);
-    if (strstr(pat, "://") != NULL) {
+    /* Allow plain absolute/relative paths AND branchfs:// URLs through
+     * (branchfs URLs show up after the OPcache fix put them in ABSPATH).
+     * Other schemes (phar://, http://, etc.) defer to the OS handler. */
+    if (strstr(pat, "://") != NULL && strncmp(pat, "branchfs://", 11) != 0) {
         original_glob_handler(INTERNAL_FUNCTION_PARAM_PASSTHRU);
         return;
     }
@@ -1862,9 +1908,26 @@ ZEND_NAMED_FUNCTION(branchfs_override_glob) {
         while (*tok == '/') tok++;
     }
 
+    /* Pick the result prefix: if the caller used a branchfs:// pattern,
+     * mirror it. Otherwise emit canonical wp_root absolute paths. This
+     * matches what callers like WP's get_block_patterns expect: they
+     * str_replace($dirpath, '', $file) to extract the basename, and the
+     * replacement only works if $file starts with the same prefix as
+     * $dirpath. */
+    char result_prefix[BRANCHFS_MAX_PATH];
+    if (strncmp(pat, "branchfs://", 11) == 0) {
+        const char *after = pat + 11;
+        const char *slash = strchr(after, '/');
+        size_t branch_len = slash ? (size_t)(slash - after) : strlen(after);
+        snprintf(result_prefix, sizeof(result_prefix), "branchfs://%.*s",
+            (int)branch_len, after);
+    } else {
+        snprintf(result_prefix, sizeof(result_prefix), "%s", BRANCHFS_G(wp_root));
+    }
+
     array_init(return_value);
     if (seg_count > 0) {
-        branchfs_glob_walk(return_value, branch_id, rel_dir, segs, seg_count, 0, 0);
+        branchfs_glob_walk(return_value, branch_id, rel_dir, segs, seg_count, 0, 0, result_prefix);
     }
 
     /* glob() sorts lexicographically by default (no GLOB_NOSORT). To avoid
