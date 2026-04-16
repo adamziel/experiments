@@ -638,7 +638,7 @@ function git_export_dolt_tables(mysqli $dolt, string $dolt_db, string $branch, a
             foreach ($fields as $field) {
                 $name = $field->name;
                 if (isset($row[$name]) && ($field->type === MYSQLI_TYPE_BLOB || $field->type === MYSQLI_TYPE_LONG_BLOB || $field->type === MYSQLI_TYPE_MEDIUM_BLOB || $field->type === MYSQLI_TYPE_TINY_BLOB)) {
-                    if ($row[$name] !== '' && !mb_check_encoding($row[$name], 'UTF-8')) {
+                    if ($row[$name] !== '' && !git_is_utf8($row[$name])) {
                         $row[$name] = base64_encode($row[$name]);
                     }
                 }
@@ -651,6 +651,20 @@ function git_export_dolt_tables(mysqli $dolt, string $dolt_db, string $branch, a
     }
 
     return $result;
+}
+
+/**
+ * UTF-8 validity check that doesn't require php-mbstring (which may not be
+ * installed in minimal containers). Falls back to mb_check_encoding when
+ * available — its C implementation is faster than the PCRE fallback.
+ */
+function git_is_utf8(string $s): bool {
+    if (function_exists('mb_check_encoding')) {
+        return mb_check_encoding($s, 'UTF-8');
+    }
+    /* PCRE 'u' flag does the validation: a valid UTF-8 string matches /^.*$/u,
+     * an invalid one returns false (PCRE detects ill-formed sequences). */
+    return preg_match('//u', $s) === 1;
 }
 
 /**

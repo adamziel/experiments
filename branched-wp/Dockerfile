@@ -16,10 +16,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         ca-certificates \
         curl \
+        git \
         libsqlite3-dev \
         php8.2 \
         php8.2-cli \
         php8.2-dev \
+        php8.2-mbstring \
         php8.2-mysql \
         php8.2-sqlite3 \
         pkg-config \
