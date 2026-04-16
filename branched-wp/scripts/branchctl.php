@@ -273,6 +273,16 @@ function fs_last_commit(SQLite3 $db, int $branch_id): ?array {
     return $row ?: null;
 }
 
+/* "Current" fs_commit on a branch == the snapshot paired with the
+ * branch's current Dolt HEAD. This is the right anchor for "did the
+ * file overlay diverge since the last sync?" — fs_last_commit (highest
+ * id) is wrong after a reset to an earlier commit. */
+function fs_current_commit(SQLite3 $db, int $branch_id, mysqli $dolt, string $branch_name): ?array {
+    $head = dolt_head_hash($dolt, $branch_name);
+    if ($head === '') return null;
+    return fs_find_commit_by_dolt_hash($db, $branch_id, $head);
+}
+
 function fs_find_commit_by_dolt_hash(SQLite3 $db, int $branch_id, string $dolt_hash): ?array {
     $s = $db->prepare("SELECT id, dolt_hash, message, created_at FROM fs_commits WHERE branch_id = :b AND dolt_hash = :h LIMIT 1");
     $s->bindValue(':b', $branch_id, SQLITE3_INTEGER);
@@ -356,17 +366,14 @@ function fs_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
             $count++;
         }
 
-        /* Hard reset semantics: drop fs_commits that came AFTER the one we
-         * just restored to, matching `git reset --hard` and `dolt reset --hard`.
-         * Blobs are content-addressed and shared, so no actual file content
-         * is lost. Reset on a branch stays local to that branch. */
-        $db->exec(
-            "DELETE FROM fs_commit_files "
-          . "WHERE commit_id IN ("
-          . "  SELECT id FROM fs_commits WHERE branch_id = $branch_id AND id > $commit_id"
-          . ")"
-        );
-        $db->exec("DELETE FROM fs_commits WHERE branch_id = $branch_id AND id > $commit_id");
+        /* IMPORTANT: do NOT delete later fs_commits on reset. Dolt's
+         * reset --hard only moves the branch ref, the abandoned commits
+         * remain reachable via dolt_log + reflog. Symmetric branchfs
+         * behavior means the paired fs_commits must stay too — otherwise
+         * `reset HEAD~1` followed by `reset <newer-hash>` finds no
+         * paired snapshot for the newer hash and the file overlay can't
+         * be restored. The "current" fs_commit is determined dynamically
+         * by matching the branch's current Dolt HEAD hash. */
 
         $db->exec('COMMIT');
         return $count;
@@ -750,22 +757,27 @@ case 'reset': {
 
     $db = sqlite_open($DB_PATH);
     $bid = fs_branch_id($db, $name);
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+
+    /* Compare overlay against the snapshot paired with the branch's
+     * CURRENT Dolt HEAD (not "highest fs_commit id" — that anchor breaks
+     * after an earlier reset moved Dolt HEAD backwards). */
     if ($bid > 0 && !$force) {
-        $last = fs_last_commit($db, $bid);
-        if ($last) {
-            $current = fs_tree_digest(fs_resolve_tree($db, $bid));
-            $snap    = fs_digest_of_commit($db, (int)$last['id']);
-            if ($current !== $snap) {
+        $current_snap = fs_current_commit($db, $bid, $c, $name);
+        if ($current_snap) {
+            $tree_now    = fs_tree_digest(fs_resolve_tree($db, $bid));
+            $snap_digest = fs_digest_of_commit($db, (int)$current_snap['id']);
+            if ($tree_now !== $snap_digest) {
                 fwrite(STDERR,
-                    "branchctl: '$name' has file-side changes since the last fs_commit.\n"
+                    "branchctl: '$name' has file-side changes since the snapshot at HEAD.\n"
                   . "           Reset would discard them. Run `branchctl commit $name` first,\n"
                   . "           or pass --force to discard.\n");
+                $c->close();
                 exit(6);
             }
         }
     }
 
-    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
     $esc_name = $c->real_escape_string($name);
     $esc_commit = $c->real_escape_string($commit);
     dolt_query($c, "CALL DOLT_CHECKOUT('$esc_name')"); drain($c);
@@ -795,22 +807,24 @@ case 'rollback': {
 
     $db = sqlite_open($DB_PATH);
     $bid = fs_branch_id($db, $name);
+    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
+
     if ($bid > 0 && !$force) {
-        $last = fs_last_commit($db, $bid);
-        if ($last) {
-            $current = fs_tree_digest(fs_resolve_tree($db, $bid));
-            $snap    = fs_digest_of_commit($db, (int)$last['id']);
-            if ($current !== $snap) {
+        $current_snap = fs_current_commit($db, $bid, $c, $name);
+        if ($current_snap) {
+            $tree_now    = fs_tree_digest(fs_resolve_tree($db, $bid));
+            $snap_digest = fs_digest_of_commit($db, (int)$current_snap['id']);
+            if ($tree_now !== $snap_digest) {
                 fwrite(STDERR,
-                    "branchctl: '$name' has file-side changes since the last fs_commit.\n"
+                    "branchctl: '$name' has file-side changes since the snapshot at HEAD.\n"
                   . "           Rollback would discard them. Run `branchctl commit $name`\n"
                   . "           first, or pass --force to discard.\n");
+                $c->close();
                 exit(6);
             }
         }
     }
 
-    $c = connect_dolt($HOST, $PORT, $USER, $PASS, $DOLTDB);
     $esc = $c->real_escape_string($name);
     dolt_query($c, "CALL DOLT_CHECKOUT('$esc')"); drain($c);
     dolt_query($c, "CALL DOLT_RESET('--hard', 'HEAD~1')"); drain($c);
