@@ -197,6 +197,46 @@ bash e2e/test_findings_live.sh
 # -> RESULTS: 17 passed, 0 failed
 ```
 
+## `gitpress` Single Binary
+
+There is now a Rust CLI that packages the PHP runtime assets, vendored
+git server code, WordPress bootstrap helpers, `ext/branchfs.so`, the
+`php` executable, the `dolt` executable, and the shared libraries needed
+by the embedded PHP runtime into a single static launcher binary + extracted
+runtime bundle.
+
+Build it from the repo root:
+
+```bash
+rustup target add x86_64-unknown-linux-musl
+cargo build --release -p gitpress
+# or
+make gitpress
+```
+
+No host `php`, `dolt`, or glibc runtime installation is required for the
+launcher itself. `gitpress` is built as a static musl binary and extracts
+its own bundled PHP + Dolt runtime by default.
+
+Start a local site + branch router + git smart-HTTP server:
+
+```bash
+./target/x86_64-unknown-linux-musl/release/gitpress start
+```
+
+That boots the site into `./.gitpress/` by default and serves:
+
+- main site at `http://localhost:18080/`
+- branch previews at `http://<branch>.localhost:18080/`
+- git remote at `http://localhost:18080/site.git`
+
+Branch management is exposed through the same binary:
+
+```bash
+./target/x86_64-unknown-linux-musl/release/gitpress branch create marketing
+./target/x86_64-unknown-linux-musl/release/gitpress branch list
+```
+
 **Note on `wp-debug.log` warnings:** `wp-config.php` defines
 `WP_HTTP_BLOCK_EXTERNAL` to keep WordPress from reaching out to
 wordpress.org / api.wordpress.com / Gravatar during dev. As a side effect
