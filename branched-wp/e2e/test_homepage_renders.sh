@@ -100,10 +100,24 @@ check_branch() {
 check_branch "wp.localhost"  "main"
 
 # Create a transient feature branch and check it on its subdomain too.
-BRANCHCTL=/home/claude/single-dir-container/bin/branchctl
-[ -x "$BRANCHCTL" ] || BRANCHCTL=/app/bin/branchctl
+# Resolve bin/branchctl relative to this script's location so the test
+# works regardless of where the repo is checked out (CI runners, Docker
+# bind mounts, local sandboxes — all have different absolute paths).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BRANCHCTL="$SCRIPT_DIR/../bin/branchctl"
+if [ ! -x "$BRANCHCTL" ]; then
+    echo "FATAL: $BRANCHCTL not found/executable"
+    exit 1
+fi
+
 "$BRANCHCTL" delete homepage-test > /dev/null 2>&1 || true
-"$BRANCHCTL" create homepage-test --from main > /dev/null 2>&1
+if ! "$BRANCHCTL" create homepage-test --from main > /tmp/branchctl-create-$$.log 2>&1; then
+    echo "FATAL: branchctl create homepage-test failed:"
+    cat /tmp/branchctl-create-$$.log
+    rm -f /tmp/branchctl-create-$$.log
+    exit 1
+fi
+rm -f /tmp/branchctl-create-$$.log
 check_branch "homepage-test.wp.localhost" "homepage-test"
 "$BRANCHCTL" delete homepage-test > /dev/null 2>&1 || true
 

@@ -9,6 +9,13 @@ holding core, plugins, themes, and uploads. A signed preview cookie activates a
 branch; admins can preview staged changes on the production host without
 customers seeing them, then merge back.
 
+## Limitations & known gaps
+
+See [LIMITATIONS.md](LIMITATIONS.md) for everything this prototype does
+not handle yet — performance caveats, filesystem/DB constraints, auth
+model, and un-implemented features. **If something behaves unexpectedly,
+check there first.**
+
 ## Status
 
 Prototype. The PHP extension is ~1400 lines of C and the full test suite
