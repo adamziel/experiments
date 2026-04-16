@@ -175,11 +175,13 @@ $PHP \
 PHP_PID=$!
 
 for i in $(seq 1 30); do
-    STARTUP_BODY=$(fetch "http://127.0.0.1:$PHP_PORT/" || true)
-    if echo "$STARTUP_BODY" | grep -qi '<html' 2>/dev/null; then
+    if $PHP_BIN -r "\$s=@fsockopen('127.0.0.1',$PHP_PORT,\$e,\$m,0.5); if(\$s){fclose(\$s);exit(0);} exit(1);" 2>/dev/null; then
         break
     fi
-    [ "$i" -eq 30 ] && { echo "FAILED"; tail -20 "$PHP_LOG"; tail -5 "$ERR_LOG" 2>/dev/null; exit 1; }
+    if ! kill -0 "$PHP_PID" 2>/dev/null; then
+        echo "FAILED (php -S died)"; tail -20 "$PHP_LOG"; exit 1
+    fi
+    [ "$i" -eq 30 ] && { echo "FAILED (port never opened)"; tail -20 "$PHP_LOG"; exit 1; }
     sleep 1
 done
 echo "ok (pid=$PHP_PID)"
