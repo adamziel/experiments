@@ -1,0 +1,4 @@
+[workspace]
+members = ["gitpress"]
+default-members = ["gitpress"]
+resolver = "2"

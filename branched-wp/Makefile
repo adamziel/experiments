@@ -1,47 +1,56 @@
 # Portable by default: detect PHP + SQLite via php-config and pkg-config.
-# Override PHP_DEV_DIR / SQLITE_INC / SQLITE_LIB on the command line if needed.
+# If those tools are unavailable, fall back to Nix-style dev outputs when present.
 
-PHP_CONFIG ?= php-config
-PKG_CONFIG ?= pkg-config
+PHP_CONFIG ?= $(shell command -v php-config 2>/dev/null || command -v php-config8.2 2>/dev/null)
+PKG_CONFIG ?= $(shell command -v pkg-config 2>/dev/null)
 
-PHP_INCLUDE_DIR ?= $(shell $(PHP_CONFIG) --include-dir)
-PHP_EXTRA_INCS  := -I$(PHP_INCLUDE_DIR) \
-                   -I$(PHP_INCLUDE_DIR)/main \
-                   -I$(PHP_INCLUDE_DIR)/TSRM \
-                   -I$(PHP_INCLUDE_DIR)/Zend \
-                   -I$(PHP_INCLUDE_DIR)/ext \
-                   -I$(PHP_INCLUDE_DIR)/ext/date/lib
+PHP_DEV_DIR ?= $(firstword $(wildcard /nix/store/*-php-*-dev))
+SQLITE_INC  ?= $(firstword $(wildcard /nix/store/*-sqlite-*-dev/include))
+SQLITE_LIB  ?= $(firstword $(filter-out /nix/store/*-sqlite-*-dev/lib,$(wildcard /nix/store/*-sqlite-*/lib)))
 
-SQLITE_CFLAGS ?= $(shell $(PKG_CONFIG) --cflags sqlite3 2>/dev/null)
-SQLITE_LIBS   ?= $(shell $(PKG_CONFIG) --libs sqlite3 2>/dev/null)
+PHP_INCLUDE_DIR ?= $(if $(PHP_CONFIG),$(shell $(PHP_CONFIG) --include-dir 2>/dev/null))
+PHP_EXTRA_INCS  :=
 
-# Fallback if pkg-config has no sqlite3.pc
-ifeq ($(strip $(SQLITE_LIBS)),)
-SQLITE_LIBS := -lsqlite3
-endif
-
-# Nix-style override: setting PHP_DEV_DIR / SQLITE_INC / SQLITE_LIB still works
-ifdef PHP_DEV_DIR
-PHP_EXTRA_INCS := -I$(PHP_DEV_DIR)/include/php \
+ifneq ($(strip $(PHP_INCLUDE_DIR)),)
+PHP_EXTRA_INCS += -I$(PHP_INCLUDE_DIR) \
+                  -I$(PHP_INCLUDE_DIR)/main \
+                  -I$(PHP_INCLUDE_DIR)/TSRM \
+                  -I$(PHP_INCLUDE_DIR)/Zend \
+                  -I$(PHP_INCLUDE_DIR)/ext \
+                  -I$(PHP_INCLUDE_DIR)/ext/date/lib
+else ifneq ($(strip $(PHP_DEV_DIR)),)
+PHP_EXTRA_INCS += -I$(PHP_DEV_DIR)/include/php \
                   -I$(PHP_DEV_DIR)/include/php/main \
                   -I$(PHP_DEV_DIR)/include/php/TSRM \
                   -I$(PHP_DEV_DIR)/include/php/Zend \
                   -I$(PHP_DEV_DIR)/include/php/ext \
                   -I$(PHP_DEV_DIR)/include/php/ext/date/lib
+else
+$(error Could not determine PHP headers. Install php-config or set PHP_DEV_DIR)
 endif
-ifdef SQLITE_INC
+
+SQLITE_CFLAGS ?= $(if $(PKG_CONFIG),$(shell $(PKG_CONFIG) --cflags sqlite3 2>/dev/null))
+SQLITE_LIBS   ?= $(if $(PKG_CONFIG),$(shell $(PKG_CONFIG) --libs sqlite3 2>/dev/null))
+
+ifneq ($(strip $(SQLITE_INC)),)
 SQLITE_CFLAGS := -I$(SQLITE_INC)
 endif
-ifdef SQLITE_LIB
+ifneq ($(strip $(SQLITE_LIB)),)
 SQLITE_LIBS := -L$(SQLITE_LIB) -lsqlite3 -Wl,-rpath,$(SQLITE_LIB)
+endif
+
+ifeq ($(strip $(SQLITE_LIBS)),)
+SQLITE_LIBS := -lsqlite3
 endif
 
 CC      ?= gcc
 CFLAGS  := -fPIC -shared -O2 -Wall -DCOMPILE_DL_BRANCHFS -DHAVE_CONFIG_H=0 $(SQLITE_CFLAGS)
 INCLUDES := $(PHP_EXTRA_INCS)
 LDFLAGS := $(SQLITE_LIBS)
+RUSTUP ?= $(shell command -v rustup 2>/dev/null)
+GITPRESS_TARGET ?= x86_64-unknown-linux-musl
 
-.PHONY: all clean test test-compat init-db test-all
+.PHONY: all clean test test-compat init-db test-all gitpress
 
 all: ext/branchfs.so
 
@@ -70,3 +79,7 @@ test-all: ext/branchfs.so
 
 clean:
 	rm -f ext/branchfs.so /tmp/branchfs_test*.db /tmp/branchfs_wp*.db
+
+gitpress:
+	@if [ -n "$(RUSTUP)" ]; then $(RUSTUP) target add $(GITPRESS_TARGET); fi
+	cargo build --release --target $(GITPRESS_TARGET) -p gitpress

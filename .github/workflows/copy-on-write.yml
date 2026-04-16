@@ -1,0 +1,94 @@
+name: copy-on-write
+
+on:
+  pull_request:
+    paths:
+      - 'copy-on-write/**'
+      - '.github/workflows/copy-on-write.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'copy-on-write/**'
+      - '.github/workflows/copy-on-write.yml'
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: PHP 8.2 + real WordPress MariaDB
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: copy-on-write
+
+    services:
+      mariadb:
+        image: mariadb:11.4
+        ports:
+          - 3306:3306
+        env:
+          MARIADB_ROOT_PASSWORD: ''
+          MARIADB_ALLOW_EMPTY_ROOT_PASSWORD: '1'
+          MARIADB_DATABASE: wptest
+        options: >-
+          --health-cmd="mariadb-admin ping -h 127.0.0.1 -u root"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=20
+
+    env:
+      COW_MARIADB_HOST: 127.0.0.1
+      COW_MARIADB_PORT: '3306'
+      COW_MARIADB_USER: root
+      COW_MARIADB_PASSWORD: ''
+      COW_MARIADB_DBNAME: wptest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup PHP 8.2
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: pdo_mysql, mysqli, pdo_sqlite, sqlite3, mbstring, intl
+          coverage: none
+          tools: none
+
+      - name: Install MariaDB client (for harness scripts)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y mariadb-client
+
+      - name: Show versions
+        run: |
+          php --version
+          mariadb --version
+          php -m | grep -iE 'pdo|mysql|sqlite' || true
+
+      - name: Wait for MariaDB to accept connections
+        run: |
+          for i in $(seq 1 60); do
+            if mariadb --protocol=tcp -h 127.0.0.1 -P 3306 -u root -e 'SELECT 1' >/dev/null 2>&1; then
+              echo "MariaDB is up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "MariaDB never came up"; exit 1
+
+      - name: Cache WordPress core download
+        uses: actions/cache@v4
+        with:
+          path: /tmp/wp-src-cache
+          key: wp-core-6.5.5
+
+      - name: Run full test suite (unit + real-WP integration)
+        run: ./run-tests.sh
+
+      - name: Upload MariaDB log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mariadb-log
+          path: |
+            /tmp/cow-mariadb/mariadbd.log
+            /tmp/cow-mariadb-init.log
+          if-no-files-found: ignore

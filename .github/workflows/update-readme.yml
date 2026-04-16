@@ -8,6 +8,7 @@ jobs:
   update-readme:
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
     steps:
       - uses: actions/checkout@v4
@@ -76,11 +77,44 @@ jobs:
               `Triggered by commit ${context.sha.slice(0, 7)} on \`main\`.`,
             ].join("\n");
 
-            await github.rest.issues.create({
+            const created = await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: 'Update README.md',
               body,
               labels: ['auto-readme'],
-              assignees: ['copilot'],
             });
+
+            // Assign the GitHub Copilot coding agent via GraphQL, since
+            // Copilot is a bot actor and the REST `assignees` field only
+            // accepts real user logins. If Copilot isn't enabled on this
+            // repo, log and move on — the issue still exists.
+            try {
+              const suggested = await github.graphql(
+                `query($owner:String!, $name:String!) {
+                  repository(owner:$owner, name:$name) {
+                    suggestedActors(capabilities:[CAN_BE_ASSIGNED], first: 50) {
+                      nodes { login __typename ... on Bot { id } ... on User { id } }
+                    }
+                  }
+                }`,
+                { owner: context.repo.owner, name: context.repo.repo },
+              );
+              const copilot = (suggested.repository.suggestedActors.nodes || [])
+                .find(n => n && n.login && /copilot/i.test(n.login) && n.id);
+              if (!copilot) {
+                core.warning('Copilot coding agent is not available as a suggested assignee on this repository; issue created without assignee.');
+              } else {
+                await github.graphql(
+                  `mutation($assignable:ID!, $actor:ID!) {
+                    replaceActorsForAssignable(input:{ assignableId:$assignable, actorIds:[$actor] }) {
+                      assignable { ... on Issue { number } }
+                    }
+                  }`,
+                  { assignable: created.data.node_id, actor: copilot.id },
+                );
+                core.info(`Assigned ${copilot.login} to issue #${created.data.number}`);
+              }
+            } catch (err) {
+              core.warning(`Could not assign Copilot: ${err.message}`);
+            }
