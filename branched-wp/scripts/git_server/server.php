@@ -10,6 +10,8 @@
  */
 
 require_once __DIR__ . '/autoload.php';
+require_once __DIR__ . '/sqlite_exporter.php';
+require_once __DIR__ . '/sqlite_importer.php';
 
 use WordPress\Filesystem\LocalFilesystem;
 use WordPress\Git\GitEndpoint;
@@ -19,6 +21,20 @@ use WordPress\Git\Model\Tree;
 use WordPress\Git\Model\TreeEntry;
 use WordPress\Git\Protocol\GitProtocolEncoderPipe;
 use WordPress\HttpServer\Response\StreamingResponseWriter;
+
+// Bump when the on-the-wire shape of the clone changes (e.g. a different
+// DB layout). The push side rejects mismatches with a clear error.
+const SQLITE_CLONE_SCHEMA_VERSION = 1;
+// Paths emitted on every clone that the server owns — any push changes
+// to these are ignored, since they're regenerated from scratch next
+// pull. Covers the db.php drop-in, the vendored plugin tree, the
+// SQLite DB file, and the metadata stub.
+const SQLITE_CLONE_SERVER_OWNED_PREFIXES = [
+    'wordpress/wp-content/db.php',
+    'wordpress/wp-content/database/',
+    'wordpress/wp-content/plugins/sqlite-database-integration/',
+];
+const SQLITE_CLONE_META_FILE = 'db-meta.json';
 
 function git_server_handle(string $db_path, string $wp_root, string $git_path, string $query_string): void {
     ini_set('memory_limit', '512M');
@@ -400,10 +416,12 @@ function git_build_repository(string $repo_dir, SQLite3 $sqlite, mysqli $dolt, s
                 }
             }
 
-            // db/ files from Dolt
-            $db_content = git_export_dolt_tables($dolt, $dolt_db, $branch_name, $wp_tables, $table_pk);
-            foreach ($db_content as $filename => $content) {
-                $updates['db/' . $filename] = $content;
+            // DB as a single SQLite file + drop-in + vendored plugin.
+            // This makes the clone self-booting under the WordPress SQLite
+            // Database Integration plugin (see `git_clone_db_artifacts`).
+            $db_artifacts = git_clone_db_artifacts($dolt, $branch_name, $dolt_hash, $wp_tables);
+            foreach ($db_artifacts as $path => $content) {
+                $updates[$path] = $content;
             }
 
             // Create the git commit
@@ -589,49 +607,51 @@ function git_process_push(string $repo_dir, $fs, GitRepository $repo, SQLite3 $s
         $all_files = [];
         git_walk_tree($repo, $tree_hash, '', $all_files);
 
-        // Separate wordpress/ and db/ files
+        // Separate wordpress/ files from the server-owned artifacts
+        // (db.php drop-in, sqlite plugin tree, .ht.sqlite itself, meta).
+        // The latter aren't persisted to branchfs — they're regenerated
+        // from scratch on every clone, so echoing them through would
+        // just bloat the overlay.
         $wp_files = [];
-        $db_files = [];
+        $sqlite_blob_hash = null;
+        $meta_blob_hash = null;
         foreach ($all_files as $path => $blob_hash) {
-            if (strncmp($path, 'wordpress/', 10) === 0) {
-                $wp_files[substr($path, 10)] = $blob_hash;
-            } elseif (strncmp($path, 'db/', 3) === 0) {
-                $db_files[substr($path, 3)] = $blob_hash;
+            if ($path === SQLITE_CLONE_META_FILE) {
+                $meta_blob_hash = $blob_hash;
+                continue;
             }
+            // Push MUST include the canonical SQLite file.
+            if ($path === 'wordpress/wp-content/database/.ht.sqlite') {
+                $sqlite_blob_hash = $blob_hash;
+                continue;
+            }
+            if (strncmp($path, 'wordpress/', 10) !== 0) continue;
+            if (git_is_server_owned_path($path)) continue;
+            $wp_files[substr($path, 10)] = $blob_hash;
         }
 
-        // Apply file changes to branchfs overlay
+        if ($sqlite_blob_hash === null) {
+            throw new \RuntimeException(
+                "push rejected: missing wp-content/database/.ht.sqlite — " .
+                "the cloned site must round-trip its SQLite database file"
+            );
+        }
+        if ($meta_blob_hash !== null) {
+            git_validate_db_meta($repo, $meta_blob_hash);
+        }
+
+        // Apply file changes to branchfs overlay (file tree only — DB state
+        // is handled separately via the sqlite importer below).
         git_apply_file_changes($sqlite, $branch_id, $wp_files, $repo);
 
-        // Apply DB changes from ndjson files. Partitioned exports are
-        // stored as `<table>-NNNN.ndjson`; concatenate parts into one
-        // logical ndjson stream per table (finding #7).
-        $esc_branch = $dolt->real_escape_string($branch_name);
-        $dolt->query("CALL DOLT_CHECKOUT('$esc_branch')");
-        git_drain($dolt);
-
-        $table_parts = []; // [table => [sorted part filenames => blob_hash]]
-        foreach ($db_files as $filename => $blob_hash) {
-            if (substr($filename, -7) !== '.ndjson') continue;
-            $stem = substr($filename, 0, -7);
-            if (preg_match('/^(.+)-(\d{4,})$/', $stem, $m)) {
-                $table_name = $m[1];
-            } else {
-                $table_name = $stem;
-            }
-            if (!in_array($table_name, $wp_tables)) continue;
-            $table_parts[$table_name][$filename] = $blob_hash;
-        }
-
-        foreach ($table_parts as $table_name => $parts) {
-            ksort($parts); // ensure partitions apply in filename order
-            $buf = '';
-            foreach ($parts as $blob_hash) {
-                $chunk = $repo->read_object($blob_hash)->consume_all();
-                $buf .= $chunk;
-                if ($buf !== '' && substr($buf, -1) !== "\n") $buf .= "\n";
-            }
-            git_apply_ndjson_changes($dolt, $dolt_db, $branch_name, $table_name, $buf, $table_pk[$table_name] ?? null);
+        // Spill the pushed .ht.sqlite to a temp file so the importer can
+        // open it with SQLite3 (the class can't read from a PHP stream).
+        $sqlite_tmp = tempnam(sys_get_temp_dir(), 'branchfs-push-');
+        file_put_contents($sqlite_tmp, $repo->read_object($sqlite_blob_hash)->consume_all());
+        try {
+            sqlite_importer_apply($dolt, $dolt_db, $branch_name, $sqlite_tmp, $wp_tables, $table_pk);
+        } finally {
+            @unlink($sqlite_tmp);
         }
 
         // Dolt commit
@@ -720,183 +740,174 @@ function git_apply_file_changes(SQLite3 $sqlite, int $branch_id, array $new_file
 }
 
 /**
- * Apply NDJSON changes to a Dolt table.
+ * Build the "DB artifacts" tree injected on every clone:
+ *   wordpress/wp-content/database/.ht.sqlite      — the SQLite DB file
+ *   wordpress/wp-content/db.php                   — drop-in that points
+ *                                                    WP at the SQLite plugin
+ *   wordpress/wp-content/plugins/sqlite-database-integration/*   — vendored plugin
+ *   db-meta.json                                  — manifest for the push side
  */
-function git_apply_ndjson_changes(mysqli $dolt, string $dolt_db, string $branch, string $table, string $ndjson, ?string $pk): void {
-    if (!$pk) return;
+function git_clone_db_artifacts(mysqli $dolt, string $branch, string $dolt_hash, array $wp_tables): array {
+    $out = [];
 
-    $lines = explode("\n", trim($ndjson));
-    $new_rows = [];
-    $line_num = 0;
-    foreach ($lines as $line) {
-        $line_num++;
-        $line = trim($line);
-        if ($line === '') continue;
-        $row = json_decode($line, true);
-        // Strict: malformed NDJSON must fail the push so the caller can
-        // roll back rather than silently dropping rows (finding #3).
-        if ($row === null && json_last_error() !== JSON_ERROR_NONE) {
-            throw new \RuntimeException(
-                "invalid NDJSON in db/$table.ndjson line $line_num: " . json_last_error_msg()
-            );
-        }
-        if (!is_array($row)) {
-            throw new \RuntimeException(
-                "invalid NDJSON in db/$table.ndjson line $line_num: expected object, got " . gettype($row)
-            );
-        }
-        $new_rows[] = $row;
-    }
+    // 1. SQLite file. Cached across requests keyed by the Dolt commit
+    // hash so info/refs and upload-pack see identical bytes even when
+    // SQLite's own file format embeds non-deterministic page layouts
+    // that would otherwise cause the advertised commit ref in
+    // info/refs to differ from the one built during fetch.
+    $sqlite_bytes = git_cached_sqlite_export($dolt, $branch, $dolt_hash, $wp_tables);
+    $out['wordpress/wp-content/database/.ht.sqlite'] = $sqlite_bytes;
 
-    if (empty($new_rows)) return;
+    // 2. The SQLite-integration drop-in. Upstream ships a db.copy template;
+    // expand placeholders so the file is ready to go as wp-content/db.php.
+    $db_copy = file_get_contents(__DIR__ . '/../../vendor/sqlite-database-integration/db.copy');
+    // The drop-in path-search logic falls back to
+    //   realpath(__DIR__ . '/plugins/sqlite-database-integration')
+    // when the templated placeholder doesn't resolve, which is exactly
+    // what we want. Replace the plugin placeholder with its canonical
+    // slug so the admin activation path works too.
+    $db_copy = str_replace('{SQLITE_PLUGIN}', 'sqlite-database-integration/load.php', $db_copy);
+    $db_copy = str_replace('{SQLITE_IMPLEMENTATION_FOLDER_PATH}', '__PLUGIN_FOLDER_SENTINEL__', $db_copy);
+    $out['wordpress/wp-content/db.php'] = $db_copy;
 
-    $esc_table = $dolt->real_escape_string($table);
+    // 3. Vendor the plugin into wp-content/plugins/.
+    $plugin_src = realpath(__DIR__ . '/../../vendor/sqlite-database-integration');
+    $plugin_dst_prefix = 'wordpress/wp-content/plugins/sqlite-database-integration/';
+    git_clone_vendor_tree($plugin_src, $plugin_dst_prefix, $out);
 
-    $pk_cols = array_map('trim', explode(',', $pk));
+    // 4. Manifest. `exported_at` anchors to the Dolt commit timestamp
+    // instead of wall-clock now, so two requests for the same dolt_hash
+    // produce byte-identical manifests — otherwise the git commit hash
+    // would drift between info/refs and upload-pack within a single
+    // clone, breaking fetch.
+    $commit_ts = git_dolt_commit_timestamp($dolt, $dolt_hash);
+    $out[SQLITE_CLONE_META_FILE] = json_encode([
+        'dolt_commit_hash' => $dolt_hash,
+        'branch'           => $branch,
+        'exported_at'      => $commit_ts,
+        'schema_version'   => SQLITE_CLONE_SCHEMA_VERSION,
+    ], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT) . "\n";
 
-    // Delete rows not in the new data (for single PK column). For
-    // wp_options we exclude transients from the delete set — they're
-    // omitted from git export (finding #7) so we must not wipe live
-    // WordPress-generated transients on import.
-    if (count($pk_cols) === 1) {
-        $pk_col = trim($pk_cols[0]);
-        $esc_pk = $dolt->real_escape_string($pk_col);
-        $pk_vals = array_map(function($row) use ($pk_col, $dolt) {
-            return "'" . $dolt->real_escape_string((string)($row[$pk_col] ?? '')) . "'";
-        }, $new_rows);
-        if (!empty($pk_vals)) {
-            $chunks = array_chunk($pk_vals, 500);
-            foreach ($chunks as $chunk) {
-                $in_list = implode(',', $chunk);
-                $where = "`$esc_pk` NOT IN ($in_list)";
-                if ($table === 'wp_options') {
-                    $where .= " AND `option_name` NOT LIKE '\\_transient\\_%' ESCAPE '\\\\'"
-                           .  " AND `option_name` NOT LIKE '\\_site\\_transient\\_%' ESCAPE '\\\\'"
-                           .  " AND `option_name` NOT LIKE '\\_transient\\_timeout\\_%' ESCAPE '\\\\'";
-                }
-                $dolt->query("DELETE FROM `$esc_table` WHERE $where");
-                git_drain($dolt);
-            }
-        }
-    } else {
-        // For composite keys, truncate and re-insert
-        $dolt->query("DELETE FROM `$esc_table`");
-        git_drain($dolt);
-    }
-
-    // Insert/replace each row
-    foreach ($new_rows as $row) {
-        $cols = [];
-        $vals = [];
-        foreach ($row as $col => $val) {
-            $cols[] = '`' . $dolt->real_escape_string($col) . '`';
-            if ($val === null) {
-                $vals[] = 'NULL';
-            } elseif (is_int($val) || is_float($val)) {
-                $vals[] = $val;
-            } else {
-                $vals[] = "'" . $dolt->real_escape_string((string)$val) . "'";
-            }
-        }
-        $sql = "REPLACE INTO `$esc_table` (" . implode(',', $cols) . ") VALUES (" . implode(',', $vals) . ")";
-        @$dolt->query($sql);
-        git_drain($dolt);
-    }
+    return $out;
 }
 
 /**
- * Export Dolt tables as NDJSON + schema.
- *
- * Finding #7:
- *   - Tables with > NDJSON_PART_SIZE rows split into `<table>-NNNN.ndjson`
- *     chunks of NDJSON_PART_SIZE rows each.
- *   - wp_options transients (`_transient_%`, `_site_transient_%`,
- *     `_transient_timeout_%`) are omitted from the export so WordPress's
- *     ephemeral state doesn't churn the git repo on every pull.
+ * Fetch the committer timestamp for a Dolt commit as an ISO-8601 string
+ * (UTC). Falls back to a fixed epoch string if dolt_log doesn't know
+ * the commit yet.
  */
-const NDJSON_PART_SIZE = 5000;
-
-function git_export_dolt_tables(mysqli $dolt, string $dolt_db, string $branch, array $tables, array $table_pk): array {
-    $result = [];
-
-    $esc = $dolt->real_escape_string($branch);
-    $dolt->query("CALL DOLT_CHECKOUT('$esc')");
-    git_drain($dolt);
-
-    // schema.sql
-    $schema = '';
-    foreach ($tables as $table) {
-        $r = $dolt->query("SHOW CREATE TABLE `$table`");
-        if ($r instanceof mysqli_result) {
-            $row = $r->fetch_assoc();
-            if ($row) {
-                $create = $row['Create Table'] ?? '';
-                $schema .= $create . ";\n\n";
-            }
-            $r->free();
-        }
-        git_drain($dolt);
-    }
-    $result['schema.sql'] = $schema;
-
-    // NDJSON exports
-    foreach ($tables as $table) {
-        $pk = $table_pk[$table] ?? 'id';
-        $where = '';
-        if ($table === 'wp_options') {
-            $where = " WHERE `option_name` NOT LIKE '\\_transient\\_%' ESCAPE '\\\\'"
-                   .  " AND `option_name` NOT LIKE '\\_site\\_transient\\_%' ESCAPE '\\\\'"
-                   .  " AND `option_name` NOT LIKE '\\_transient\\_timeout\\_%' ESCAPE '\\\\'";
-        }
-        $r = $dolt->query("SELECT * FROM `$table`$where ORDER BY $pk");
-        if (!($r instanceof mysqli_result)) {
-            $result[$table . '.ndjson'] = '';
-            git_drain($dolt);
-            continue;
-        }
-
-        $fields = $r->fetch_fields();
-        $lines = [];
-        while ($row = $r->fetch_assoc()) {
-            foreach ($fields as $field) {
-                $name = $field->name;
-                if (isset($row[$name]) && ($field->type === MYSQLI_TYPE_BLOB || $field->type === MYSQLI_TYPE_LONG_BLOB || $field->type === MYSQLI_TYPE_MEDIUM_BLOB || $field->type === MYSQLI_TYPE_TINY_BLOB)) {
-                    if ($row[$name] !== '' && !git_is_utf8($row[$name])) {
-                        $row[$name] = base64_encode($row[$name]);
-                    }
-                }
-            }
-            $lines[] = json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        }
+function git_dolt_commit_timestamp(mysqli $dolt, string $dolt_hash): string {
+    $esc = $dolt->real_escape_string($dolt_hash);
+    $r = $dolt->query("SELECT date FROM dolt_log WHERE commit_hash = '$esc' LIMIT 1");
+    $date = null;
+    if ($r instanceof mysqli_result) {
+        $row = $r->fetch_assoc();
         $r->free();
-        git_drain($dolt);
-
-        if (count($lines) <= NDJSON_PART_SIZE) {
-            $result[$table . '.ndjson'] = implode("\n", $lines) . ($lines ? "\n" : '');
-        } else {
-            $chunks = array_chunk($lines, NDJSON_PART_SIZE);
-            foreach ($chunks as $i => $chunk) {
-                $name = sprintf('%s-%04d.ndjson', $table, $i + 1);
-                $result[$name] = implode("\n", $chunk) . "\n";
-            }
-        }
+        $date = $row['date'] ?? null;
     }
-
-    return $result;
+    git_drain($dolt);
+    if (!$date) return '1970-01-01T00:00:00+00:00';
+    $ts = strtotime($date);
+    if ($ts === false) return '1970-01-01T00:00:00+00:00';
+    return gmdate('c', $ts);
 }
 
 /**
- * UTF-8 validity check that doesn't require php-mbstring (which may not be
- * installed in minimal containers). Falls back to mb_check_encoding when
- * available — its C implementation is faster than the PCRE fallback.
+ * Cache wrapper around sqlite_exporter_build_file. Keyed by
+ * (branch, dolt_hash) so the exact same bytes are served to info/refs
+ * and the follow-up fetch within a clone. Cache lives under /tmp and
+ * is cleaned out opportunistically.
  */
-function git_is_utf8(string $s): bool {
-    if (function_exists('mb_check_encoding')) {
-        return mb_check_encoding($s, 'UTF-8');
+function git_cached_sqlite_export(mysqli $dolt, string $branch, string $dolt_hash, array $wp_tables): string {
+    $cache_dir = sys_get_temp_dir() . '/branchfs-sqlite-cache';
+    if (!is_dir($cache_dir)) {
+        @mkdir($cache_dir, 0700, true);
     }
-    /* PCRE 'u' flag does the validation: a valid UTF-8 string matches /^.*$/u,
-     * an invalid one returns false (PCRE detects ill-formed sequences). */
-    return preg_match('//u', $s) === 1;
+    $key  = hash('sha256', "$branch\x00$dolt_hash");
+    $path = $cache_dir . '/' . $key . '.sqlite';
+
+    if (is_file($path)) {
+        @touch($path);
+        return file_get_contents($path);
+    }
+
+    $tmp = $path . '.' . bin2hex(random_bytes(4)) . '.part';
+    try {
+        sqlite_exporter_build_file($dolt, $branch, $tmp, $wp_tables);
+        // Atomic rename — concurrent requests may race here, last
+        // writer wins but all writers produce the same bytes so it's
+        // fine.
+        @rename($tmp, $path);
+    } finally {
+        @unlink($tmp);
+    }
+
+    // Best-effort LRU trim: drop entries older than 1 hour.
+    foreach (glob($cache_dir . '/*.sqlite') ?: [] as $f) {
+        if (@filemtime($f) < time() - 3600) @unlink($f);
+    }
+
+    return file_get_contents($path);
+}
+
+/**
+ * Recursively walk $src_dir and register every file under $dst_prefix
+ * into the tree-updates array. Skips VCS + build noise.
+ */
+function git_clone_vendor_tree(string $src_dir, string $dst_prefix, array &$out): void {
+    if (!is_dir($src_dir)) {
+        throw new \RuntimeException("vendor dir not found: $src_dir");
+    }
+    $skip = ['.git', '.github', '.claude', '.devcontainer', 'tests', 'grammar-tools',
+             'bin', 'composer.json', 'phpcs.xml.dist', '.editorconfig', '.gitattributes',
+             '.gitignore', 'AGENTS.md', 'CLAUDE.md'];
+    $it = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($src_dir, RecursiveDirectoryIterator::SKIP_DOTS),
+        RecursiveIteratorIterator::SELF_FIRST
+    );
+    foreach ($it as $path => $info) {
+        $rel = substr($path, strlen($src_dir) + 1);
+        $top = strtok($rel, '/');
+        if (in_array($top, $skip, true)) continue;
+        if ($info->isFile()) {
+            $out[$dst_prefix . $rel] = file_get_contents($path);
+        }
+    }
+}
+
+/**
+ * True if a pushed path belongs to the server-owned integration shim
+ * that we regenerate on every clone. These files are not persisted to
+ * branchfs; whatever the client pushes is discarded.
+ */
+function git_is_server_owned_path(string $path): bool {
+    foreach (SQLITE_CLONE_SERVER_OWNED_PREFIXES as $prefix) {
+        if (substr($prefix, -1) === '/') {
+            if (strncmp($path, $prefix, strlen($prefix)) === 0) return true;
+        } elseif ($path === $prefix) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/**
+ * Read the pushed db-meta.json blob and sanity-check its schema_version.
+ * Mismatches are rejected with a clear error so clients don't silently
+ * poke at an incompatible server shape.
+ */
+function git_validate_db_meta(GitRepository $repo, string $blob_hash): void {
+    $raw = $repo->read_object($blob_hash)->consume_all();
+    $meta = json_decode($raw, true);
+    if (!is_array($meta)) {
+        throw new \RuntimeException("push rejected: db-meta.json is not valid JSON");
+    }
+    $v = $meta['schema_version'] ?? null;
+    if ((int)$v !== SQLITE_CLONE_SCHEMA_VERSION) {
+        throw new \RuntimeException(
+            "push rejected: db-meta.json schema_version=$v, server expects " . SQLITE_CLONE_SCHEMA_VERSION
+        );
+    }
 }
 
 /**
