@@ -1,0 +1,152 @@
+name: branched-wp
+
+on:
+  pull_request:
+    paths:
+      - 'branched-wp/**'
+      - '.github/workflows/branched-wp.yml'
+  push:
+    branches: [main, branched-wp]
+    paths:
+      - 'branched-wp/**'
+      - '.github/workflows/branched-wp.yml'
+
+jobs:
+  unit:
+    name: Unit tests (C extension + PHP)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: branched-wp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, mysqli, pdo_mysql, sqlite3, pdo_sqlite
+          coverage: none
+
+      - name: Install build deps
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends
+            build-essential libsqlite3-dev pkg-config
+
+      - name: Build branchfs extension
+        run: make
+
+      - name: Unit test suite
+        run: make test-all
+
+  e2e:
+    name: End-to-end (WordPress + Dolt + git protocol)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: branched-wp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, mysqli, pdo_mysql, sqlite3, pdo_sqlite
+          coverage: none
+          ini-values: post_max_size=100M, upload_max_filesize=100M, log_errors=On
+
+      - name: Install build deps
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends
+            build-essential libsqlite3-dev pkg-config
+
+      - name: Install Dolt
+        run: |
+          curl -sL "https://github.com/dolthub/dolt/releases/latest/download/dolt-linux-amd64.tar.gz" -o /tmp/dolt.tgz
+          tar -C /tmp -xzf /tmp/dolt.tgz
+          sudo install -m 0755 /tmp/dolt-linux-amd64/bin/dolt /usr/local/bin/dolt
+          dolt config --global --add user.name "ci"
+          dolt config --global --add user.email "ci@branched-wp"
+          dolt version
+
+      - name: Fetch WordPress 6.5 source
+        run: |
+          curl -sL https://wordpress.org/wordpress-6.5.tar.gz -o /tmp/wp.tgz
+          mkdir -p e2e
+          tar -C e2e -xzf /tmp/wp.tgz
+          mv e2e/wordpress e2e/wp-src
+
+      - name: Build branchfs extension
+        run: make
+
+      # run_e2e.sh is self-contained: it starts its own Dolt + branchfs
+      # store + php -S in its own /tmp/branchfs-e2e-$$ scratch dir and
+      # cleans up on exit (trap). Run it FIRST, before we start the
+      # long-lived dev stack for the other tests — otherwise the two
+      # stacks collide on port 18080.
+      - name: Branch workflow e2e (8 steps, self-contained)
+        run: bash e2e/run_e2e.sh
+
+      - name: Start dev stack (Dolt + WP install + php -S)
+        run: |
+          nohup setsid bash e2e/dev.sh > /tmp/dev.log 2>&1 < /dev/null &
+          disown || true
+          # Wait for the "BranchFS dev server is up." marker (bootstrap
+          # is synchronous but takes ~30-45s for the WP install step).
+          for i in $(seq 1 120); do
+            if grep -q "BranchFS dev server is up." /tmp/dev.log 2>/dev/null; then
+              echo "dev stack up after ${i}s"
+              exit 0
+            fi
+            if grep -qE "FAILED|Fatal error" /tmp/dev.log 2>/dev/null; then
+              echo "::error::dev bootstrap failed"
+              tail -50 /tmp/dev.log
+              exit 1
+            fi
+            sleep 1
+          done
+          echo "::error::dev stack didn't come up in 120s"
+          tail -80 /tmp/dev.log
+          exit 1
+
+      - name: Homepage renders (regression canary — MUST always pass)
+        run: bash e2e/test_homepage_renders.sh
+
+      # test_sqlite_clone.sh ships on the branched-wp-sqlite-export PR
+      # — run it here if present, skip quietly otherwise.
+      - name: SQLite-clone round-trip (A..N; booting + push)
+        run: |
+          if [ -x e2e/test_sqlite_clone.sh ]; then
+            bash e2e/test_sqlite_clone.sh
+          else
+            echo "e2e/test_sqlite_clone.sh not present on this branch — skipping"
+          fi
+
+      - name: Git protocol e2e (13 steps; run twice for idempotency)
+        run: |
+          bash e2e/test_git_protocol.sh
+          bash e2e/test_git_protocol.sh
+
+      - name: Findings-live e2e (17 assertions)
+        run: bash e2e/test_findings_live.sh
+
+      - name: Collect logs on failure
+        if: failure()
+        run: |
+          echo "--- /tmp/dev.log tail ---"
+          tail -200 /tmp/dev.log || true
+          echo "--- php-server.log tail ---"
+          tail -100 /tmp/branchfs-dev/php-server.log 2>/dev/null || true
+          echo "--- php-errors.log tail ---"
+          tail -100 /tmp/branchfs-dev/php-errors.log 2>/dev/null || true
+          echo "--- wp-debug.log tail ---"
+          tail -100 /tmp/branchfs-dev/wp-debug.log 2>/dev/null || true
+          echo "--- dolt-server.log tail ---"
+          tail -100 /tmp/branchfs-dev/dolt-server.log 2>/dev/null || true
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: branched-wp-e2e-logs
+          path: |
+            /tmp/dev.log
+            /tmp/branchfs-dev/*.log
+          if-no-files-found: ignore
