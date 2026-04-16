@@ -200,8 +200,10 @@ bash e2e/test_findings_live.sh
 ## `gitpress` Single Binary
 
 There is now a Rust CLI that packages the PHP runtime assets, vendored
-git server code, WordPress bootstrap helpers, and `ext/branchfs.so`
-into a single executable.
+git server code, WordPress bootstrap helpers, `ext/branchfs.so`, the
+`php` executable, the `dolt` executable, and the shared libraries needed
+by the embedded PHP runtime into a self-contained executable + extracted
+runtime bundle.
 
 Build it from the repo root:
 
@@ -211,10 +213,8 @@ cargo build --release -p gitpress
 make gitpress
 ```
 
-Runtime requirements:
-
-- `php` must be available on `PATH`
-- `dolt` must be available on `PATH`
+No host `php` or `dolt` installation is required at runtime. `gitpress`
+extracts and uses its own bundled copies by default.
 
 Start a local site + branch router + git smart-HTTP server:
 

@@ -40,11 +40,11 @@ struct SharedPaths {
     #[arg(long, default_value = ".gitpress")]
     work_dir: PathBuf,
 
-    #[arg(long, default_value = "php")]
-    php_bin: String,
+    #[arg(long)]
+    php_bin: Option<PathBuf>,
 
-    #[arg(long, default_value = "dolt")]
-    dolt_bin: String,
+    #[arg(long)]
+    dolt_bin: Option<PathBuf>,
 
     #[arg(long, default_value_t = 13306)]
     dolt_port: u16,
@@ -94,6 +94,14 @@ struct Layout {
     bootstrap_marker: PathBuf,
 }
 
+#[derive(Debug, Clone)]
+struct PortableRuntime {
+    php: PathBuf,
+    dolt: PathBuf,
+    loader: PathBuf,
+    lib_dir: PathBuf,
+}
+
 struct ChildGuard {
     name: &'static str,
     child: Child,
@@ -140,17 +148,18 @@ fn start_command(args: StartArgs) -> Result<i32> {
     prepare_runtime(&layout)?;
     ensure_ports_available(&args)?;
 
+    let runtime = PortableRuntime::from_layout(&layout);
     let mut dolt = start_dolt_server(
         &layout,
-        &args.shared.php_bin,
-        &args.shared.dolt_bin,
+        &runtime,
+        &args.shared,
         args.shared.dolt_port,
         false,
     )?;
 
-    ensure_bootstrapped(&layout, &args)?;
+    ensure_bootstrapped(&layout, &runtime, &args)?;
 
-    let mut php = start_php_server(&layout, &args)?;
+    let mut php = start_php_server(&layout, &runtime, &args)?;
 
     println!("Main site:  http://{}:{}/", args.root_host, args.port);
     println!(
@@ -184,11 +193,13 @@ fn start_command(args: StartArgs) -> Result<i32> {
             );
         }
 
-        if let Some(status) = dolt.try_wait()? {
-            bail!(
-                "dolt sql-server exited unexpectedly with status {status}. Check {}",
-                layout.dolt_server_log.display()
-            );
+        if let Some(dolt) = dolt.as_mut() {
+            if let Some(status) = dolt.try_wait()? {
+                bail!(
+                    "dolt sql-server exited unexpectedly with status {status}. Check {}",
+                    layout.dolt_server_log.display()
+                );
+            }
         }
 
         thread::sleep(Duration::from_millis(250));
@@ -204,6 +215,7 @@ fn branch_command(args: BranchPassthrough) -> Result<i32> {
 
     let layout = Layout::new(args.shared.work_dir.clone())?;
     prepare_runtime(&layout)?;
+    let runtime = PortableRuntime::from_layout(&layout);
 
     if !layout.db_path.exists() || !layout.bootstrap_marker.exists() {
         bail!(
@@ -212,15 +224,9 @@ fn branch_command(args: BranchPassthrough) -> Result<i32> {
         );
     }
 
-    let _dolt = start_dolt_server(
-        &layout,
-        &args.shared.php_bin,
-        &args.shared.dolt_bin,
-        args.shared.dolt_port,
-        true,
-    )?;
+    let _dolt = start_dolt_server(&layout, &runtime, &args.shared, args.shared.dolt_port, true)?;
 
-    let mut command = php_base_command(&layout, &args.shared.php_bin);
+    let mut command = php_base_command(&layout, &runtime, &args.shared);
     command.arg(layout.runtime_dir.join("scripts/branchctl.php"));
     for arg in &args.args {
         command.arg(arg);
@@ -234,7 +240,7 @@ fn branch_command(args: BranchPassthrough) -> Result<i32> {
 
     let output = command
         .output()
-        .with_context(|| format!("failed to run {}", args.shared.php_bin))?;
+        .context("failed to run branch command via bundled php")?;
 
     write_filtered_output(&output.stdout, &output.stderr)?;
 
@@ -259,6 +265,18 @@ impl Layout {
             bootstrap_marker: work_dir.join(".gitpress-bootstrap-complete"),
             work_dir,
         })
+    }
+}
+
+impl PortableRuntime {
+    fn from_layout(layout: &Layout) -> Self {
+        let root = layout.runtime_dir.join("portable-runtime");
+        Self {
+            php: root.join("bin/php"),
+            dolt: root.join("bin/dolt"),
+            loader: root.join("lib/ld-linux-x86-64.so.2"),
+            lib_dir: root.join("lib"),
+        }
     }
 }
 
@@ -356,11 +374,12 @@ fn ensure_ports_available(args: &StartArgs) -> Result<()> {
     Ok(())
 }
 
-fn ensure_bootstrapped(layout: &Layout, args: &StartArgs) -> Result<()> {
+fn ensure_bootstrapped(layout: &Layout, runtime: &PortableRuntime, args: &StartArgs) -> Result<()> {
     if !layout.db_path.exists() {
         run_php_script(
             layout,
-            &args.shared.php_bin,
+            runtime,
+            &args.shared,
             "scripts/init_db.php",
             [layout.db_path.as_os_str()],
         )?;
@@ -369,7 +388,8 @@ fn ensure_bootstrapped(layout: &Layout, args: &StartArgs) -> Result<()> {
     if !layout.bootstrap_marker.exists() {
         run_php_script(
             layout,
-            &args.shared.php_bin,
+            runtime,
+            &args.shared,
             "scripts/import_wp.php",
             [
                 layout.runtime_dir.join("e2e/wp-src").as_os_str(),
@@ -380,7 +400,8 @@ fn ensure_bootstrapped(layout: &Layout, args: &StartArgs) -> Result<()> {
 
         run_php_script(
             layout,
-            &args.shared.php_bin,
+            runtime,
+            &args.shared,
             "e2e/bootstrap_wp.php",
             [
                 layout.db_path.as_os_str(),
@@ -403,25 +424,19 @@ fn ensure_bootstrapped(layout: &Layout, args: &StartArgs) -> Result<()> {
 
 fn start_dolt_server(
     layout: &Layout,
-    php_bin: &str,
-    dolt_bin: &str,
+    runtime: &PortableRuntime,
+    shared: &SharedPaths,
     port: u16,
     allow_existing: bool,
-) -> Result<ChildGuard> {
+) -> Result<Option<ChildGuard>> {
     if tcp_port_open("127.0.0.1", port) {
         if allow_existing {
-            let child = Command::new("true")
-                .spawn()
-                .context("failed to spawn noop guard")?;
-            return Ok(ChildGuard {
-                name: "dolt sql-server",
-                child,
-            });
+            return Ok(None);
         }
         bail!("dolt port {port} is already in use");
     }
 
-    ensure_dolt_repo(layout, dolt_bin)?;
+    ensure_dolt_repo(layout, runtime, shared)?;
 
     let log = OpenOptions::new()
         .create(true)
@@ -429,7 +444,8 @@ fn start_dolt_server(
         .open(&layout.dolt_server_log)?;
     let log_err = log.try_clone()?;
 
-    let child = Command::new(dolt_bin)
+    let mut command = dolt_command(runtime, shared);
+    let child = command
         .args([
             "sql-server",
             "--host=127.0.0.1",
@@ -440,28 +456,32 @@ fn start_dolt_server(
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
         .spawn()
-        .with_context(|| format!("failed to start dolt using `{dolt_bin}`"))?;
+        .context("failed to start bundled dolt")?;
 
     let guard = ChildGuard {
         name: "dolt sql-server",
         child,
     };
 
-    wait_for_dolt(layout, php_bin, guard.child.id(), port)?;
-    Ok(guard)
+    wait_for_dolt(layout, runtime, shared, guard.child.id(), port)?;
+    Ok(Some(guard))
 }
 
-fn ensure_dolt_repo(layout: &Layout, dolt_bin: &str) -> Result<()> {
+fn ensure_dolt_repo(
+    layout: &Layout,
+    runtime: &PortableRuntime,
+    shared: &SharedPaths,
+) -> Result<()> {
     if layout.dolt_repo_dir.join(".dolt").exists() {
         return Ok(());
     }
 
     fs::create_dir_all(&layout.dolt_repo_dir)?;
-    let output = Command::new(dolt_bin)
+    let output = dolt_command(runtime, shared)
         .args(["init", "--name", "gitpress", "--email", "gitpress@local"])
         .current_dir(&layout.dolt_repo_dir)
         .output()
-        .with_context(|| format!("failed to initialize dolt repo using `{dolt_bin}`"))?;
+        .context("failed to initialize bundled dolt repo")?;
 
     if !output.status.success() {
         bail!(
@@ -473,7 +493,13 @@ fn ensure_dolt_repo(layout: &Layout, dolt_bin: &str) -> Result<()> {
     Ok(())
 }
 
-fn wait_for_dolt(layout: &Layout, php_bin: &str, pid: u32, port: u16) -> Result<()> {
+fn wait_for_dolt(
+    layout: &Layout,
+    runtime: &PortableRuntime,
+    shared: &SharedPaths,
+    pid: u32,
+    port: u16,
+) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(30);
     while Instant::now() < deadline {
         if !process_alive(pid) {
@@ -483,14 +509,12 @@ fn wait_for_dolt(layout: &Layout, php_bin: &str, pid: u32, port: u16) -> Result<
             );
         }
 
-        let status = Command::new(php_bin)
-            .args([
-                "-r",
-                &format!(
-                    "mysqli_report(MYSQLI_REPORT_OFF); $c = @mysqli_init(); if(!$c) exit(1); if(!@mysqli_real_connect($c, '127.0.0.1', 'root', '', 'wordpress', {})) exit(1); $c->close();",
-                    port
-                ),
-            ])
+        let status = php_command(runtime, shared)
+            .arg("-r")
+            .arg(format!(
+                "mysqli_report(MYSQLI_REPORT_OFF); $c = @mysqli_init(); if(!$c) exit(1); if(!@mysqli_real_connect($c, '127.0.0.1', 'root', '', 'wordpress', {})) exit(1); $c->close();",
+                port
+            ))
             .status();
 
         if matches!(status, Ok(s) if s.success()) {
@@ -505,14 +529,18 @@ fn wait_for_dolt(layout: &Layout, php_bin: &str, pid: u32, port: u16) -> Result<
     );
 }
 
-fn start_php_server(layout: &Layout, args: &StartArgs) -> Result<ChildGuard> {
+fn start_php_server(
+    layout: &Layout,
+    runtime: &PortableRuntime,
+    args: &StartArgs,
+) -> Result<ChildGuard> {
     let log = OpenOptions::new()
         .create(true)
         .append(true)
         .open(&layout.php_server_log)?;
     let log_err = log.try_clone()?;
 
-    let child = php_base_command(layout, &args.shared.php_bin)
+    let child = php_base_command(layout, runtime, &args.shared)
         .arg("-d")
         .arg("log_errors=On")
         .arg("-d")
@@ -535,7 +563,7 @@ fn start_php_server(layout: &Layout, args: &StartArgs) -> Result<ChildGuard> {
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
         .spawn()
-        .with_context(|| format!("failed to start php using `{}`", args.shared.php_bin))?;
+        .context("failed to start bundled php server")?;
 
     let mut guard = ChildGuard {
         name: "php server",
@@ -555,8 +583,8 @@ fn start_php_server(layout: &Layout, args: &StartArgs) -> Result<ChildGuard> {
     Ok(guard)
 }
 
-fn php_base_command(layout: &Layout, php_bin: &str) -> Command {
-    let mut command = Command::new(php_bin);
+fn php_base_command(layout: &Layout, runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
+    let mut command = php_command(runtime, shared);
     command
         .arg("-d")
         .arg(format!(
@@ -570,12 +598,18 @@ fn php_base_command(layout: &Layout, php_bin: &str) -> Command {
     command
 }
 
-fn run_php_script<I, S>(layout: &Layout, php_bin: &str, script_rel: &str, args: I) -> Result<()>
+fn run_php_script<I, S>(
+    layout: &Layout,
+    runtime: &PortableRuntime,
+    shared: &SharedPaths,
+    script_rel: &str,
+    args: I,
+) -> Result<()>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut command = php_base_command(layout, php_bin);
+    let mut command = php_base_command(layout, runtime, shared);
     command.arg(layout.runtime_dir.join(script_rel));
     for arg in args {
         command.arg(arg);
@@ -583,7 +617,7 @@ where
 
     let output = command
         .output()
-        .with_context(|| format!("failed to run {} {}", php_bin, script_rel))?;
+        .with_context(|| format!("failed to run bundled php script {}", script_rel))?;
 
     write_filtered_output(&output.stdout, &output.stderr)?;
 
@@ -592,6 +626,28 @@ where
     }
 
     Ok(())
+}
+
+fn php_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
+    if let Some(php_bin) = &shared.php_bin {
+        return Command::new(php_bin);
+    }
+
+    let mut command = Command::new(&runtime.loader);
+    command
+        .arg("--library-path")
+        .arg(&runtime.lib_dir)
+        .arg(&runtime.php)
+        .env("LD_LIBRARY_PATH", &runtime.lib_dir);
+    command
+}
+
+fn dolt_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
+    if let Some(dolt_bin) = &shared.dolt_bin {
+        return Command::new(dolt_bin);
+    }
+
+    Command::new(&runtime.dolt)
 }
 
 fn write_filtered_output(stdout: &[u8], stderr: &[u8]) -> Result<()> {
