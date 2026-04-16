@@ -238,23 +238,57 @@ bash e2e/test_findings_live.sh
 ## `gitpress` Single Binary
 
 There is now a Rust CLI that packages the PHP runtime assets, vendored
-git server code, WordPress bootstrap helpers, `ext/branchfs.so`, the
-`php` executable, the `dolt` executable, and the shared libraries needed
-by the embedded PHP runtime into a single static launcher binary + extracted
-runtime bundle.
+git server code, WordPress bootstrap helpers, `ext/branchfs.so`, a
+statically-linked `php` executable, the `dolt` executable, and any
+supporting libraries into a single launcher binary + embedded runtime
+bundle.
 
-Build it from the repo root:
+### Downloads
+
+Pre-built release tarballs are published to the GitHub Releases page
+for every tag. Pick the asset matching your machine:
+
+| Platform | Asset name |
+| --- | --- |
+| Linux x86_64 (glibc or musl) | `gitpress-<version>-linux-x86_64.tar.gz` |
+| Linux aarch64 (glibc or musl) | `gitpress-<version>-linux-aarch64.tar.gz` |
+| macOS x86_64 (Intel) | `gitpress-<version>-macos-x86_64.tar.gz` |
+| macOS aarch64 (Apple Silicon) | `gitpress-<version>-macos-aarch64.tar.gz` |
+
+Install + verify:
 
 ```bash
-rustup target add x86_64-unknown-linux-musl
+VERSION=0.1.0   # replace with the latest release tag (without the leading 'v')
+OS_ARCH=linux-x86_64   # or linux-aarch64, macos-x86_64, macos-aarch64
+BASE="https://github.com/adamziel/experiments/releases/download/v${VERSION}"
+
+curl -fsSL -O "${BASE}/gitpress-${VERSION}-${OS_ARCH}.tar.gz"
+curl -fsSL -O "${BASE}/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar xzf "gitpress-${VERSION}-${OS_ARCH}.tar.gz"
+cd "gitpress-${VERSION}-${OS_ARCH}"
+./gitpress start
+```
+
+Windows is **not yet supported** — see `LIMITATIONS.md` for the port
+blockers and tracking placeholder.
+
+### Building from source
+
+Build from a local checkout:
+
+```bash
+rustup target add x86_64-unknown-linux-musl   # or your platform triple
 cargo build --release -p gitpress
 # or
 make gitpress
 ```
 
 No host `php`, `dolt`, or glibc runtime installation is required for the
-launcher itself. `gitpress` is built as a static musl binary and extracts
-its own bundled PHP + Dolt runtime by default.
+launcher itself — the release artifact bundles a static PHP (built via
+[static-php-cli](https://github.com/crazywhalecc/static-php-cli)) and a
+static Dolt binary, and extracts them into `~/.gitpress/runtime/` on
+first run.
 
 Start a local site + branch router + git smart-HTTP server:
 
