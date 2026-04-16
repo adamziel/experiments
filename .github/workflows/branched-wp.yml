@@ -76,6 +76,14 @@ jobs:
       - name: Build branchfs extension
         run: make
 
+      # run_e2e.sh is self-contained: it starts its own Dolt + branchfs
+      # store + php -S in its own /tmp/branchfs-e2e-$$ scratch dir and
+      # cleans up on exit (trap). Run it FIRST, before we start the
+      # long-lived dev stack for the other tests — otherwise the two
+      # stacks collide on port 18080.
+      - name: Branch workflow e2e (8 steps, self-contained)
+        run: bash e2e/run_e2e.sh
+
       - name: Start dev stack (Dolt + WP install + php -S)
         run: |
           nohup setsid bash e2e/dev.sh > /tmp/dev.log 2>&1 < /dev/null &
@@ -101,8 +109,15 @@ jobs:
       - name: Homepage renders (regression canary — MUST always pass)
         run: bash e2e/test_homepage_renders.sh
 
-      - name: Branch workflow e2e (8 steps)
-        run: bash e2e/run_e2e.sh
+      # test_sqlite_clone.sh ships on the branched-wp-sqlite-export PR
+      # — run it here if present, skip quietly otherwise.
+      - name: SQLite-clone round-trip (A..N; booting + push)
+        run: |
+          if [ -x e2e/test_sqlite_clone.sh ]; then
+            bash e2e/test_sqlite_clone.sh
+          else
+            echo "e2e/test_sqlite_clone.sh not present on this branch — skipping"
+          fi
 
       - name: Git protocol e2e (13 steps; run twice for idempotency)
         run: |

@@ -115,9 +115,23 @@ fetch_to_file() {
 
 # ---- Kill old processes ----
 echo "[setup] cleaning up old processes..."
+# Kill any existing server on our ports regardless of bind address
+# (dev.sh binds 0.0.0.0; earlier patterns matched only 127.0.0.1, which
+# left dev.sh running and made run_e2e curl against the wrong stack).
 pkill -f "dolt sql-server.*--port=$DOLT_PORT" 2>/dev/null || true
-pkill -f "php.*127.0.0.1:$PHP_PORT" 2>/dev/null || true
-sleep 1
+pkill -f "php.*:$PHP_PORT" 2>/dev/null || true
+# Belt-and-suspenders: also kill anything holding the ports we need.
+if command -v fuser >/dev/null 2>&1; then
+    fuser -k -9 "$PHP_PORT/tcp" 2>/dev/null || true
+    fuser -k -9 "$DOLT_PORT/tcp" 2>/dev/null || true
+fi
+# Wait for the ports to actually free.
+for _i in $(seq 1 10); do
+    if ! $PHP_BIN -r "\$s=@fsockopen('127.0.0.1',$PHP_PORT,\$e,\$m,0.2); if(\$s){fclose(\$s);exit(0);} exit(1);" 2>/dev/null; then
+        break
+    fi
+    sleep 1
+done
 
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR" "$WP_ROOT" "$DOLT_DATA/wordpress"
