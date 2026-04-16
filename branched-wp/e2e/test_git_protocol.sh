@@ -208,8 +208,11 @@ else
     fail "wp_options.ndjson not found"
 fi
 
-# Step 8: git commit
+# Step 8: git commit. Explicitly set local git identity so CI runners
+# (which don't have a default user.name / user.email globally) can commit.
 step 8 "git commit -am 'Deploy via git push'"
+git -C "$CLONE_DIR" config user.email "e2e@branched-wp"
+git -C "$CLONE_DIR" config user.name  "e2e"
 git -C "$CLONE_DIR" add -A 2>&1
 if git -C "$CLONE_DIR" commit -am "Deploy via git push" 2>&1; then
     pass
