@@ -217,16 +217,15 @@ fi
 
 STEP2_OK=true
 
-BRANCH_ID=$(bfs_php -r "
-    branchfs_set_db('$DB_PATH');
-    \$id = branchfs_create_branch('preview-a', 'main');
-    echo \$id;
-" 2>/dev/null)
-[ -z "$BRANCH_ID" ] || [ "$BRANCH_ID" = "false" ] && STEP2_OK=false
+# Use bin/branchctl create — atomically creates the branchfs overlay,
+# the Dolt branch, AND the initial paired fs_commit. Raw
+# branchfs_create_branch via a bfs_php oneliner races with the php -S
+# process's SQLite snapshot in CI (works locally with warm state, 500s
+# in a cold CI runner where the subsequent HTTP request doesn't see
+# the just-inserted branch row yet).
+BRANCHFS_DB="$DB_PATH" "$BASE_DIR/bin/branchctl" create preview-a --from main > /dev/null 2>&1 || STEP2_OK=false
 
-# All Dolt operations for preview-a in ONE session
 dolt_session \
-    "CALL DOLT_BRANCH('preview-a', 'main')" \
     "CALL DOLT_CHECKOUT('preview-a')" \
     "UPDATE wp_options SET option_value = 'Preview A Site' WHERE option_name = 'blogname'" \
     "CALL DOLT_COMMIT('-am', 'Change site title to Preview A Site')" \
@@ -362,10 +361,9 @@ fi
 # STEP 6: Discard a branch (preview-b)
 # ============================================================
 
-bfs_php -r "branchfs_set_db('$DB_PATH'); branchfs_create_branch('preview-b', 'main');" 2>/dev/null
+BRANCHFS_DB="$DB_PATH" "$BASE_DIR/bin/branchctl" create preview-b --from main > /dev/null 2>&1
 
 dolt_session \
-    "CALL DOLT_BRANCH('preview-b', 'main')" \
     "CALL DOLT_CHECKOUT('preview-b')" \
     "UPDATE wp_options SET option_value = 'Preview B Site' WHERE option_name = 'blogname'" \
     "CALL DOLT_COMMIT('-am', 'Preview B changes')" \
@@ -409,11 +407,10 @@ fi
 # ============================================================
 
 for BNAME in preview-c preview-d preview-e; do
-    bfs_php -r "branchfs_set_db('$DB_PATH'); branchfs_create_branch('$BNAME', 'main');" 2>/dev/null
+    BRANCHFS_DB="$DB_PATH" "$BASE_DIR/bin/branchctl" create "$BNAME" --from main > /dev/null 2>&1
 
     BTITLE="Branch ${BNAME##preview-} Title"
     dolt_session \
-        "CALL DOLT_BRANCH('$BNAME', 'main')" \
         "CALL DOLT_CHECKOUT('$BNAME')" \
         "UPDATE wp_options SET option_value = '$BTITLE' WHERE option_name = 'blogname'" \
         "CALL DOLT_COMMIT('-am', 'Set title for $BNAME')" \
