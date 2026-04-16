@@ -81,17 +81,21 @@ echo "=== E. Push with invalid NDJSON is rejected; server state unchanged ==="
 PRE_REFS=$(git ls-remote "http://127.0.0.1:$PHP_PORT/site.git" | sort)
 PRE_LOG_TOP=$("$BRANCHCTL" log main -n 1 2>/dev/null | grep -A1 'COMMIT' | tail -1 | awk '{print $2}')
 
-# Corrupt wp_options.ndjson in a clone and push
-if [ -d "$WORK/cloneA/db" ]; then
-    echo "this is not json, certainly not ndjson" > "$WORK/cloneA/db/wp_options.ndjson"
+# Corrupt the pushed SQLite file and push — the importer must reject
+# it and leave the server refs + Dolt log unchanged. (Migrated from the
+# NDJSON layout's "corrupt wp_options.ndjson" test: the server now owns
+# a single SQLite file, so the broken variant is truncated bytes.)
+SQLITE_PATH="$WORK/cloneA/wordpress/wp-content/database/.ht.sqlite"
+if [ -f "$SQLITE_PATH" ]; then
+    echo "not a sqlite file" > "$SQLITE_PATH"
     git -C "$WORK/cloneA" add -A
-    git -C "$WORK/cloneA" -c user.email=t@t.co -c user.name=t commit -m "intentionally invalid ndjson" > /dev/null 2>&1
+    git -C "$WORK/cloneA" -c user.email=t@t.co -c user.name=t commit -m "intentionally invalid sqlite" > /dev/null 2>&1
     PUSH_OUT=$(git -C "$WORK/cloneA" push "http://admin:admin@127.0.0.1:$PHP_PORT/site.git" main 2>&1)
     PUSH_RC=$?
     if [ $PUSH_RC -ne 0 ]; then
         pass "git client sees rejection (push exited $PUSH_RC)"
     else
-        fail "push with invalid ndjson succeeded: $PUSH_OUT"
+        fail "push with invalid sqlite succeeded: $PUSH_OUT"
     fi
 
     POST_REFS=$(git ls-remote "http://127.0.0.1:$PHP_PORT/site.git" | sort)
@@ -109,7 +113,7 @@ if [ -d "$WORK/cloneA/db" ]; then
         fail "branchctl log top changed: $PRE_LOG_TOP -> $POST_LOG_TOP"
     fi
 else
-    fail "cloneA/db not available for invalid-ndjson push test"
+    fail "cloneA sqlite file not available for invalid-sqlite push test"
 fi
 
 # ==============================================================================

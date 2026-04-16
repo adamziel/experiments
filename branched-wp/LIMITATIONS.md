@@ -15,12 +15,17 @@ yet — not bugs, but deliberately-deferred scope.
 
 `git clone` / `git push` take **60–120 s** against a ~3300-file WordPress
 install. The server rebuilds the virtual repository from scratch on every
-request (exports 13 WP tables to NDJSON + 3300 files via the toolkit).
+request (exports 12 WP tables to a single SQLite file + the vendored
+sqlite-database-integration plugin + 3300 WP files via the toolkit).
 
 Fine for individual deploys, **not a CI hot path**. The cache dir is
 per-request (random suffix) so parallel operations don't collide, but
-each one still pays the full rebuild cost. Future work: memoize the
-exported tree between requests, invalidate on branch-state changes.
+each one still pays the full rebuild cost. There's a per-request cache
+of the exported `.ht.sqlite` keyed by `(branch, dolt_hash)` so the two
+HTTP calls of a single `git clone` see byte-identical bytes, but the
+WP file tree and the git commit chain are still rebuilt each time.
+Future work: memoize the full tree between requests, invalidate on
+branch-state changes.
 
 ### Static asset serving goes through PHP
 
@@ -87,23 +92,44 @@ a column that's referenced by new rows in the same commit will fail.
 
 ### No transient filter on arbitrary tables
 
-`wp_options` transient rows are filtered out of NDJSON exports, but
-other potentially-noisy tables (e.g. `wp_actionscheduler_*` if the Action
-Scheduler plugin is used) are exported verbatim and every push will
-diff them. Future work: pluggable ignore list.
+`wp_options` transient rows are filtered out of the exported SQLite
+file, but other potentially-noisy tables (e.g. `wp_actionscheduler_*`
+if the Action Scheduler plugin is used) are exported verbatim and
+every push will diff them. Future work: pluggable ignore list.
 
-### Large tables via NDJSON
+### SQLite-integration plugin version is pinned
 
-Tables with >5000 rows are partitioned into `<table>-NNNN.ndjson`
-chunks, but the whole partition is still parsed into memory on each
-push. On a site with millions of postmeta rows this won't scale. Real
-fix is streaming-diff, not loading the whole table.
+The sqlite-database-integration plugin is vendored under
+`vendor/sqlite-database-integration/` (a snapshot of upstream, not a
+submodule). Upgrading pulls a new plugin set into every future clone;
+it does not migrate already-distributed clones. If the upstream plugin
+changes how it translates MySQL DDL to SQLite in a breaking way, old
+clones may fail to boot against the new server-exported SQLite file
+until re-cloned.
+
+### Schema migrations are column-diff only
+
+The push path emits `ALTER TABLE ADD/DROP COLUMN` on Dolt when the
+pushed SQLite file has extra or missing columns relative to the Dolt
+table. If BOTH added AND dropped columns appear in the same push it
+refuses (renames and complex type-narrowing changes require explicit
+server-side migration).
+
+### BLOB round-trip via UTF-8 sniffing
+
+`LONGBLOB`-typed columns that happen to hold binary bytes get stored
+as SQLite `BLOB` (detected by a UTF-8 validity sniff); text-shaped
+blobs go in as `TEXT`. Mixed-content columns where some rows are
+binary and others text will work, but the classification is per-row.
+Columns that hold exactly `4 GiB − 1 B` or larger individual values
+exceed what we currently attempt to stream through PHP memory — no
+hard limit enforced, but memory will be the wall.
 
 ### No multi-DB / multisite
 
 Everything assumes a single Dolt database named `wordpress`. WordPress
 multisite installs use `wp_<N>_*` tables and cross-table references
-that the NDJSON export doesn't understand.
+that the exporter doesn't understand.
 
 ## Git protocol
 
@@ -200,5 +226,16 @@ a version bump may need new work.
 - `README.md` — project overview, installation, workflow.
 - `.github/workflows/branched-wp.yml` — CI surface.
 - `e2e/` — end-to-end scripts (run_e2e, test_git_protocol,
-  test_findings_live, test_homepage_renders).
+  test_sqlite_clone, test_findings_live, test_homepage_renders).
 - `tests/` — unit test suites.
+
+## Git round-trip caveats
+
+### Each push causes the remote's git commit hash to rotate
+
+Server-generated commits embed `Dolt-Commit: <hash>` in the message,
+so after a successful push the server's `main` hash advances — even
+though the underlying tree is equivalent to what the client just
+pushed. A second push from the same clone without an intervening
+`git pull --rebase` will be rejected as non-fast-forward. Clone, edit,
+push, *pull*, edit, push — that's the round-trip loop.

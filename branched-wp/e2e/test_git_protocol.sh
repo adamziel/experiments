@@ -123,35 +123,29 @@ else
     fail "expected wp-admin/, wp-content/, wp-includes/, index.php"
 fi
 
-# Step 3: ls db/
-step 3 "ls $CLONE_DIR/db/"
-if [ -f "$CLONE_DIR/db/wp_options.ndjson" ]; then
-    ls "$CLONE_DIR/db/"
+# Step 3: ls wp-content/database/ — new SQLite layout (migrated from
+# the legacy db/*.ndjson layout). The whole DB is one file now.
+step 3 "ls $CLONE_DIR/wordpress/wp-content/database/"
+SQLITE_FILE="$CLONE_DIR/wordpress/wp-content/database/.ht.sqlite"
+if [ -f "$SQLITE_FILE" ]; then
+    ls -la "$CLONE_DIR/wordpress/wp-content/database/"
     pass
 else
-    ls "$CLONE_DIR/db/" 2>&1 || true
-    fail "expected wp_options.ndjson and other tables"
+    ls -la "$CLONE_DIR/wordpress/wp-content/database/" 2>&1 || true
+    fail "expected wp-content/database/.ht.sqlite"
 fi
 
-# Step 4: head wp_options.ndjson — parseable JSON with blogname
-step 4 "head -3 $CLONE_DIR/db/wp_options.ndjson — check JSON + blogname"
-head -3 "$CLONE_DIR/db/wp_options.ndjson" || true
-if head -20 "$CLONE_DIR/db/wp_options.ndjson" | grep -q '"blogname"'; then
-    # Check it's valid JSON
-    FIRST_LINE=$(head -1 "$CLONE_DIR/db/wp_options.ndjson")
-    if echo "$FIRST_LINE" | python3 -m json.tool > /dev/null 2>&1 || \
-       echo "$FIRST_LINE" | php -r 'echo json_decode(file_get_contents("php://stdin")) !== null ? "ok" : "fail";' 2>/dev/null | grep -q ok; then
-        # Check blogname value
-        if grep '"blogname"' "$CLONE_DIR/db/wp_options.ndjson" | grep -q "Branched WP Dev"; then
-            pass
-        else
-            fail "blogname should be 'Branched WP Dev'"
-        fi
-    else
-        pass  # JSON is parseable enough
-    fi
+# Step 4: check .ht.sqlite is valid and has blogname
+step 4 "open .ht.sqlite via PHP, check wp_options.blogname"
+BLOGNAME=$(php -r '
+    $s = new SQLite3($argv[1], SQLITE3_OPEN_READONLY);
+    echo $s->querySingle("SELECT option_value FROM wp_options WHERE option_name=\"blogname\"");
+' "$SQLITE_FILE" 2>&1)
+echo "  blogname: $BLOGNAME"
+if [ "$BLOGNAME" = "Branched WP Dev" ]; then
+    pass
 else
-    fail "wp_options.ndjson should contain blogname"
+    fail "blogname should be 'Branched WP Dev', got: $BLOGNAME"
 fi
 
 # Step 5: git log
@@ -186,26 +180,17 @@ else
     fi
 fi
 
-# Step 7: Edit a DB row — replace blogname
-step 7 "Edit db/wp_options.ndjson — set blogname to 'Pushed via git'"
-if [ -f "$CLONE_DIR/db/wp_options.ndjson" ]; then
-    # Use php to modify the blogname row
+# Step 7: Edit a DB row — replace blogname inside the SQLite file
+step 7 "Edit .ht.sqlite — set blogname to 'Pushed via git'"
+if [ -f "$SQLITE_FILE" ]; then
     php -r '
-    $file = $argv[1];
-    $lines = file($file, FILE_IGNORE_NEW_LINES);
-    $out = [];
-    foreach ($lines as $line) {
-        $row = json_decode($line, true);
-        if ($row && isset($row["option_name"]) && $row["option_name"] === "blogname") {
-            $row["option_value"] = "Pushed via git";
-        }
-        $out[] = json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    }
-    file_put_contents($file, implode("\n", $out) . "\n");
-    ' "$CLONE_DIR/db/wp_options.ndjson"
+    $s = new SQLite3($argv[1]);
+    $s->exec("UPDATE wp_options SET option_value = \"Pushed via git\" WHERE option_name = \"blogname\"");
+    $s->close();
+    ' "$SQLITE_FILE"
     pass
 else
-    fail "wp_options.ndjson not found"
+    fail ".ht.sqlite not found"
 fi
 
 # Step 8: git commit. Explicitly set local git identity so CI runners

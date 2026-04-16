@@ -33,6 +33,7 @@ constraint. It is **not** production-ready — see *Known rough edges* below.
 | `scripts/import_wp.php` | Imports an existing WordPress directory tree into the store |
 | `scripts/init_db.php` | Creates an empty store |
 | `scripts/merge.php` | Coordinated Dolt DB merge + 3-way file merge |
+| `scripts/git_server/` | Git smart-HTTP server: SQLite exporter/importer + push/clone endpoints |
 | `wp-plugin/branchfs-wp.php` | WordPress mu-plugin: `pre_move_uploaded_file` hook, `filesystem_method` override, `CALL DOLT_CHECKOUT` on `init`, admin-bar branch indicator |
 | `tests/test_basic.php` | Wrapper + SQLite store + branch ops |
 | `tests/test_plugin_compat.php` | **The plugin-compat constraint** — relative paths, `__DIR__`, absolute `/var/www/html/...` paths, `include`/`require`, `scandir`, `is_dir`, `file_exists`, `file_put_contents`, `rename` |
@@ -78,50 +79,100 @@ POST /<site>.git/git-receive-pack                     # accept push (HTTP basic 
 ### Usage
 
 ```bash
-# Clone the full site (files + DB as NDJSON)
-git clone http://wp.localhost:18080/site.git
+# Clone the full site — file tree + a single SQLite DB file the clone can
+# boot against directly.
+git clone http://wp.localhost:18080/site.git wp-clone
 
-# Push changes back (requires basic auth)
+# Boot the clone locally — edits to the admin UI write to the SQLite
+# file via the SQLite Database Integration plugin.
+cd wp-clone/wordpress
+php -S 127.0.0.1:9080 -t .
+
+# Push changes back (requires auth). Edits made via the local admin,
+# via wp-cli, or directly to the .ht.sqlite file all round-trip the
+# same way.
 git push http://admin:admin@wp.localhost:18080/site.git main
 
-# Push to a new branch — creates it on branchfs + Dolt + the live subdomain
+# Push to a new branch
 git push http://admin:admin@wp.localhost:18080/site.git main:marketing
 ```
 
-### Repository layout inside the clone
+### Repository Layout
 
 ```
 site.git/
-  wordpress/          # full WP file tree (sourced from branchfs overlay)
-    wp-admin/ wp-content/ wp-includes/ index.php ...
-  db/                 # Dolt tables, NDJSON sorted by primary key
-    schema.sql        # DDL dump
-    wp_options.ndjson wp_posts.ndjson wp_postmeta.ndjson
-    wp_users.ndjson wp_usermeta.ndjson
-    wp_comments.ndjson wp_commentmeta.ndjson
-    wp_terms.ndjson wp_termmeta.ndjson
-    wp_term_relationships.ndjson wp_term_taxonomy.ndjson
-    wp_links.ndjson
+  wordpress/                             # WP file tree from branchfs overlay
+    wp-admin/
+    wp-content/
+      db.php                             # SQLite integration drop-in (required)
+      database/
+        .ht.sqlite                       # ONE SQLite file with every wp_* table
+      plugins/
+        sqlite-database-integration/     # vendored SQLite integration plugin
+      themes/
+      ...
+    wp-includes/
+    index.php
+  db-meta.json                           # {dolt_commit_hash, branch, exported_at, schema_version}
 ```
 
-Binary column values (`bytes` type) are base64-encoded in NDJSON.
+A cloned tree is a **self-contained, bootable WordPress install**. Run
+`php -S` against `wp-clone/wordpress/` and WordPress will boot against
+the SQLite file via the `wp-content/db.php` drop-in. Edits to the SQLite
+file — whether raw (via PHP's `SQLite3`), via `wp-cli`, or through the
+admin UI — round-trip to the remote on `git push`.
 
-### How it flows
+### How the round-trip works
 
-**Clone/pull:** if the branch's overlay has diverged from the last `fs_commits`
-row, auto-snapshot + auto-`DOLT_COMMIT` first so nothing transient gets
-missed. Then build the virtual tree from `fs_commit_files` + live Dolt
-SELECTs and serve it through php-toolkit's Git endpoint.
+**Clone/Pull (server → client):**
 
-**Push:** parse the incoming packfile, diff each commit's tree against its
-parent, apply file changes to the branchfs overlay and DB changes as
-INSERT/UPDATE/DELETE against the target Dolt branch. Record a paired
-`fs_commits` + `DOLT_COMMIT`. `schema.sql` changes apply as `ALTER TABLE`
-before row changes. Auth is HTTP basic; username becomes the Dolt commit
-author. **Push is transactional**: if any apply step fails (bad NDJSON,
-schema mismatch, Dolt error, reserved branch name), the git ref is rewound,
-`DOLT_RESET --hard` restores the pre-push Dolt HEAD, and the client sees a
-500 with the failure message — no half-applied state.
+1. The server reads every `wp_*` table out of Dolt.
+2. It translates each MySQL `CREATE TABLE` to SQLite-compatible DDL by
+   feeding it through `WP_SQLite_Driver` (the same translator the
+   SQLite integration plugin uses at runtime). This guarantees the
+   clone's SQLite schema matches what the plugin expects.
+3. It bulk-inserts every row into a fresh SQLite file at
+   `wp-content/database/.ht.sqlite`.
+4. It drops `db.php` (the integration plugin's `db.copy` template,
+   filled in) at `wp-content/db.php`, vendors the plugin tree at
+   `wp-content/plugins/sqlite-database-integration/`, and writes
+   `db-meta.json` at the repo root.
+5. The SQLite-file bytes are cached per `(branch, dolt_hash)` so the
+   two HTTP roundtrips of a single `git clone` see byte-identical
+   content — necessary because SQLite's own file format embeds
+   non-deterministic page-layout bytes that would otherwise drift
+   between `info/refs` and `upload-pack`.
+
+**Push (client → server):**
+
+1. The client's tree must include the canonical `.ht.sqlite`. It's the
+   source of truth for DB state; omitting it is a push error.
+2. The server writes the pushed `.ht.sqlite` to a temp file and opens
+   it with PHP's native `SQLite3` class — **never shells out** to the
+   `sqlite3` binary.
+3. For each `wp_*` table: reads rows from SQLite, compares to the same
+   table on the Dolt branch, emits `INSERT`, `UPDATE`, and `DELETE`
+   statements to reconcile. Schema drift (added or removed columns)
+   generates `ALTER TABLE` first; ambiguous diffs (added AND removed)
+   are rejected.
+4. File changes to `wordpress/` apply to the branchfs overlay as
+   before. Paths that the server owns — `wp-content/db.php`,
+   `wp-content/database/`, `wp-content/plugins/sqlite-database-integration/`,
+   `db-meta.json` — are **ignored** on push; they are regenerated
+   from scratch on every clone, so echoing them through would just
+   bloat the overlay.
+5. A paired `fs_commit` + `DOLT_COMMIT` is recorded. On any push
+   failure the server resets both git and Dolt to the pre-push state
+   and returns HTTP 500.
+
+### Transient filter on `wp_options`
+
+Rows in `wp_options` whose `option_name` starts with `_transient_`,
+`_site_transient_`, or `_transient_timeout_` are **omitted** from the
+exported SQLite file. Transients are ephemeral WP cache; exporting
+them would churn the repo on every clone. On push, transients that
+only exist on the Dolt side (not in the pushed SQLite file) are
+preserved — they're not spurious deletions.
 
 ### Auth
 
@@ -137,24 +188,9 @@ schema mismatch, Dolt error, reserved branch name), the git ref is rewound,
 
 ### Reserved branch names
 
-Branch names `www`, `admin`, `api`, `mail`, `localhost`, `wp` are refused by
-both `bin/branchctl create` and `git push <…>:<reserved-name>` — those
-labels would shadow router host parsing and silently route traffic to the
-wrong overlay.
-
-### NDJSON layout details
-
-- **Sorted by primary key** so diffs are deterministic.
-- **Tables with > 5000 rows are partitioned** as `<table>-NNNN.ndjson`
-  chunks of 5000 each (e.g. `wp_posts-0001.ndjson`, `wp_posts-0002.ndjson`).
-  Small tables stay as a single `<table>.ndjson`. The push handler
-  concatenates all `<table>*.ndjson` parts in order before diffing.
-- **Transients are filtered out** of `wp_options.ndjson`: rows whose
-  `option_name` matches `_transient_%`, `_site_transient_%`, or
-  `_transient_timeout_%` are omitted on export and preserved across pushes
-  (the import step skips them when computing deletes), so transient churn
-  doesn't show up as spurious diffs.
-- **Binary BLOB columns** are base64-encoded; the push side decodes back.
+Push refuses to create a branch named `www`, `admin`, `api`, `mail`,
+`localhost`, or `wp` — those labels collide with router host parsing and
+would leave a subdomain pointing at the wrong place.
 
 ### Library
 
@@ -179,22 +215,24 @@ Until the PR merges, changes live in `vendor/wordpress-php-toolkit/`.
 
 ### Testing
 
-Two end-to-end suites cover the git protocol against a live dev stack:
+Three end-to-end suites cover the git protocol against a live dev stack:
 
-- **`e2e/test_git_protocol.sh`** — 13 acceptance steps: clone, log
+- **`e2e/test_git_protocol.sh`** — acceptance steps: clone, log
   inspection, file edits, DB row edits, push, new-branch push, subdomain
   verification. Idempotent — re-runs without manual cleanup.
-- **`e2e/test_findings_live.sh`** — 17 assertions: parallel clones,
-  push-rejection on bad NDJSON (rollback verified), custom-creds auth,
+- **`e2e/test_sqlite_clone.sh`** — asserts the cloned `.ht.sqlite` is
+  well-formed and that booting `php -S` inside the clone renders the
+  live site title via the SQLite integration plugin.
+- **`e2e/test_findings_live.sh`** — parallel clones, push-rejection on
+  broken SQLite file (rollback verified), custom-creds auth,
   backward-reset-then-edit-then-commit, reserved branch names, duplicate
   create exits cleanly.
 
 ```bash
 bash e2e/dev.sh &                  # in one shell
 bash e2e/test_git_protocol.sh      # in another
-# -> RESULTS: 13 passed, 0 failed out of 13
+bash e2e/test_sqlite_clone.sh
 bash e2e/test_findings_live.sh
-# -> RESULTS: 17 passed, 0 failed
 ```
 
 ## `gitpress` Single Binary
@@ -247,10 +285,14 @@ problem.
 ### Performance note
 
 The git server rebuilds a virtual repository on every request from the
-current branchfs + Dolt state — exporting 13 WP tables and ~3300 files.
-On a default WP install this is roughly 60-120 s per clone or push.
-Acceptable for individual deploys; not a CI hot path. The cache directory
-is per-request (random suffix) so concurrent operations don't collide.
+current branchfs + Dolt state — exporting 12 WP tables into a single
+SQLite file + the vendored sqlite-database-integration plugin + ~3300
+WordPress files. On a default WP install this is roughly 60-120 s per
+clone or push. Acceptable for individual deploys; not a CI hot path.
+The cache directory is per-request (random suffix) so concurrent
+operations don't collide. A per-request cache of the exported
+`.ht.sqlite` keyed by `(branch, dolt_hash)` guarantees that the two
+HTTP roundtrips of a single `git clone` see byte-identical bytes.
 
 ## Quickest path: Docker (works on Mac)
 
