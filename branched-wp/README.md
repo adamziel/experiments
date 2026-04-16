@@ -202,24 +202,27 @@ bash e2e/test_findings_live.sh
 There is now a Rust CLI that packages the PHP runtime assets, vendored
 git server code, WordPress bootstrap helpers, `ext/branchfs.so`, the
 `php` executable, the `dolt` executable, and the shared libraries needed
-by the embedded PHP runtime into a self-contained executable + extracted
+by the embedded PHP runtime into a single static launcher binary + extracted
 runtime bundle.
 
 Build it from the repo root:
 
 ```bash
+```bash
+rustup target add x86_64-unknown-linux-musl
 cargo build --release -p gitpress
 # or
 make gitpress
 ```
 
-No host `php` or `dolt` installation is required at runtime. `gitpress`
-extracts and uses its own bundled copies by default.
+No host `php`, `dolt`, or glibc runtime installation is required for the
+launcher itself. `gitpress` is built as a static musl binary and extracts
+its own bundled PHP + Dolt runtime by default.
 
 Start a local site + branch router + git smart-HTTP server:
 
 ```bash
-./target/release/gitpress start
+./target/x86_64-unknown-linux-musl/release/gitpress start
 ```
 
 That boots the site into `./.gitpress/` by default and serves:
@@ -231,8 +234,8 @@ That boots the site into `./.gitpress/` by default and serves:
 Branch management is exposed through the same binary:
 
 ```bash
-./target/release/gitpress branch create marketing
-./target/release/gitpress branch list
+./target/x86_64-unknown-linux-musl/release/gitpress branch create marketing
+./target/x86_64-unknown-linux-musl/release/gitpress branch list
 ```
 
 **Note on `wp-debug.log` warnings:** `wp-config.php` defines
