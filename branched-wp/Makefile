@@ -1,5 +1,11 @@
 # Portable by default: detect PHP + SQLite via php-config and pkg-config.
 # If those tools are unavailable, fall back to Nix-style dev outputs when present.
+#
+# Cross-platform: Linux (glibc + musl) and macOS. PHP extensions are named
+# `branchfs.so` on every platform, including Darwin — PHP's module loader
+# uses that name verbatim regardless of host conventions.
+
+UNAME_S := $(shell uname -s)
 
 PHP_CONFIG ?= $(shell command -v php-config 2>/dev/null || command -v php-config8.2 2>/dev/null)
 PKG_CONFIG ?= $(shell command -v pkg-config 2>/dev/null)
@@ -43,12 +49,61 @@ ifeq ($(strip $(SQLITE_LIBS)),)
 SQLITE_LIBS := -lsqlite3
 endif
 
+# macOS: Homebrew ships sqlite3 headers at $(brew --prefix sqlite3)/include.
+# pkg-config picks those up when PKG_CONFIG_PATH is set; otherwise fall back
+# to the standard Homebrew layout so the build works out of the box.
+ifeq ($(UNAME_S),Darwin)
+BREW_SQLITE_PREFIX ?= $(shell brew --prefix sqlite3 2>/dev/null)
+ifneq ($(strip $(BREW_SQLITE_PREFIX)),)
+ifeq ($(strip $(SQLITE_CFLAGS)),)
+SQLITE_CFLAGS := -I$(BREW_SQLITE_PREFIX)/include
+endif
+ifeq ($(strip $(SQLITE_LIBS)),-lsqlite3)
+SQLITE_LIBS := -L$(BREW_SQLITE_PREFIX)/lib -lsqlite3
+endif
+endif
+endif
+
 CC      ?= gcc
-CFLAGS  := -fPIC -shared -O2 -Wall -DCOMPILE_DL_BRANCHFS -DHAVE_CONFIG_H=0 $(SQLITE_CFLAGS)
+
+# Platform-specific link flags. PHP extensions are loaded into the PHP
+# binary at runtime, so all Zend/PHP symbols are "undefined" at link time
+# and must be resolved from the host process.
+#   - Linux: the dynamic linker resolves undefined symbols from the main
+#     executable by default (RTLD_GLOBAL behavior for -rdynamic binaries),
+#     so `-shared` alone is enough.
+#   - macOS: ld64 is strict; we need `-undefined dynamic_lookup` to defer
+#     resolution of PHP symbols to load time. We also use `-bundle` instead
+#     of `-dynamiclib` — PHP's DL loader uses dlopen(), which accepts
+#     either, but `-bundle` is conventionally what `phpize` emits on Darwin.
+ifeq ($(UNAME_S),Darwin)
+SHLIB_FLAGS := -bundle -undefined dynamic_lookup
+else
+SHLIB_FLAGS := -shared
+endif
+
+CFLAGS  := -fPIC $(SHLIB_FLAGS) -O2 -Wall -DCOMPILE_DL_BRANCHFS -DHAVE_CONFIG_H=0 $(SQLITE_CFLAGS)
 INCLUDES := $(PHP_EXTRA_INCS)
 LDFLAGS := $(SQLITE_LIBS)
 RUSTUP ?= $(shell command -v rustup 2>/dev/null)
-GITPRESS_TARGET ?= x86_64-unknown-linux-musl
+
+# Default Rust target follows the host OS + arch so `make gitpress` works
+# out of the box on all four supported CI targets.
+UNAME_M := $(shell uname -m)
+ifeq ($(UNAME_S),Darwin)
+    ifeq ($(UNAME_M),arm64)
+        DEFAULT_GITPRESS_TARGET := aarch64-apple-darwin
+    else
+        DEFAULT_GITPRESS_TARGET := x86_64-apple-darwin
+    endif
+else
+    ifeq ($(UNAME_M),aarch64)
+        DEFAULT_GITPRESS_TARGET := aarch64-unknown-linux-musl
+    else
+        DEFAULT_GITPRESS_TARGET := x86_64-unknown-linux-musl
+    endif
+endif
+GITPRESS_TARGET ?= $(DEFAULT_GITPRESS_TARGET)
 
 .PHONY: all clean test test-compat init-db test-all gitpress
 
