@@ -198,11 +198,35 @@ jobs:
           # and is idempotent; safe to re-run on a cache hit.
           ./bin/spc doctor --auto-fix
           ./bin/spc download --with-php="${PHP_VERSION}" --for-extensions="${SPC_EXTENSIONS}" --prefer-pre-built
-          ./bin/spc build "${SPC_EXTENSIONS}" --build-cli
-          # Sanity-check the built PHP runs and has all requested exts,
-          # including branchfs (which lives in the binary, not a .so).
-          ./buildroot/bin/php -v
-          ./buildroot/bin/php -m
+          # spc's internal sanity check runs `php -r "echo \"hello\";"`
+          # via PHP's exec() which swallows stderr — if branchfs's MINIT
+          # fails or prints a warning at startup, the symptom is an
+          # opaque "cli failed sanity check" with no hint why. Let spc
+          # try first, but on failure re-run the same check with stderr
+          # captured so we get an actionable message on the next push.
+          set +e
+          ./bin/spc build "${SPC_EXTENSIONS}" --build-cli --debug
+          spc_rc=$?
+          set -e
+          echo "=== post-build diagnostic (runs even on spc failure) ==="
+          if [ -x ./buildroot/bin/php ]; then
+            echo '--- php -v (stderr merged) ---'
+            ./buildroot/bin/php -v 2>&1 || true
+            echo '--- php -r "echo hello;" (stderr merged) ---'
+            ./buildroot/bin/php -r 'echo "hello\n";' 2>&1
+            echo "--- explicit exit status ---"
+            ./buildroot/bin/php -r 'echo "hello\n";' >/dev/null 2>&1; echo "exit=$?"
+            echo '--- php -m (stderr merged) ---'
+            ./buildroot/bin/php -m 2>&1 || true
+          else
+            echo "(no buildroot/bin/php yet — spc failed before deploy)"
+          fi
+          if [ "$spc_rc" -ne 0 ]; then
+            echo "spc build exited $spc_rc" >&2
+            exit "$spc_rc"
+          fi
+          # Sanity-check the built PHP has all requested exts, including
+          # branchfs (which lives in the binary, not a .so).
           ./buildroot/bin/php -r 'foreach (explode(",", getenv("SPC_EXTENSIONS")) as $e) { if (!extension_loaded(trim($e))) { fwrite(STDERR, "missing: $e\n"); exit(1);} } echo "all extensions present\n";'
           # Explicit branchfs assertion for log-scrapability.
           if ! ./buildroot/bin/php -m | grep -qi '^branchfs$'; then
