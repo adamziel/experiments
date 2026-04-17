@@ -50,8 +50,13 @@ assert_true($blobs_after_delete === $blobs_before_delete,
     "blobs unchanged after branch delete (gc hasn't run yet)");
 
 // Dry-run first.
-$branchctl = escapeshellcmd(PHP_BINARY)
-           . ' -d extension=' . escapeshellarg(realpath(__DIR__ . '/../ext/branchfs.so'))
+// When branchfs is statically compiled into PHP (release path), there
+// is no .so on disk; PHP_BINARY already has branchfs loaded and would
+// refuse -d extension=... for an already-registered module. Pass the
+// flag only if the .so exists (local-dev path).
+$so_path = realpath(__DIR__ . '/../ext/branchfs.so');
+$ext_flag = $so_path !== false ? ' -d extension=' . escapeshellarg($so_path) : '';
+$branchctl = escapeshellcmd(PHP_BINARY) . $ext_flag
            . ' ' . escapeshellarg(__DIR__ . '/../scripts/branchctl.php');
 $out = [];
 $rc  = 0;

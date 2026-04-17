@@ -107,30 +107,44 @@ GITPRESS_TARGET ?= $(DEFAULT_GITPRESS_TARGET)
 
 .PHONY: all clean test test-compat init-db test-all gitpress
 
+# BRANCHFS_BUILTIN=1 means the `php` we run already has branchfs
+# statically linked in (release path: static-php-cli builds branchfs
+# into the PHP binary). Skip the `-d extension=...` flag (PHP would
+# refuse to re-load an already-loaded module) and drop the
+# ext/branchfs.so build dep (there's no separate .so in that mode).
+# Local dev with Homebrew/apt PHP keeps the .so path unchanged.
+ifeq ($(BRANCHFS_BUILTIN),1)
+BRANCHFS_LOAD     :=
+BRANCHFS_TEST_DEP :=
+else
+BRANCHFS_LOAD     := -d extension=$(CURDIR)/ext/branchfs.so
+BRANCHFS_TEST_DEP := ext/branchfs.so
+endif
+
 all: ext/branchfs.so
 
 ext/branchfs.so: ext/branchfs.c ext/branchfs.h
 	$(CC) $(CFLAGS) $(INCLUDES) -o $@ ext/branchfs.c $(LDFLAGS)
 
-init-db: ext/branchfs.so
-	php -d "extension=$(CURDIR)/ext/branchfs.so" scripts/init_db.php
+init-db: $(BRANCHFS_TEST_DEP)
+	php $(BRANCHFS_LOAD) scripts/init_db.php
 
-test: ext/branchfs.so
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_basic.php
+test: $(BRANCHFS_TEST_DEP)
+	php $(BRANCHFS_LOAD) tests/test_basic.php
 
-test-compat: ext/branchfs.so
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_plugin_compat.php
+test-compat: $(BRANCHFS_TEST_DEP)
+	php $(BRANCHFS_LOAD) tests/test_plugin_compat.php
 
-test-all: ext/branchfs.so
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_basic.php
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_plugin_compat.php
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_wp_boot.php
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_realpath.php
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_syscall_overrides.php
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_opcache_keys.php
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_merge.php
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_gc.php
-	php -d "extension=$(CURDIR)/ext/branchfs.so" tests/test_push_auth.php
+test-all: $(BRANCHFS_TEST_DEP)
+	php $(BRANCHFS_LOAD) tests/test_basic.php
+	php $(BRANCHFS_LOAD) tests/test_plugin_compat.php
+	php $(BRANCHFS_LOAD) tests/test_wp_boot.php
+	php $(BRANCHFS_LOAD) tests/test_realpath.php
+	php $(BRANCHFS_LOAD) tests/test_syscall_overrides.php
+	php $(BRANCHFS_LOAD) tests/test_opcache_keys.php
+	php $(BRANCHFS_LOAD) tests/test_merge.php
+	php $(BRANCHFS_LOAD) tests/test_gc.php
+	php $(BRANCHFS_LOAD) tests/test_push_auth.php
 
 clean:
 	rm -f ext/branchfs.so /tmp/branchfs_test*.db /tmp/branchfs_wp*.db

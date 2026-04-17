@@ -90,8 +90,11 @@ file_put_contents('branchfs://main/readme.txt',      "main edit\n");
 file_put_contents('branchfs://feature-a/readme.txt', "feature edit\n");
 
 echo "=== merge: default (abort) strategy refuses on conflict ===\n";
-$cmd = escapeshellcmd(PHP_BINARY)
-     . ' -d extension=' . escapeshellarg(realpath(__DIR__ . '/../ext/branchfs.so'))
+// Only pass -d extension when the .so exists on disk (local-dev path).
+// Static-PHP builds have branchfs baked in and reject re-registration.
+$so_path = realpath(__DIR__ . '/../ext/branchfs.so');
+$ext_flag = $so_path !== false ? ' -d extension=' . escapeshellarg($so_path) : '';
+$cmd = escapeshellcmd(PHP_BINARY) . $ext_flag
      . ' ' . escapeshellarg(__DIR__ . '/../scripts/merge.php')
      . ' feature-a main ' . escapeshellarg($DB);
 $output = [];
@@ -140,8 +143,7 @@ fork_snapshot($DB, 'feature-b', str_repeat('b', 32));
 file_put_contents('branchfs://feature-b/note.txt', "feature only edit\n");
 // Target main is still at "base note" for this path
 
-$cmd2 = escapeshellcmd(PHP_BINARY)
-      . ' -d extension=' . escapeshellarg(realpath(__DIR__ . '/../ext/branchfs.so'))
+$cmd2 = escapeshellcmd(PHP_BINARY) . $ext_flag
       . ' ' . escapeshellarg(__DIR__ . '/../scripts/merge.php')
       . ' feature-b main ' . escapeshellarg($DB);
 $output = [];

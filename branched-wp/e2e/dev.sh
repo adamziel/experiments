@@ -23,7 +23,18 @@ BRANCHFS_SECRET="${BRANCHFS_SECRET:-dev-secret}"
 SITE_TITLE="${SITE_TITLE:-Branched WP Dev}"
 
 PHP_BIN="${PHP_BIN:-php}"
-PHP="$PHP_BIN -d extension=$BASE_DIR/ext/branchfs.so -d display_errors=Off -d display_startup_errors=Off"
+# Auto-detect whether branchfs is already statically compiled into this
+# PHP (release path: spc-built PHP has branchfs as a builtin ext) vs.
+# needs to be loaded from ext/branchfs.so (local-dev path with
+# Homebrew/apt PHP). Passing `-d extension=...` for a module that's
+# already loaded is a warning, not a fatal, but we prefer clean stderr.
+if "$PHP_BIN" -m 2>/dev/null | grep -qi '^branchfs$'; then
+    PHP="$PHP_BIN -d display_errors=Off -d display_startup_errors=Off"
+    BRANCHFS_BUILTIN=1
+else
+    PHP="$PHP_BIN -d extension=$BASE_DIR/ext/branchfs.so -d display_errors=Off -d display_startup_errors=Off"
+    BRANCHFS_BUILTIN=0
+fi
 DOLT="${DOLT:-$(command -v dolt || echo "$HOME/.local/bin/dolt")}"
 
 DB_PATH="$WORK_DIR/branchfs.db"
@@ -60,7 +71,9 @@ sleep 1
 rm -rf "$WORK_DIR"
 mkdir -p "$WORK_DIR" "$WP_ROOT" "$DOLT_DATA/wordpress"
 
-[ -x "$BASE_DIR/ext/branchfs.so" ] || { echo "ext/branchfs.so not built. Run: make"; exit 1; }
+if [ "$BRANCHFS_BUILTIN" = "0" ]; then
+    [ -x "$BASE_DIR/ext/branchfs.so" ] || { echo "ext/branchfs.so not built. Run: make"; exit 1; }
+fi
 [ -d "$WP_SRC" ] || { echo "WordPress source missing at $WP_SRC. See README."; exit 1; }
 
 echo ""

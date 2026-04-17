@@ -24,10 +24,13 @@ fn main() -> Result<()> {
 
     // Two modes:
     //   1. GITPRESS_RUNTIME_DIR is set → CI/cross-compile mode. A pre-staged
-    //      directory contains bin/php, bin/dolt, lib/branchfs.so already
-    //      built for the target platform. We just tar it up alongside the
-    //      PHP/WP/vendor sources. Host tooling (make, ldd, readelf) is
-    //      never invoked — critical when building for a foreign arch.
+    //      directory contains bin/php, bin/dolt, and optionally
+    //      lib/branchfs.so built for the target platform. Release builds
+    //      now compile branchfs *into* the static PHP binary (spc
+    //      builtin ext) so lib/branchfs.so is absent; it is still
+    //      supported for dynamic-PHP runtime bundles. Host tooling
+    //      (make, ldd, readelf) is never invoked — critical when
+    //      building for a foreign arch.
     //   2. Unset → local-dev fallback. Build ext/branchfs.so via `make`,
     //      resolve host php/dolt via PATH, and capture their shared-lib
     //      closure with ldd + readelf (Linux glibc only).
@@ -109,9 +112,13 @@ fn build_runtime_bundle(repo_root: &Path, bundle_path: &Path) -> Result<()> {
 /// Pre-staged runtime mode: the caller has already produced
 ///   $GITPRESS_RUNTIME_DIR/bin/php
 ///   $GITPRESS_RUNTIME_DIR/bin/dolt
+/// for the target platform, plus optionally
 ///   $GITPRESS_RUNTIME_DIR/lib/branchfs.so
-/// for the target platform. We just tar the PHP/WP sources + those three
-/// artifacts, without invoking make/ldd/readelf on the host.
+/// when PHP is dynamically linked. The release pipeline builds branchfs
+/// *into* a static PHP via spc, so lib/branchfs.so is usually absent —
+/// the runtime launcher detects this and skips the extension flag.
+/// We just tar the PHP/WP sources + available artifacts, without
+/// invoking make/ldd/readelf on the host.
 fn build_runtime_bundle_from_dir(
     repo_root: &Path,
     runtime_dir: &Path,
@@ -121,11 +128,7 @@ fn build_runtime_bundle_from_dir(
     let dolt_bin = runtime_dir.join("bin/dolt");
     let branchfs_so = runtime_dir.join("lib/branchfs.so");
 
-    for (label, path) in [
-        ("bin/php", &php_bin),
-        ("bin/dolt", &dolt_bin),
-        ("lib/branchfs.so", &branchfs_so),
-    ] {
+    for (label, path) in [("bin/php", &php_bin), ("bin/dolt", &dolt_bin)] {
         if !path.exists() {
             bail!(
                 "GITPRESS_RUNTIME_DIR={} is missing {}",
@@ -152,7 +155,11 @@ fn build_runtime_bundle_from_dir(
     add_tree(&mut tar, repo_root, "sql")?;
     add_tree(&mut tar, repo_root, "vendor")?;
     add_tree(&mut tar, repo_root, "wp-plugin")?;
-    add_file_as(&mut tar, &branchfs_so, "ext/branchfs.so")?;
+    // branchfs.so is optional: when PHP has branchfs compiled in (the
+    // static-musl release path), there is no separate .so to ship.
+    if branchfs_so.exists() {
+        add_file_as(&mut tar, &branchfs_so, "ext/branchfs.so")?;
+    }
     add_file(&mut tar, repo_root, "e2e/router.php")?;
     add_file(&mut tar, repo_root, "e2e/bootstrap_wp.php")?;
     add_file(&mut tar, repo_root, "e2e/wp.zip")?;

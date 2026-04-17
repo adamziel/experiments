@@ -2,9 +2,14 @@ name: branched-wp release
 
 # Release pipeline for the `gitpress` single-binary distribution of
 # branched-wp. Builds a per-platform self-contained tarball containing
-# a statically-linked PHP (via static-php-cli), a platform-matching Dolt
-# binary, the compiled `branchfs.so` PHP extension, and the bundled
-# WordPress source + vendored plugins.
+# a statically-linked PHP (via static-php-cli) with the `branchfs`
+# extension compiled directly into the binary, a platform-matching Dolt
+# binary, and the bundled WordPress source + vendored plugins.
+#
+# NOTE: branchfs used to ship as a separate branchfs.so loaded at
+# runtime, but static musl PHP is built without HAVE_LIBDL and so can't
+# dlopen any extension. branchfs is now a first-class spc extension —
+# see branched-wp/ci/spc-branchfs/ for the integration.
 #
 # Triggers:
 #   - push of a tag matching `v*` → full release upload to GitHub Releases.
@@ -34,10 +39,11 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # static-php-cli extension list. Keep in sync with README's "Supported
-  # extensions" note. Adding/removing extensions here invalidates the
-  # spc workdir cache (the extension list is part of the cache key).
-  SPC_EXTENSIONS: "mbstring,mysqli,pdo_mysql,sqlite3,pdo_sqlite,phar,tokenizer,fileinfo,filter,session"
+  # static-php-cli extension list. `branchfs` is our in-repo extension,
+  # compiled into the static PHP binary by spc (see
+  # branched-wp/ci/spc-branchfs/). Adding/removing entries invalidates
+  # the spc workdir cache (extension set is part of the cache key).
+  SPC_EXTENSIONS: "branchfs,mbstring,mysqli,pdo_mysql,sqlite3,pdo_sqlite,phar,tokenizer,fileinfo,filter,session"
   # Pin static-php-cli to a known-good ref. Bump manually when we want a
   # newer PHP minor or an spc fix.
   SPC_REF: "2.4.0"
@@ -119,14 +125,21 @@ jobs:
       # particular is not enabled everywhere yet). Pre-compute a stable
       # extension-set hash for the cache key — cache keys reject commas,
       # so we can't embed SPC_EXTENSIONS literally.
-      - name: Compute extension-set hash
+      - name: Compute extension-set + branchfs-source hash
         id: ext-hash
         shell: bash
         run: |
           set -euo pipefail
           # shasum is present on both Linux and macOS runners; sha256sum is
           # Linux-only. Both emit "<hex>  -" on stdin input.
-          h=$(printf '%s' "$SPC_EXTENSIONS" | shasum -a 256 | cut -c1-12)
+          # Include branchfs source files in the hash: they get compiled
+          # into the spc-built PHP, so a change must invalidate the cache.
+          h=$(
+            { printf '%s\n' "$SPC_EXTENSIONS"
+              shasum -a 256 ext/branchfs.c ext/branchfs.h ext/config.m4
+              shasum -a 256 ci/spc-branchfs/Branchfs.php ci/spc-branchfs/integrate.sh
+            } | shasum -a 256 | cut -c1-12
+          )
           echo "hash=$h" >> "$GITHUB_OUTPUT"
 
       - name: Cache static-php-cli workdir
@@ -152,14 +165,32 @@ jobs:
           cd static-php-cli
           composer install --no-dev --no-interaction
 
-      - name: Build static PHP + extensions
+      # Teach spc about our in-repo `branchfs` extension so it gets
+      # compiled *into* the static PHP binary (no runtime dlopen needed —
+      # musl-static PHP is built without HAVE_LIBDL and refuses to load
+      # external .so files). integrate.sh merges an entry into spc's
+      # config/ext.json and installs a Builder class that copies our
+      # branchfs.c/.h/config.m4 into source/php-src/ext/branchfs/ right
+      # before ./buildconf runs. Idempotent — safe on cache hit.
+      - name: Integrate branchfs into static-php-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci/spc-branchfs/integrate.sh .spc/static-php-cli
+
+      - name: Build static PHP + extensions (incl. branchfs)
         shell: bash
         # spc hits GitHub release assets + raw.githubusercontent for
         # pre-built libs. Shared runner IPs exhaust the 60 req/hr
         # unauthenticated limit quickly; GITHUB_TOKEN bumps that to
         # 5000 req/hr and is plumbed via spc/store/CurlHook.
+        #
+        # SPC_BRANCHFS_SOURCE tells our Builder class where to pull
+        # branchfs.c/.h/config.m4 from. Must be an absolute path
+        # because spc cd's between directories.
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          SPC_BRANCHFS_SOURCE: ${{ github.workspace }}/branched-wp/ext
         run: |
           set -euo pipefail
           cd .spc/static-php-cli
@@ -168,14 +199,24 @@ jobs:
           ./bin/spc doctor --auto-fix
           ./bin/spc download --with-php="${PHP_VERSION}" --for-extensions="${SPC_EXTENSIONS}" --prefer-pre-built
           ./bin/spc build "${SPC_EXTENSIONS}" --build-cli
-          # Sanity-check the built PHP runs and has all requested exts.
+          # Sanity-check the built PHP runs and has all requested exts,
+          # including branchfs (which lives in the binary, not a .so).
           ./buildroot/bin/php -v
+          ./buildroot/bin/php -m
           ./buildroot/bin/php -r 'foreach (explode(",", getenv("SPC_EXTENSIONS")) as $e) { if (!extension_loaded(trim($e))) { fwrite(STDERR, "missing: $e\n"); exit(1);} } echo "all extensions present\n";'
+          # Explicit branchfs assertion for log-scrapability.
+          if ! ./buildroot/bin/php -m | grep -qi '^branchfs$'; then
+            echo "FATAL: branchfs not in php -m output" >&2
+            ./buildroot/bin/php -m >&2
+            exit 1
+          fi
+          echo "branchfs statically built into PHP ✓"
 
       # ---------------------------------------------------------------
       # Stage the runtime directory that gitpress's build.rs consumes
-      # when GITPRESS_RUNTIME_DIR is set: runtime/bin/php, bin/dolt,
-      # lib/branchfs.so.
+      # when GITPRESS_RUNTIME_DIR is set: runtime/bin/php, bin/dolt.
+      # There's no lib/branchfs.so anymore — branchfs is compiled into
+      # the spc PHP binary above. See build.rs:build_runtime_bundle_from_dir.
       # ---------------------------------------------------------------
       - name: Stage runtime/bin/php
         shell: bash
@@ -200,40 +241,22 @@ jobs:
           chmod +x runtime/bin/dolt
           runtime/bin/dolt version
 
-      - name: Build ext/branchfs.so against static PHP
-        shell: bash
-        run: |
-          set -euo pipefail
-          # spc does NOT run `make install` inside source/php-src — it only
-          # cp's the final `php` binary to buildroot/bin/. So buildroot/
-          # contains the compiled PHP *executable* but NOT php-config or
-          # an installed include tree.
-          #
-          # Our Makefile can be driven purely by PHP_INCLUDE_DIR: given the
-          # top of the php-src tree, it derives all the -I flags our
-          # extension needs (main/, TSRM/, Zend/, ext/, ext/date/lib/).
-          # php_config.h lives under source/php-src/main/ after configure,
-          # so no `install-headers` round-trip is necessary.
-          PHP_SRC_DIR="$PWD/.spc/static-php-cli/source/php-src"
-          if [ ! -f "$PHP_SRC_DIR/main/php.h" ] || [ ! -f "$PHP_SRC_DIR/main/php_config.h" ]; then
-            echo "FATAL: PHP source tree not where expected ($PHP_SRC_DIR)" >&2
-            ls -la "$PHP_SRC_DIR/main" 2>/dev/null || true
-            find .spc/static-php-cli/source -maxdepth 3 -name 'php_config.h' 2>/dev/null || true
-            exit 1
-          fi
-          make clean
-          make PHP_CONFIG= PHP_INCLUDE_DIR="$PHP_SRC_DIR"
-          test -f ext/branchfs.so
-          cp ext/branchfs.so runtime/lib/branchfs.so
-
       # ---------------------------------------------------------------
-      # Unit suite — runs against the just-built static PHP + extension.
-      # Catches ABI drift between spc PHP and our extension.
+      # Unit suite — runs against the just-built static PHP which has
+      # branchfs statically compiled in. No separate ext/branchfs.so is
+      # built for the release path; the Makefile's .so build is kept
+      # only for local dev with a dynamically-linked Homebrew/apt PHP.
+      #
+      # BRANCHFS_BUILTIN=1 tells the Makefile to skip the
+      # `-d extension=$(CURDIR)/ext/branchfs.so` flag (redundant and
+      # noisy when branchfs is already in the PHP binary) and to drop
+      # the ext/branchfs.so build dependency for test targets.
       # ---------------------------------------------------------------
       - name: Unit tests (make test-all)
         shell: bash
         env:
           PHP: ${{ github.workspace }}/branched-wp/.spc/static-php-cli/buildroot/bin/php
+          BRANCHFS_BUILTIN: "1"
         run: |
           set -euo pipefail
           # Point make test-all at the spc-built PHP by overriding the
@@ -242,6 +265,7 @@ jobs:
           export PATH="$(dirname "$PHP_BIN"):$PATH"
           which php
           php -v
+          php -m | grep -i '^branchfs$'
           make test-all
 
       # ---------------------------------------------------------------
@@ -270,10 +294,11 @@ jobs:
         run: |
           set -euo pipefail
           # Preflight: confirm the bundled binaries actually execute and
-          # the extension loads. Fails fast with a clear message rather
-          # than a confusing dev.sh timeout.
-          "$BUNDLED_PHP" -d "extension=$PWD/runtime/lib/branchfs.so" -r \
-            'if(!extension_loaded("branchfs")){fwrite(STDERR,"branchfs.so did not load\n");exit(1);} echo "branchfs loaded\n";'
+          # branchfs is statically present in the PHP binary. dev.sh
+          # auto-detects via `php -m` and skips the -d extension flag
+          # when branchfs is already loaded.
+          "$BUNDLED_PHP" -r \
+            'if(!extension_loaded("branchfs")){fwrite(STDERR,"branchfs not built into PHP\n");exit(1);} echo "branchfs statically present\n";'
           "$BUNDLED_DOLT" version
           # Start the dev stack with bundled binaries only. dev.sh
           # respects PHP_BIN and DOLT env vars.

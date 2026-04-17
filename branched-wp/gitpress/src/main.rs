@@ -585,12 +585,18 @@ fn start_php_server(
 
 fn php_base_command(layout: &Layout, runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
     let mut command = php_command(runtime, shared);
+    // branchfs may be either a separate .so (dynamic-PHP runtime bundle)
+    // or statically compiled into the PHP binary (release path — spc
+    // musl-static PHP has no dlopen support). Only pass -d extension=
+    // when the .so is actually present; otherwise the static module is
+    // already registered at startup.
+    let branchfs_so = layout.runtime_dir.join("ext/branchfs.so");
+    if branchfs_so.exists() {
+        command
+            .arg("-d")
+            .arg(format!("extension={}", branchfs_so.display()));
+    }
     command
-        .arg("-d")
-        .arg(format!(
-            "extension={}",
-            layout.runtime_dir.join("ext/branchfs.so").display()
-        ))
         .arg("-d")
         .arg("display_errors=Off")
         .arg("-d")

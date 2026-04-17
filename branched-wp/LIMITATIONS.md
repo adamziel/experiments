@@ -190,36 +190,18 @@ targets these four platforms for every tag:
 `<sys/stat.h>`, `<dirent.h>`) available on Linux (glibc + musl) and
 Darwin. On macOS the `Makefile` switches the linker to produce a
 `-bundle` with `-undefined dynamic_lookup` so undefined PHP/Zend
-symbols resolve at `dlopen()` time.
+symbols resolve at `dlopen()` time — but only in local-dev mode.
 
-**Open release-pipeline blocker** — a dry-run of the workflow
-(`gh run view 24540532531 --repo adamziel/experiments`, linux-aarch64
-leg) confirmed that spc's PHP is a fully-static musl binary built
-without `HAVE_LIBDL`, so it refuses to `dlopen()` external extensions
-with the PHP-core error:
-
-```
-PHP Startup: Unable to load dynamic library 'branchfs.so'
-(Dynamic loading not supported)
-```
-
-`--no-strip` preserves debug symbols but doesn't restore `dl` support —
-this is a configure-time decision spc makes for musl static builds.
-
-Candidate resolutions (see PR #17 discussion):
-
-1. **Compile branchfs *into* spc's PHP build** as a first-class static
-   extension. Teach spc about `branchfs` via a fork or
-   `config/ext.json` overlay, copy `ext/*.c` into
-   `source/php-src/ext/branchfs/` before the build step, and drop
-   `-d extension=...` from every entrypoint. This is the architecture
-   spc was designed for.
-2. **Abandon spc**, use `shivammathur/setup-php` for a dynamically-
-   linked PHP on each runner, and capture the shared-lib closure via
-   gitpress's existing `build_runtime_bundle()` path (ldd on Linux,
-   `otool -L` on macOS — the macOS branch doesn't exist yet).
-3. **Hybrid**: spc for macOS (where static bundles can dlopen via
-   dyld), setup-php + closure for Linux.
+The release pipeline compiles branchfs *into* the static PHP binary
+as a first-class static-php-cli extension (see
+`branched-wp/ci/spc-branchfs/`) — musl-static PHP is built without
+`HAVE_LIBDL`, so `dlopen()`-based loading of an external `.so` is
+impossible on the Linux legs. The builtin approach sidesteps that
+entirely and also removes an extra file from the shipped bundle.
+The Makefile's `.so` build and `-d extension=...` entrypoints are
+retained for local development with a dynamically-linked Homebrew /
+apt PHP; `e2e/dev.sh` and the test harness auto-detect which mode
+is in effect.
 
 Other Unix-likes (FreeBSD, OpenBSD, Solaris-family) *should* work in
 theory but aren't part of CI; run at your own risk.
