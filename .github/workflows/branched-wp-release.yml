@@ -430,11 +430,13 @@ jobs:
           ls -la "target/${{ matrix.rust-target }}/release/gitpress"
 
       # ---------------------------------------------------------------
-      # Package: one tar.gz containing launcher + runtime bundle.
+      # Package: one tar.gz containing ONLY the launcher + a README.
+      # The runtime bundle is already compiled into the launcher via
+      # `include_bytes!(env!("GITPRESS_RUNTIME_BUNDLE"))`, so shipping a
+      # second copy alongside would be ~100 MB of pure redundancy.
       # Layout inside the tarball:
-      #   gitpress                            <- launcher binary
-      #   gitpress-runtime.tar.gz             <- bundle the launcher extracts
-      #   README-gitpress.txt                 <- 3-line quick-start
+      #   gitpress                  <- launcher (self-contained, embeds runtime)
+      #   README.txt                <- quick-start
       # ---------------------------------------------------------------
       - name: Package release tarball
         id: package
@@ -446,30 +448,23 @@ jobs:
           mkdir -p "$stage"
           cp "target/${{ matrix.rust-target }}/release/gitpress" "$stage/gitpress"
           chmod +x "$stage/gitpress"
-          # The runtime bundle is produced by build.rs into OUT_DIR, which
-          # cargo materializes at:
-          #   target/<triple>/release/build/<crate>-<hash>/out/gitpress-runtime.tar.gz
-          # The <hash> suffix changes every run, so glob it. There can be
-          # multiple gitpress-* directories (stale + current) — pick the
-          # most recently modified.
-          bundle=$(ls -t target/${{ matrix.rust-target }}/release/build/gitpress-*/out/gitpress-runtime.tar.gz 2>/dev/null | head -1)
-          if [ -z "$bundle" ] || [ ! -f "$bundle" ]; then
-            echo "FATAL: gitpress-runtime.tar.gz not found under target/" >&2
-            echo "--- diag: build dirs ---" >&2
-            ls -la "target/${{ matrix.rust-target }}/release/build" 2>/dev/null || true
-            echo "--- diag: any match under target/ ---" >&2
-            find "target/${{ matrix.rust-target }}" -name 'gitpress-runtime.tar.gz' 2>/dev/null || true
-            exit 1
-          fi
-          echo "bundle=$bundle"
-          cp "$bundle" "$stage/gitpress-runtime.tar.gz"
-          cat > "$stage/README-gitpress.txt" <<EOF
-          gitpress ${{ steps.version.outputs.version }} (${{ matrix.os-tag }}-${{ matrix.arch-tag }})
+          cat > "$stage/README.txt" <<EOF
+          gitpress ${{ steps.version.outputs.version }} — ${{ matrix.os-tag }}-${{ matrix.arch-tag }} (statically linked)
 
-          Start a local site:
-            ./gitpress start
+          Single self-contained binary. Extracts its embedded runtime
+          (static PHP + Dolt + WordPress + branchfs) to ~/.gitpress/runtime/
+          on first run.
 
-          See branched-wp/README.md for details.
+          Usage:
+            ./gitpress start                  # launch dev stack on :18080
+            ./gitpress branch create <name>   # create a preview branch
+            ./gitpress --help
+
+          Homepage: http://localhost:18080/ (Host: wp.localhost)
+          Admin:    http://localhost:18080/wp-login.php  (admin / admin)
+
+          Full docs: https://github.com/adamziel/experiments/tree/main/branched-wp
+          Build from source: branched-wp/BUILDING.md
           EOF
           tar -C /tmp -czf "/tmp/${name}.tar.gz" "$name"
           (cd /tmp && shasum -a 256 "${name}.tar.gz" > "${name}.sha256")

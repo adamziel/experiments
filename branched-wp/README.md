@@ -273,9 +273,19 @@ cd "gitpress-${VERSION}-${OS_ARCH}"
 Windows is **not yet supported** — see `LIMITATIONS.md` for the port
 blockers and tracking placeholder.
 
+**Pre-built availability today:** only `linux-x86_64` ships as a
+Release asset. The macOS matrix legs are blocked on CI billing; you
+can reproduce the same tarball locally on a Mac following
+[`BUILDING.md`](BUILDING.md) — the build is fully scripted.
+
 ### Building from source
 
-Build from a local checkout:
+For a production-shaped tarball (static PHP with branchfs compiled in,
+identical to what CI produces), follow [`BUILDING.md`](BUILDING.md).
+Full build is ~20–40 min cold.
+
+For local dev iteration against your system PHP (fast rebuilds, no
+spc), the Makefile's existing flow still works:
 
 ```bash
 rustup target add x86_64-unknown-linux-musl   # or your platform triple
@@ -284,11 +294,9 @@ cargo build --release -p gitpress
 make gitpress
 ```
 
-No host `php`, `dolt`, or glibc runtime installation is required for the
-launcher itself — the release artifact bundles a static PHP (built via
-[static-php-cli](https://github.com/crazywhalecc/static-php-cli)) and a
-static Dolt binary, and extracts them into `~/.gitpress/runtime/` on
-first run.
+In that mode the launcher walks the host's `ldd` / dylib closure
+instead of using a pre-built static PHP. Fine for a dev machine; not
+what CI produces.
 
 Start a local site + branch router + git smart-HTTP server:
 
