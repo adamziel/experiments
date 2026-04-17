@@ -18,18 +18,6 @@ on:
   push:
     tags:
       - 'v*'
-    # Temporary: also run on pushes to the release branch so we can
-    # iterate the workflow itself on real runners before it lives on
-    # the default branch (where workflow_dispatch would work).
-    # Remove this branch entry once the workflow merges to main.
-    branches:
-      - branched-wp-cross-platform-release
-    paths:
-      - '.github/workflows/branched-wp-release.yml'
-      - 'branched-wp/Makefile'
-      - 'branched-wp/gitpress/**'
-      - 'branched-wp/ext/**'
-      - 'branched-wp/e2e/test_sqlite_clone_minimal.sh'
   workflow_dispatch:
     inputs:
       dry_run:
