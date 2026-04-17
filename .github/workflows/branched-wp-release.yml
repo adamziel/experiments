@@ -18,6 +18,18 @@ on:
   push:
     tags:
       - 'v*'
+    # Temporary: also run on pushes to the release branch so we can
+    # iterate the workflow itself on real runners before it lives on
+    # the default branch (where workflow_dispatch would work).
+    # Remove this branch entry once the workflow merges to main.
+    branches:
+      - branched-wp-cross-platform-release
+    paths:
+      - '.github/workflows/branched-wp-release.yml'
+      - 'branched-wp/Makefile'
+      - 'branched-wp/gitpress/**'
+      - 'branched-wp/ext/**'
+      - 'branched-wp/e2e/test_sqlite_clone_minimal.sh'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -90,7 +102,10 @@ jobs:
         id: version
         shell: bash
         run: |
-          if [ "${{ github.event_name }}" = "push" ]; then
+          # Tag push → real release version (strip leading v).
+          # Branch push or workflow_dispatch → dry-<short sha>, which also
+          # skips the "Attach to GitHub Release" step below.
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
             v="${GITHUB_REF_NAME#v}"
           else
             v="dry-${GITHUB_SHA::7}"
@@ -181,17 +196,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # static-php-cli emits a php-config in buildroot/bin/ that
-          # points at the static PHP's headers + lib paths. Our Makefile
-          # consumes PHP_CONFIG directly.
-          PHP_CONFIG="$PWD/.spc/static-php-cli/buildroot/bin/php-config"
-          if [ ! -x "$PHP_CONFIG" ]; then
-            echo "FATAL: php-config not produced by spc at $PHP_CONFIG" >&2
-            find .spc/static-php-cli/buildroot -name 'php-config' 2>/dev/null || true
+          # spc does NOT run `make install` inside source/php-src — it only
+          # cp's the final `php` binary to buildroot/bin/. So buildroot/
+          # contains the compiled PHP *executable* but NOT php-config or
+          # an installed include tree.
+          #
+          # Our Makefile can be driven purely by PHP_INCLUDE_DIR: given the
+          # top of the php-src tree, it derives all the -I flags our
+          # extension needs (main/, TSRM/, Zend/, ext/, ext/date/lib/).
+          # php_config.h lives under source/php-src/main/ after configure,
+          # so no `install-headers` round-trip is necessary.
+          PHP_SRC_DIR="$PWD/.spc/static-php-cli/source/php-src"
+          if [ ! -f "$PHP_SRC_DIR/main/php.h" ] || [ ! -f "$PHP_SRC_DIR/main/php_config.h" ]; then
+            echo "FATAL: PHP source tree not where expected ($PHP_SRC_DIR)" >&2
+            ls -la "$PHP_SRC_DIR/main" 2>/dev/null || true
+            find .spc/static-php-cli/source -maxdepth 3 -name 'php_config.h' 2>/dev/null || true
             exit 1
           fi
           make clean
-          make PHP_CONFIG="$PHP_CONFIG"
+          make PHP_CONFIG= PHP_INCLUDE_DIR="$PHP_SRC_DIR"
           test -f ext/branchfs.so
           cp ext/branchfs.so runtime/lib/branchfs.so
 
@@ -334,14 +357,22 @@ jobs:
           mkdir -p "$stage"
           cp "target/${{ matrix.rust-target }}/release/gitpress" "$stage/gitpress"
           chmod +x "$stage/gitpress"
-          # The runtime bundle is produced by build.rs into OUT_DIR.
-          # Find it via cargo metadata / the known path under target/.
-          bundle=$(find "target/${{ matrix.rust-target }}/release/build" -name 'gitpress-runtime.tar.gz' | head -1)
+          # The runtime bundle is produced by build.rs into OUT_DIR, which
+          # cargo materializes at:
+          #   target/<triple>/release/build/<crate>-<hash>/out/gitpress-runtime.tar.gz
+          # The <hash> suffix changes every run, so glob it. There can be
+          # multiple gitpress-* directories (stale + current) — pick the
+          # most recently modified.
+          bundle=$(ls -t target/${{ matrix.rust-target }}/release/build/gitpress-*/out/gitpress-runtime.tar.gz 2>/dev/null | head -1)
           if [ -z "$bundle" ] || [ ! -f "$bundle" ]; then
             echo "FATAL: gitpress-runtime.tar.gz not found under target/" >&2
-            find "target/${{ matrix.rust-target }}" -name 'gitpress-runtime.tar.gz' || true
+            echo "--- diag: build dirs ---" >&2
+            ls -la "target/${{ matrix.rust-target }}/release/build" 2>/dev/null || true
+            echo "--- diag: any match under target/ ---" >&2
+            find "target/${{ matrix.rust-target }}" -name 'gitpress-runtime.tar.gz' 2>/dev/null || true
             exit 1
           fi
+          echo "bundle=$bundle"
           cp "$bundle" "$stage/gitpress-runtime.tar.gz"
           cat > "$stage/README-gitpress.txt" <<EOF
           gitpress ${{ steps.version.outputs.version }} (${{ matrix.os-tag }}-${{ matrix.arch-tag }})
