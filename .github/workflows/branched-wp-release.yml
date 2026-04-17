@@ -312,6 +312,13 @@ jobs:
 
       - name: Run e2e smoke (test_sqlite_clone_minimal.sh)
         shell: bash
+        # Hard cap: this step has hung indefinitely in earlier iterations
+        # when `git clone` over the dev stack stalled. A per-step timeout
+        # gives us a real error message and releases the runner instead
+        # of burning 6h on one stuck job. 15 min is generous — a clean
+        # run does dev.sh (~30s) + git clone (~60-120s per LIMITATIONS)
+        # + WP boot probe (~30s) well within that budget.
+        timeout-minutes: 15
         env:
           BUNDLED_PHP: ${{ github.workspace }}/branched-wp/runtime/bin/php
           BUNDLED_DOLT: ${{ github.workspace }}/branched-wp/runtime/bin/dolt
@@ -352,11 +359,22 @@ jobs:
             tail -80 /tmp/dev.log >&2
             exit 1
           fi
-          # Run the minimal test.
+          # Run the minimal test. Wrap with a portable 300s timeout so a
+          # hung `git clone` against the dev stack surfaces as a clean
+          # timeout + log dump rather than a stuck job. `timeout(1)`
+          # isn't in macOS coreutils by default; use perl alarm which
+          # exists on both runner images.
           set +e
-          PHP_BIN="$BUNDLED_PHP" bash e2e/test_sqlite_clone_minimal.sh
+          perl -e 'use POSIX; alarm shift; exec @ARGV; die "exec:$!"' \
+            300 env PHP_BIN="$BUNDLED_PHP" bash e2e/test_sqlite_clone_minimal.sh
           rc=$?
           set -e
+          # perl with alarm exits 142 (128 + SIGALRM=14); coreutils
+          # timeout exits 124. Dump logs on either signature.
+          if [ "$rc" -eq 142 ] || [ "$rc" -eq 124 ]; then
+            echo "=== e2e test timed out (>300s) — dev.log tail ===" >&2
+            tail -120 /tmp/dev.log >&2 || true
+          fi
           # Shut down dev stack.
           kill -TERM "$DEV_PID" 2>/dev/null || true
           wait "$DEV_PID" 2>/dev/null || true
