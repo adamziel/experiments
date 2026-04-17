@@ -28,6 +28,22 @@ This rules out:
   - SQLite: `rusqlite` with the `bundled` feature (compiles SQLite from source, no system lib needed)
 - Every new crate **must** include unit tests (`#[cfg(test)]`) and, where meaningful, integration tests under `branched-wp/tests/` or a crate-local `tests/` directory.
 
+## Branch-specific MySQL access
+
+Dolt exposes a MySQL-compatible server (port 13306 by default). Every branch is
+accessible as a separate database using Dolt's native `database/branch` syntax:
+
+```
+mysql -h 127.0.0.1 -P 13306 -u root wordpress/my-branch
+```
+
+Writes go to that branch's working set immediately (COW, isolated from other
+branches). Use `CALL DOLT_COMMIT('-am', 'message')` to snapshot. Use
+`CALL DOLT_MERGE('my-branch')` to merge back into main.
+
+`forkpress start` prints the MySQL connection string at startup. Pass
+`--dolt-bind 0.0.0.0` to allow connections from remote machines.
+
 ## Tests
 
 The project has two test layers:

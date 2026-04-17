@@ -75,6 +75,11 @@ struct StartArgs {
 
     #[arg(long, default_value = false)]
     no_fileserver: bool,
+
+    /// Bind address for the Dolt MySQL server. Use 0.0.0.0 to allow
+    /// connections from other machines (e.g. remote MySQL clients).
+    #[arg(long, default_value = "127.0.0.1")]
+    dolt_bind: String,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -162,6 +167,7 @@ fn start_command(args: StartArgs) -> Result<i32> {
         &layout,
         &runtime,
         &args.shared,
+        &args.dolt_bind,
         args.shared.dolt_port,
         false,
     )?;
@@ -188,6 +194,7 @@ fn start_command(args: StartArgs) -> Result<i32> {
         println!("SFTP:       sftp://<branch>@{}:{}/", args.root_host, args.sftp_port);
         println!("SMB:        smb://{}:{}/branch-name/", args.root_host, args.smb_port);
     }
+    println!("MySQL:      mysql -h {} -P {} -u root wordpress/<branch>", args.dolt_bind, args.shared.dolt_port);
     println!("Logs:       {}", layout.logs_dir.display());
     println!("Press Ctrl+C to stop.");
 
@@ -251,7 +258,7 @@ fn branch_command(args: BranchPassthrough) -> Result<i32> {
         );
     }
 
-    let _dolt = start_dolt_server(&layout, &runtime, &args.shared, args.shared.dolt_port, true)?;
+    let _dolt = start_dolt_server(&layout, &runtime, &args.shared, "127.0.0.1", args.shared.dolt_port, true)?;
 
     let mut command = php_base_command(&layout, &runtime, &args.shared);
     command.arg(layout.runtime_dir.join("scripts/branchctl.php"));
@@ -406,7 +413,8 @@ fn ensure_wp_source_unzipped(layout: &Layout) -> Result<()> {
 }
 
 fn ensure_ports_available(args: &StartArgs) -> Result<()> {
-    if tcp_port_open("127.0.0.1", args.shared.dolt_port) {
+    let dolt_check = if args.dolt_bind == "0.0.0.0" { "127.0.0.1" } else { &args.dolt_bind };
+    if tcp_port_open(dolt_check, args.shared.dolt_port) {
         bail!("dolt port {} is already in use", args.shared.dolt_port);
     }
     if tcp_port_open(&args.host, args.port) {
@@ -479,10 +487,12 @@ fn start_dolt_server(
     layout: &Layout,
     runtime: &PortableRuntime,
     shared: &SharedPaths,
+    bind: &str,
     port: u16,
     allow_existing: bool,
 ) -> Result<Option<ChildGuard>> {
-    if tcp_port_open("127.0.0.1", port) {
+    let check_host = if bind == "0.0.0.0" { "127.0.0.1" } else { bind };
+    if tcp_port_open(check_host, port) {
         if allow_existing {
             return Ok(None);
         }
@@ -501,7 +511,7 @@ fn start_dolt_server(
     let child = command
         .args([
             "sql-server",
-            "--host=127.0.0.1",
+            &format!("--host={bind}"),
             &format!("--port={port}"),
             "--data-dir",
         ])
