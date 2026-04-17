@@ -7,6 +7,16 @@
 
 UNAME_S := $(shell uname -s)
 
+# BRANCHFS_BUILTIN=1 means the target PHP already has branchfs statically
+# linked in (spc-built release binary). We don't build ext/branchfs.so in
+# that mode, so no PHP headers / sqlite dev libs are needed — skip all
+# the detection that would otherwise $(error) out on hosts that only
+# have the static PHP (NixOS, macOS CI runners where Homebrew PHP isn't
+# installed, etc.). Local dev on Linux/macOS with Homebrew/apt PHP keeps
+# the detection path.
+PHP_EXTRA_INCS  :=
+
+ifneq ($(BRANCHFS_BUILTIN),1)
 PHP_CONFIG ?= $(shell command -v php-config 2>/dev/null || command -v php-config8.2 2>/dev/null)
 PKG_CONFIG ?= $(shell command -v pkg-config 2>/dev/null)
 
@@ -15,7 +25,6 @@ SQLITE_INC  ?= $(firstword $(wildcard /nix/store/*-sqlite-*-dev/include))
 SQLITE_LIB  ?= $(firstword $(filter-out /nix/store/*-sqlite-*-dev/lib,$(wildcard /nix/store/*-sqlite-*/lib)))
 
 PHP_INCLUDE_DIR ?= $(if $(PHP_CONFIG),$(shell $(PHP_CONFIG) --include-dir 2>/dev/null))
-PHP_EXTRA_INCS  :=
 
 ifneq ($(strip $(PHP_INCLUDE_DIR)),)
 PHP_EXTRA_INCS += -I$(PHP_INCLUDE_DIR) \
@@ -32,7 +41,8 @@ PHP_EXTRA_INCS += -I$(PHP_DEV_DIR)/include/php \
                   -I$(PHP_DEV_DIR)/include/php/ext \
                   -I$(PHP_DEV_DIR)/include/php/ext/date/lib
 else
-$(error Could not determine PHP headers. Install php-config or set PHP_DEV_DIR)
+$(error Could not determine PHP headers. Install php-config or set PHP_DEV_DIR (or pass BRANCHFS_BUILTIN=1 if building against a PHP that already has branchfs statically linked))
+endif
 endif
 
 SQLITE_CFLAGS ?= $(if $(PKG_CONFIG),$(shell $(PKG_CONFIG) --cflags sqlite3 2>/dev/null))
