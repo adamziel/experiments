@@ -335,9 +335,7 @@ jobs:
           # respects PHP_BIN and DOLT env vars.
           export PHP_BIN="$BUNDLED_PHP"
           export DOLT="$BUNDLED_DOLT"
-          # Background dev.sh (nohup + redirect so the shell doesn't
-          # hold it open). The cleanup trap in dev.sh kills its
-          # children on SIGTERM, which we'll send at the end.
+          # Background dev.sh so the shell doesn't hold it open.
           nohup bash e2e/dev.sh > /tmp/dev.log 2>&1 &
           DEV_PID=$!
           echo "dev.sh PID=$DEV_PID"
@@ -375,9 +373,25 @@ jobs:
             echo "=== e2e test timed out (>300s) — dev.log tail ===" >&2
             tail -120 /tmp/dev.log >&2 || true
           fi
-          # Shut down dev stack.
+          # Shut down dev stack. dev.sh ends in `tail -f php-server.log`,
+          # which means bash's TERM trap is deferred until the current
+          # foreground command returns — and `tail -f` never does. So
+          # `wait $DEV_PID` after a plain SIGTERM would block forever
+          # (previously burned ~2h of runner time before cancellation).
+          # Kill the tail -f child first so bash's trap can fire, then
+          # SIGTERM the shell itself, then SIGKILL anything left. We
+          # deliberately skip `wait` — the job-level timeout-minutes:15
+          # is the outer safety net.
+          pkill -P "$DEV_PID" -x tail 2>/dev/null || true
           kill -TERM "$DEV_PID" 2>/dev/null || true
-          wait "$DEV_PID" 2>/dev/null || true
+          for _ in 1 2 3 4 5; do
+            kill -0 "$DEV_PID" 2>/dev/null || break
+            sleep 1
+          done
+          kill -KILL "$DEV_PID" 2>/dev/null || true
+          # Mop up any surviving dev-stack children (dolt, php -S).
+          pkill -f 'dolt sql-server.*--port=13306' 2>/dev/null || true
+          pkill -f 'php.*18080' 2>/dev/null || true
           exit "$rc"
 
       # ---------------------------------------------------------------
