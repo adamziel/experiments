@@ -25,4 +25,10 @@ if (!$result) {
 echo "Database initialized successfully.\n";
 echo "  - 'main' branch created\n";
 
+$db->exec("INSERT OR IGNORE INTO dolt_archive(id, data, updated_at) VALUES(1, NULL, 0)");
+if (!empty($argv[2])) {
+    $title = SQLite3::escapeString($argv[2]);
+    $db->exec("INSERT OR IGNORE INTO site_config(key,value) VALUES('site_title','$title')");
+}
+
 $db->close();

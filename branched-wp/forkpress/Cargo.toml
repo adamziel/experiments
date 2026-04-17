@@ -10,6 +10,8 @@ clap = { version = "4.5", features = ["derive"] }
 ctrlc = "3.5"
 flate2 = "1.1"
 libc = "0.2"
+rusqlite = { version = "0.31", features = ["bundled"] }
+sha2 = "0.10"
 tar = "0.4"
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 
