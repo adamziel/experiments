@@ -66,6 +66,15 @@ struct StartArgs {
 
     #[arg(long, default_value = "ForkPress")]
     site_title: String,
+
+    #[arg(long, default_value_t = 2222)]
+    sftp_port: u16,
+
+    #[arg(long, default_value_t = 8888)]
+    smb_port: u16,
+
+    #[arg(long, default_value = false)]
+    no_fileserver: bool,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -90,6 +99,7 @@ struct Layout {
     php_error_log: PathBuf,
     php_server_log: PathBuf,
     dolt_server_log: PathBuf,
+    fileserver_log: PathBuf,
     runtime_ready_marker: PathBuf,
     bootstrap_marker: PathBuf,
 }
@@ -98,6 +108,7 @@ struct Layout {
 struct PortableRuntime {
     php: PathBuf,
     dolt: PathBuf,
+    fileserver: PathBuf,
 }
 
 struct ChildGuard {
@@ -158,6 +169,11 @@ fn start_command(args: StartArgs) -> Result<i32> {
     ensure_bootstrapped(&layout, &runtime, &args)?;
 
     let mut php = start_php_server(&layout, &runtime, &args)?;
+    let mut fileserver = if args.no_fileserver {
+        None
+    } else {
+        start_fileserver(&layout, &runtime, &args)?
+    };
 
     println!("Main site:  http://{}:{}/", args.root_host, args.port);
     println!(
@@ -168,6 +184,10 @@ fn start_command(args: StartArgs) -> Result<i32> {
         "Git remote: http://{}:{}/site.git",
         args.root_host, args.port
     );
+    if fileserver.is_some() {
+        println!("SFTP:       sftp://<branch>@{}:{}/", args.root_host, args.sftp_port);
+        println!("SMB:        smb://{}:{}/branch-name/", args.root_host, args.smb_port);
+    }
     println!("Logs:       {}", layout.logs_dir.display());
     println!("Press Ctrl+C to stop.");
 
@@ -196,6 +216,15 @@ fn start_command(args: StartArgs) -> Result<i32> {
                 bail!(
                     "dolt sql-server exited unexpectedly with status {status}. Check {}",
                     layout.dolt_server_log.display()
+                );
+            }
+        }
+
+        if let Some(fs) = fileserver.as_mut() {
+            if let Some(status) = fs.try_wait()? {
+                bail!(
+                    "fileserver exited unexpectedly with status {status}. Check {}",
+                    layout.fileserver_log.display()
                 );
             }
         }
@@ -259,6 +288,7 @@ impl Layout {
             php_error_log: work_dir.join("logs/php-errors.log"),
             php_server_log: work_dir.join("logs/php-server.log"),
             dolt_server_log: work_dir.join("logs/dolt-server.log"),
+            fileserver_log: work_dir.join("logs/fileserver.log"),
             runtime_ready_marker: work_dir.join("runtime/.forkpress-runtime-ready"),
             bootstrap_marker: work_dir.join(".forkpress-bootstrap-complete"),
             work_dir,
@@ -272,6 +302,7 @@ impl PortableRuntime {
         Self {
             php: root.join("bin/php"),
             dolt: root.join("bin/dolt"),
+            fileserver: root.join("bin/fileserver"),
         }
     }
 }
@@ -384,6 +415,14 @@ fn ensure_ports_available(args: &StartArgs) -> Result<()> {
             args.port,
             args.host
         );
+    }
+    if !args.no_fileserver {
+        if tcp_port_open(&args.host, args.sftp_port) {
+            bail!("SFTP port {} is already in use on {}", args.sftp_port, args.host);
+        }
+        if tcp_port_open(&args.host, args.smb_port) {
+            bail!("SMB port {} is already in use on {}", args.smb_port, args.host);
+        }
     }
     Ok(())
 }
@@ -595,6 +634,55 @@ fn start_php_server(
     }
 
     Ok(guard)
+}
+
+fn start_fileserver(
+    layout: &Layout,
+    runtime: &PortableRuntime,
+    args: &StartArgs,
+) -> Result<Option<ChildGuard>> {
+    if !runtime.fileserver.is_file() {
+        eprintln!(
+            "fileserver binary not found at {} — SFTP/SMB disabled. \
+             Build it with: cd branched-wp/fileserver && go build -o fileserver .",
+            runtime.fileserver.display()
+        );
+        return Ok(None);
+    }
+
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&layout.fileserver_log)?;
+    let log_err = log.try_clone()?;
+
+    let child = Command::new(&runtime.fileserver)
+        .arg("--db")
+        .arg(&layout.db_path)
+        .arg("--sftp-addr")
+        .arg(format!("{}:{}", args.host, args.sftp_port))
+        .arg("--smb-addr")
+        .arg(format!("{}:{}", args.host, args.smb_port))
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err))
+        .spawn()
+        .context("failed to start fileserver")?;
+
+    let mut guard = ChildGuard {
+        name: "fileserver",
+        child,
+    };
+
+    // Give the fileserver a moment to start; check it hasn't already crashed.
+    thread::sleep(Duration::from_millis(300));
+    if let Some(status) = guard.try_wait()? {
+        bail!(
+            "fileserver exited early with status {status}. Check {}",
+            layout.fileserver_log.display()
+        );
+    }
+
+    Ok(Some(guard))
 }
 
 fn php_base_command(_layout: &Layout, runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
