@@ -21,6 +21,10 @@ $db = new SQLite3($DB);
 $db->exec(file_get_contents(__DIR__ . '/../sql/schema.sql'));
 $db->close();
 
+// macOS canonicalizes /tmp → /private/tmp via symlink; branchfs needs
+// the canonical root or relative-path lookups miss.
+@mkdir($ROOT, 0755, true);
+$ROOT = realpath($ROOT) ?: $ROOT;
 branchfs_set_db($DB);
 branchfs_set_root($ROOT);
 

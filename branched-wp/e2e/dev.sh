@@ -28,7 +28,13 @@ PHP_BIN="${PHP_BIN:-php}"
 # needs to be loaded from ext/branchfs.so (local-dev path with
 # Homebrew/apt PHP). Passing `-d extension=...` for a module that's
 # already loaded is a warning, not a fatal, but we prefer clean stderr.
-if "$PHP_BIN" -m 2>/dev/null | grep -qi '^branchfs$'; then
+#
+# Capture `php -m` output into a variable first: piping directly into
+# `grep -q` causes `grep` to close stdin on first match, which with
+# `set -o pipefail` marks the whole pipe as failed (SIGPIPE on php -m)
+# and drops us into the else branch even when branchfs is present.
+PHP_MODULES="$("$PHP_BIN" -m 2>/dev/null || true)"
+if printf '%s\n' "$PHP_MODULES" | grep -qi '^branchfs$'; then
     PHP="$PHP_BIN -d display_errors=Off -d display_startup_errors=Off"
     BRANCHFS_BUILTIN=1
 else

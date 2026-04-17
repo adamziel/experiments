@@ -21,6 +21,8 @@ $db = new SQLite3($DB);
 $db->exec(file_get_contents(__DIR__ . '/../sql/schema.sql'));
 $db->close();
 
+@mkdir($ROOT, 0755, true);
+$ROOT = realpath($ROOT) ?: $ROOT;
 branchfs_set_db($DB);
 branchfs_set_root($ROOT);
 branchfs_set_branch('main');

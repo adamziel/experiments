@@ -23,6 +23,17 @@ function assert_eq($a, $b, $msg) {
 $DB = '/tmp/branchfs_test_compat_' . getmypid() . '.db';
 $WP_ROOT = '/tmp/branchfs_wproot_' . getmypid();
 
+// On macOS, /tmp is a symlink to /private/tmp, so getcwd() after chdir()
+// returns the canonical /private/tmp/... path. If branchfs_set_root()
+// stores the un-canonicalized /tmp/... prefix, the relative-path lookups
+// further down never match and every `file_get_contents('foo')` misses.
+// Resolve the WP_ROOT to its real path before setting it on the ext.
+@mkdir($WP_ROOT, 0755, true);
+$WP_ROOT_REAL = realpath($WP_ROOT);
+if ($WP_ROOT_REAL !== false) {
+    $WP_ROOT = $WP_ROOT_REAL;
+}
+
 echo "=== BranchFS Plugin Compatibility Tests ===\n";
 echo "WP Root: $WP_ROOT\n\n";
 
