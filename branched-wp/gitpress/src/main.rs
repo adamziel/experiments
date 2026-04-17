@@ -639,13 +639,25 @@ fn php_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
         return Command::new(php_bin);
     }
 
-    let mut command = Command::new(&runtime.loader);
-    command
-        .arg("--library-path")
-        .arg(&runtime.lib_dir)
-        .arg(&runtime.php)
-        .env("LD_LIBRARY_PATH", &runtime.lib_dir);
-    command
+    // Two PHP binary flavors ship in the runtime bundle:
+    //   1. Dynamic PHP (local-dev, dynamic Homebrew/apt build): needs the
+    //      staged `lib/ld-linux-x86-64.so.2` + `lib/` shared libs, invoked
+    //      via the loader so we're independent of the host's glibc.
+    //   2. Static PHP (release path, spc-built musl binary with branchfs
+    //      compiled in): self-contained, no loader or lib/ dir shipped.
+    // Probe for the loader: when absent, the binary is static, invoke
+    // directly. Otherwise wrap with the loader to pin the library path.
+    if runtime.loader.exists() {
+        let mut command = Command::new(&runtime.loader);
+        command
+            .arg("--library-path")
+            .arg(&runtime.lib_dir)
+            .arg(&runtime.php)
+            .env("LD_LIBRARY_PATH", &runtime.lib_dir);
+        command
+    } else {
+        Command::new(&runtime.php)
+    }
 }
 
 fn dolt_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
