@@ -136,7 +136,9 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          h=$(printf '%s' "$SPC_EXTENSIONS" | sha256sum | cut -c1-12)
+          # shasum is present on both Linux and macOS runners; sha256sum is
+          # Linux-only. Both emit "<hex>  -" on stdin input.
+          h=$(printf '%s' "$SPC_EXTENSIONS" | shasum -a 256 | cut -c1-12)
           echo "hash=$h" >> "$GITHUB_OUTPUT"
 
       - name: Cache static-php-cli workdir
@@ -164,6 +166,12 @@ jobs:
 
       - name: Build static PHP + extensions
         shell: bash
+        # spc hits GitHub release assets + raw.githubusercontent for
+        # pre-built libs. Shared runner IPs exhaust the 60 req/hr
+        # unauthenticated limit quickly; GITHUB_TOKEN bumps that to
+        # 5000 req/hr and is plumbed via spc/store/CurlHook.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           cd .spc/static-php-cli
