@@ -1,0 +1,404 @@
+use crate::store::Store;
+use anyhow::Result;
+use russh::server::{Auth, Msg, Server as _, Session};
+use russh::{Channel, ChannelId};
+use russh_sftp::protocol::{
+    Attrs, Data, File, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
+};
+use std::collections::HashMap;
+use std::sync::Arc;
+use tokio::sync::Mutex;
+
+struct SftpSession {
+    store: Arc<Store>,
+    handles: HashMap<String, FileHandle>,
+    next_handle: u64,
+}
+
+struct FileHandle {
+    branch: String,
+    path: String,
+    is_dir: bool,
+    write_buf: Vec<u8>,
+    did_write: bool,
+    dir_offset: usize,
+    dir_entries: Vec<File>,
+}
+
+impl SftpSession {
+    fn new(store: Arc<Store>) -> Self {
+        Self { store, handles: HashMap::new(), next_handle: 1 }
+    }
+
+    fn alloc_handle(&mut self) -> String {
+        let h = format!("h{}", self.next_handle);
+        self.next_handle += 1;
+        h
+    }
+}
+
+fn parse_branch_path(path: &str) -> Option<(String, String)> {
+    let p = path.trim_start_matches('/');
+    if p.is_empty() {
+        return None;
+    }
+    let mut parts = p.splitn(2, '/');
+    let branch = parts.next()?.to_string();
+    let rest = parts.next().unwrap_or("").to_string();
+    Some((branch, rest))
+}
+
+fn make_attrs(size: u64, mtime: u32, is_dir: bool) -> FileAttributes {
+    let perm: u32 = if is_dir { 0o40755 } else { 0o100644 };
+    FileAttributes {
+        size: Some(size),
+        uid: Some(1000),
+        user: None,
+        gid: Some(1000),
+        group: None,
+        permissions: Some(perm),
+        atime: Some(mtime),
+        mtime: Some(mtime),
+    }
+}
+
+impl russh_sftp::server::Handler for SftpSession {
+    type Error = StatusCode;
+
+    fn unimplemented(&self) -> Self::Error {
+        StatusCode::OpUnsupported
+    }
+
+    async fn init(
+        &mut self,
+        _version: u32,
+        _extensions: HashMap<String, String>,
+    ) -> Result<Version, Self::Error> {
+        Ok(Version::new())
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        filename: String,
+        pflags: OpenFlags,
+        _attrs: FileAttributes,
+    ) -> Result<Handle, Self::Error> {
+        let (branch, path) = parse_branch_path(&filename).ok_or(StatusCode::NoSuchFile)?;
+        let write_buf = if pflags.contains(OpenFlags::WRITE) || pflags.contains(OpenFlags::CREATE) {
+            Vec::new()
+        } else {
+            Vec::new()
+        };
+        let handle = self.alloc_handle();
+        self.handles.insert(
+            handle.clone(),
+            FileHandle {
+                branch,
+                path,
+                is_dir: false,
+                write_buf,
+                did_write: false,
+                dir_offset: 0,
+                dir_entries: Vec::new(),
+            },
+        );
+        Ok(Handle { id, handle })
+    }
+
+    async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
+        if let Some(h) = self.handles.remove(&handle) {
+            if h.did_write && !h.is_dir && !h.path.is_empty() {
+                self.store
+                    .write_file(&h.branch, &h.path, &h.write_buf, "sftp")
+                    .map_err(|_| StatusCode::Failure)?;
+            }
+        }
+        Ok(Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: "Ok".into(),
+            language_tag: "en".into(),
+        })
+    }
+
+    async fn read(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Data, Self::Error> {
+        let h = self.handles.get(&handle).ok_or(StatusCode::NoSuchFile)?;
+        let data = if h.did_write {
+            h.write_buf.clone()
+        } else {
+            self.store.read_file(&h.branch, &h.path).map_err(|_| StatusCode::NoSuchFile)?
+        };
+        let start = offset as usize;
+        if start >= data.len() {
+            return Err(StatusCode::Eof);
+        }
+        let end = std::cmp::min(start + len as usize, data.len());
+        Ok(Data { id, data: data[start..end].to_vec() })
+    }
+
+    async fn write(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> Result<Status, Self::Error> {
+        let h = self.handles.get_mut(&handle).ok_or(StatusCode::NoSuchFile)?;
+        let off = offset as usize;
+        let needed = off + data.len();
+        if h.write_buf.len() < needed {
+            h.write_buf.resize(needed, 0);
+        }
+        h.write_buf[off..off + data.len()].copy_from_slice(&data);
+        h.did_write = true;
+        Ok(Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: "Ok".into(),
+            language_tag: "en".into(),
+        })
+    }
+
+    async fn opendir(&mut self, id: u32, path: String) -> Result<Handle, Self::Error> {
+        let (branch, dir_path) = if path.trim_matches('/').is_empty() {
+            (String::new(), String::new())
+        } else {
+            parse_branch_path(&path).unwrap_or_default()
+        };
+        let handle = self.alloc_handle();
+        self.handles.insert(
+            handle.clone(),
+            FileHandle {
+                branch,
+                path: dir_path,
+                is_dir: true,
+                write_buf: Vec::new(),
+                did_write: false,
+                dir_offset: 0,
+                dir_entries: Vec::new(),
+            },
+        );
+        Ok(Handle { id, handle })
+    }
+
+    async fn readdir(&mut self, id: u32, handle: String) -> Result<Name, Self::Error> {
+        let h = self.handles.get_mut(&handle).ok_or(StatusCode::NoSuchFile)?;
+        if h.dir_offset == 0 && h.dir_entries.is_empty() {
+            if h.branch.is_empty() {
+                return Err(StatusCode::Eof);
+            }
+            let all = self.store.list_files(&h.branch).map_err(|_| StatusCode::Failure)?;
+            let prefix = if h.path.is_empty() {
+                String::new()
+            } else {
+                format!("{}/", h.path.trim_matches('/'))
+            };
+            h.dir_entries = all
+                .iter()
+                .filter(|e| {
+                    let p = e.path.trim_matches('/');
+                    if prefix.is_empty() {
+                        !p.contains('/')
+                    } else {
+                        p.starts_with(&prefix) && !p[prefix.len()..].contains('/')
+                    }
+                })
+                .map(|e| {
+                    let name = e
+                        .path
+                        .trim_matches('/')
+                        .rsplit('/')
+                        .next()
+                        .unwrap_or("")
+                        .to_string();
+                    File::new(name, make_attrs(e.size as u64, e.mtime as u32, e.is_dir))
+                })
+                .collect();
+        }
+        if h.dir_offset >= h.dir_entries.len() {
+            return Err(StatusCode::Eof);
+        }
+        let batch = h.dir_entries[h.dir_offset..].to_vec();
+        h.dir_offset = h.dir_entries.len();
+        Ok(Name { id, files: batch })
+    }
+
+    async fn lstat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        stat_path(&self.store, id, &path)
+    }
+
+    async fn stat(&mut self, id: u32, path: String) -> Result<Attrs, Self::Error> {
+        stat_path(&self.store, id, &path)
+    }
+
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
+        let h = self.handles.get(&handle).ok_or(StatusCode::NoSuchFile)?;
+        if h.path.is_empty() || h.is_dir {
+            return Ok(Attrs { id, attrs: make_attrs(0, 0, true) });
+        }
+        let files = self.store.list_files(&h.branch).map_err(|_| StatusCode::Failure)?;
+        let fp = h.path.trim_matches('/').to_string();
+        files
+            .iter()
+            .find(|e| e.path.trim_matches('/') == fp)
+            .map(|e| Attrs { id, attrs: make_attrs(e.size as u64, e.mtime as u32, e.is_dir) })
+            .ok_or(StatusCode::NoSuchFile)
+    }
+
+    async fn mkdir(
+        &mut self,
+        id: u32,
+        path: String,
+        _attrs: FileAttributes,
+    ) -> Result<Status, Self::Error> {
+        let (branch, dir_path) = parse_branch_path(&path).ok_or(StatusCode::NoSuchFile)?;
+        self.store
+            .create_dir(&branch, dir_path.trim_matches('/'))
+            .map_err(|_| StatusCode::Failure)?;
+        Ok(Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: "Ok".into(),
+            language_tag: "en".into(),
+        })
+    }
+
+    async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+        let (branch, path) = parse_branch_path(&filename).ok_or(StatusCode::NoSuchFile)?;
+        self.store
+            .delete_file(&branch, path.trim_matches('/'))
+            .map_err(|_| StatusCode::Failure)?;
+        Ok(Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: "Ok".into(),
+            language_tag: "en".into(),
+        })
+    }
+
+    async fn realpath(&mut self, id: u32, path: String) -> Result<Name, Self::Error> {
+        let canonical = if path.is_empty() || path == "." {
+            "/".to_string()
+        } else if !path.starts_with('/') {
+            format!("/{}", path)
+        } else {
+            path
+        };
+        Ok(Name { id, files: vec![File::dummy(canonical)] })
+    }
+}
+
+fn stat_path(store: &Arc<Store>, id: u32, path: &str) -> Result<Attrs, StatusCode> {
+    if path.trim_matches('/').is_empty() {
+        return Ok(Attrs { id, attrs: make_attrs(0, 0, true) });
+    }
+    let (branch, file_path) = parse_branch_path(path).ok_or(StatusCode::NoSuchFile)?;
+    if file_path.is_empty() {
+        return Ok(Attrs { id, attrs: make_attrs(0, 0, true) });
+    }
+    let files = store.list_files(&branch).map_err(|_| StatusCode::Failure)?;
+    let fp = file_path.trim_matches('/').to_string();
+    files
+        .iter()
+        .find(|e| e.path.trim_matches('/') == fp)
+        .map(|e| Attrs { id, attrs: make_attrs(e.size as u64, e.mtime as u32, e.is_dir) })
+        .ok_or(StatusCode::NoSuchFile)
+}
+
+struct SshServer {
+    store: Arc<Store>,
+}
+
+struct SshHandler {
+    store: Arc<Store>,
+    channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
+}
+
+#[async_trait::async_trait]
+impl russh::server::Handler for SshHandler {
+    type Error = anyhow::Error;
+
+    async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+        Ok(Auth::Accept)
+    }
+
+    async fn auth_password(
+        &mut self,
+        _user: &str,
+        _password: &str,
+    ) -> Result<Auth, Self::Error> {
+        Ok(Auth::Accept)
+    }
+
+    async fn channel_open_session(
+        &mut self,
+        channel: Channel<Msg>,
+        _session: &mut Session,
+    ) -> Result<bool, Self::Error> {
+        self.channels.lock().await.insert(channel.id(), channel);
+        Ok(true)
+    }
+
+    async fn channel_eof(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        let _ = session.close(channel);
+        Ok(())
+    }
+
+    async fn subsystem_request(
+        &mut self,
+        channel_id: ChannelId,
+        name: &str,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        if name == "sftp" {
+            let channel = self.channels.lock().await.remove(&channel_id).unwrap();
+            let sftp_handler = SftpSession::new(Arc::clone(&self.store));
+            let _ = session.channel_success(channel_id);
+            russh_sftp::server::run(channel.into_stream(), sftp_handler).await;
+        } else {
+            let _ = session.channel_failure(channel_id);
+        }
+        Ok(())
+    }
+}
+
+impl russh::server::Server for SshServer {
+    type Handler = SshHandler;
+
+    fn new_client(&mut self, _peer: Option<std::net::SocketAddr>) -> SshHandler {
+        SshHandler {
+            store: Arc::clone(&self.store),
+            channels: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+}
+
+pub async fn run_sftp_server(addr: &str, store: Arc<Store>) -> Result<()> {
+    let key = russh::keys::key::KeyPair::generate_ed25519()
+        .ok_or_else(|| anyhow::anyhow!("failed to generate ed25519 key"))?;
+
+    let config = russh::server::Config {
+        auth_rejection_time: std::time::Duration::from_millis(100),
+        auth_rejection_time_initial: Some(std::time::Duration::from_millis(0)),
+        keys: vec![key],
+        ..Default::default()
+    };
+
+    let config = Arc::new(config);
+    let mut server = SshServer { store };
+
+    log::info!("SFTP server listening on {}", addr);
+    server.run_on_address(config, addr).await?;
+    Ok(())
+}
