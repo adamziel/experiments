@@ -26,6 +26,8 @@ $sqlite->exec(file_get_contents(__DIR__ . '/../sql/schema.sql'));
 $sqlite->close();
 
 // Configure branchfs
+@mkdir($WP_ROOT, 0755, true);
+$WP_ROOT = realpath($WP_ROOT) ?: $WP_ROOT;
 branchfs_set_db($DB);
 branchfs_set_root($WP_ROOT);
 branchfs_set_branch('main');

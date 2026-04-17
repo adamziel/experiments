@@ -1,0 +1,537 @@
+name: branched-wp release
+
+# Release pipeline for the `gitpress` single-binary distribution of
+# branched-wp. Builds a per-platform self-contained tarball containing
+# a statically-linked PHP (via static-php-cli) with the `branchfs`
+# extension compiled directly into the binary, a platform-matching Dolt
+# binary, and the bundled WordPress source + vendored plugins.
+#
+# NOTE: branchfs used to ship as a separate branchfs.so loaded at
+# runtime, but static musl PHP is built without HAVE_LIBDL and so can't
+# dlopen any extension. branchfs is now a first-class spc extension —
+# see branched-wp/ci/spc-branchfs/ for the integration.
+#
+# Triggers:
+#   - push of a tag matching `v*` → full release upload to GitHub Releases.
+#   - workflow_dispatch with dry_run=true → artifacts attach to the workflow
+#     run only (no Release touched), useful for testing before tagging.
+#
+# The matrix covers the four tier-1 targets. Windows is not yet supported —
+# see branched-wp/LIMITATIONS.md for the port blockers.
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Upload artifacts to workflow run instead of Release'
+        required: false
+        default: 'true'
+        type: boolean
+
+permissions:
+  contents: write   # needed for softprops/action-gh-release
+
+concurrency:
+  group: branched-wp-release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # static-php-cli extension list. `branchfs` is our in-repo extension,
+  # compiled into the static PHP binary by spc (see
+  # branched-wp/ci/spc-branchfs/). Adding/removing entries invalidates
+  # the spc workdir cache (extension set is part of the cache key).
+  SPC_EXTENSIONS: "branchfs,mbstring,mysqli,pdo_mysql,sqlite3,pdo_sqlite,phar,tokenizer,fileinfo,filter,session"
+  # Pin static-php-cli to a known-good ref. Bump manually when we want a
+  # newer PHP minor or an spc fix.
+  SPC_REF: "2.4.0"
+  PHP_VERSION: "8.2"
+
+jobs:
+  build:
+    name: build ${{ matrix.os-tag }}-${{ matrix.arch-tag }}
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: branched-wp
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os-tag: linux
+            arch-tag: x86_64
+            runner: ubuntu-24.04
+            dolt-archive: dolt-linux-amd64
+            rust-target: x86_64-unknown-linux-musl
+          - os-tag: linux
+            arch-tag: aarch64
+            runner: ubuntu-24.04-arm
+            dolt-archive: dolt-linux-arm64
+            rust-target: aarch64-unknown-linux-musl
+          - os-tag: macos
+            arch-tag: x86_64
+            # Intel-mac runners; GitHub retired macos-13, use the
+            # last Intel-labelled image (macos-15-intel) until it too
+            # is removed, at which point Intel macOS support needs
+            # a self-hosted runner.
+            runner: macos-15-intel
+            dolt-archive: dolt-darwin-amd64
+            rust-target: x86_64-apple-darwin
+          - os-tag: macos
+            arch-tag: aarch64
+            runner: macos-14
+            dolt-archive: dolt-darwin-arm64
+            rust-target: aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---------------------------------------------------------------
+      # Resolve a stable, human-readable version string once. On a tag
+      # push it's the tag without the leading 'v'. On workflow_dispatch
+      # it's "dry-<short-sha>" so nothing collides with real releases.
+      # ---------------------------------------------------------------
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          # Tag push → real release version (strip leading v).
+          # Branch push or workflow_dispatch → dry-<short sha>, which also
+          # skips the "Attach to GitHub Release" step below.
+          if [ "${{ github.event_name }}" = "push" ] && [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="dry-${GITHUB_SHA::7}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          echo "artifact-name=gitpress-${v}-${{ matrix.os-tag }}-${{ matrix.arch-tag }}" >> "$GITHUB_OUTPUT"
+
+      # ---------------------------------------------------------------
+      # Host PHP — only needed to *run* static-php-cli itself. The
+      # actual release PHP comes from spc's build output below.
+      # ---------------------------------------------------------------
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          tools: composer
+          coverage: none
+
+      # Cache keys:
+      #   spc-<target>-<php>-<spc ref>-<extensions>
+      # Any change to SPC_EXTENSIONS or SPC_REF invalidates. Per-target
+      # because the artifacts inside buildroot/ are platform-specific.
+      # Cancel early if the runner isn't available (macos-15-intel in
+      # particular is not enabled everywhere yet). Pre-compute a stable
+      # extension-set hash for the cache key — cache keys reject commas,
+      # so we can't embed SPC_EXTENSIONS literally.
+      - name: Compute extension-set + branchfs-source hash
+        id: ext-hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          # shasum is present on both Linux and macOS runners; sha256sum is
+          # Linux-only. Both emit "<hex>  -" on stdin input.
+          # Include branchfs source files in the hash: they get compiled
+          # into the spc-built PHP, so a change must invalidate the cache.
+          h=$(
+            { printf '%s\n' "$SPC_EXTENSIONS"
+              shasum -a 256 ext/branchfs.c ext/branchfs.h ext/config.m4
+              shasum -a 256 ci/spc-branchfs/Branchfs.php ci/spc-branchfs/integrate.sh
+            } | shasum -a 256 | cut -c1-12
+          )
+          echo "hash=$h" >> "$GITHUB_OUTPUT"
+
+      - name: Cache static-php-cli workdir
+        id: spc-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            branched-wp/.spc/downloads
+            branched-wp/.spc/source
+            branched-wp/.spc/buildroot
+          key: spc-${{ matrix.os-tag }}-${{ matrix.arch-tag }}-php${{ env.PHP_VERSION }}-spc${{ env.SPC_REF }}-ext${{ steps.ext-hash.outputs.hash }}
+
+      - name: Install static-php-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .spc
+          cd .spc
+          if [ ! -d static-php-cli ]; then
+            git clone --depth 1 --branch "${SPC_REF}" \
+              https://github.com/crazywhalecc/static-php-cli.git
+          fi
+          cd static-php-cli
+          composer install --no-dev --no-interaction
+
+      # Teach spc about our in-repo `branchfs` extension so it gets
+      # compiled *into* the static PHP binary (no runtime dlopen needed —
+      # musl-static PHP is built without HAVE_LIBDL and refuses to load
+      # external .so files). integrate.sh merges an entry into spc's
+      # config/ext.json and installs a Builder class that copies our
+      # branchfs.c/.h/config.m4 into source/php-src/ext/branchfs/ right
+      # before ./buildconf runs. Idempotent — safe on cache hit.
+      - name: Integrate branchfs into static-php-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          ci/spc-branchfs/integrate.sh .spc/static-php-cli
+
+      - name: Build static PHP + extensions (incl. branchfs)
+        shell: bash
+        # spc hits GitHub release assets + raw.githubusercontent for
+        # pre-built libs. Shared runner IPs exhaust the 60 req/hr
+        # unauthenticated limit quickly; GITHUB_TOKEN bumps that to
+        # 5000 req/hr and is plumbed via spc/store/CurlHook.
+        #
+        # SPC_BRANCHFS_SOURCE tells our Builder class where to pull
+        # branchfs.c/.h/config.m4 from. Must be an absolute path
+        # because spc cd's between directories.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          SPC_BRANCHFS_SOURCE: ${{ github.workspace }}/branched-wp/ext
+        run: |
+          set -euo pipefail
+          cd .spc/static-php-cli
+          # `doctor` auto-installs build deps (compiler, autotools, etc.)
+          # and is idempotent; safe to re-run on a cache hit.
+          ./bin/spc doctor --auto-fix
+          ./bin/spc download --with-php="${PHP_VERSION}" --for-extensions="${SPC_EXTENSIONS}" --prefer-pre-built
+          # spc's internal sanity check runs `php -r "echo \"hello\";"`
+          # via PHP's exec() which swallows stderr — if branchfs's MINIT
+          # fails or prints a warning at startup, the symptom is an
+          # opaque "cli failed sanity check" with no hint why. Let spc
+          # try first, but on failure re-run the same check with stderr
+          # captured so we get an actionable message on the next push.
+          set +e
+          ./bin/spc build "${SPC_EXTENSIONS}" --build-cli --debug
+          spc_rc=$?
+          set -e
+          echo "=== post-build diagnostic (runs even on spc failure) ==="
+          if [ -x ./buildroot/bin/php ]; then
+            echo '--- php -v (stderr merged) ---'
+            ./buildroot/bin/php -v 2>&1 || true
+            echo '--- php -r "echo hello;" (stderr merged) ---'
+            ./buildroot/bin/php -r 'echo "hello\n";' 2>&1
+            echo "--- explicit exit status ---"
+            ./buildroot/bin/php -r 'echo "hello\n";' >/dev/null 2>&1; echo "exit=$?"
+            echo '--- php -m (stderr merged) ---'
+            ./buildroot/bin/php -m 2>&1 || true
+          else
+            echo "(no buildroot/bin/php yet — spc failed before deploy)"
+          fi
+          if [ "$spc_rc" -ne 0 ]; then
+            echo "spc build exited $spc_rc" >&2
+            exit "$spc_rc"
+          fi
+          # Sanity-check the built PHP has all requested exts, including
+          # branchfs (which lives in the binary, not a .so).
+          ./buildroot/bin/php -r 'foreach (explode(",", getenv("SPC_EXTENSIONS")) as $e) { if (!extension_loaded(trim($e))) { fwrite(STDERR, "missing: $e\n"); exit(1);} } echo "all extensions present\n";'
+          # Explicit branchfs assertion for log-scrapability.
+          if ! ./buildroot/bin/php -m | grep -qi '^branchfs$'; then
+            echo "FATAL: branchfs not in php -m output" >&2
+            ./buildroot/bin/php -m >&2
+            exit 1
+          fi
+          echo "branchfs statically built into PHP ✓"
+
+      # ---------------------------------------------------------------
+      # Stage the runtime directory that gitpress's build.rs consumes
+      # when GITPRESS_RUNTIME_DIR is set: runtime/bin/php, bin/dolt.
+      # There's no lib/branchfs.so anymore — branchfs is compiled into
+      # the spc PHP binary above. See build.rs:build_runtime_bundle_from_dir.
+      # ---------------------------------------------------------------
+      - name: Stage runtime/bin/php
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p runtime/bin runtime/lib
+          cp .spc/static-php-cli/buildroot/bin/php runtime/bin/php
+          chmod +x runtime/bin/php
+
+      - name: Download matching Dolt binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Dolt's release assets follow `<archive>.tar.gz` for linux/mac.
+          archive="${{ matrix.dolt-archive }}"
+          url="https://github.com/dolthub/dolt/releases/latest/download/${archive}.tar.gz"
+          curl -fsSL "$url" -o /tmp/dolt.tgz
+          mkdir -p /tmp/dolt-unpack
+          tar -xzf /tmp/dolt.tgz -C /tmp/dolt-unpack
+          # Archive contains <archive>/bin/dolt — copy out.
+          cp "/tmp/dolt-unpack/${archive}/bin/dolt" runtime/bin/dolt
+          chmod +x runtime/bin/dolt
+          runtime/bin/dolt version
+
+      # ---------------------------------------------------------------
+      # Unit suite — runs against the just-built static PHP which has
+      # branchfs statically compiled in. No separate ext/branchfs.so is
+      # built for the release path; the Makefile's .so build is kept
+      # only for local dev with a dynamically-linked Homebrew/apt PHP.
+      #
+      # BRANCHFS_BUILTIN=1 tells the Makefile to skip the
+      # `-d extension=$(CURDIR)/ext/branchfs.so` flag (redundant and
+      # noisy when branchfs is already in the PHP binary) and to drop
+      # the ext/branchfs.so build dependency for test targets.
+      # ---------------------------------------------------------------
+      - name: Unit tests (make test-all)
+        shell: bash
+        env:
+          PHP: ${{ github.workspace }}/branched-wp/.spc/static-php-cli/buildroot/bin/php
+          BRANCHFS_BUILTIN: "1"
+        run: |
+          set -euo pipefail
+          # Point make test-all at the spc-built PHP by overriding the
+          # `php` command it shells out to.
+          PHP_BIN="$PHP"
+          export PATH="$(dirname "$PHP_BIN"):$PATH"
+          which php
+          php -v
+          php -m | grep -i '^branchfs$'
+          make test-all
+
+      # ---------------------------------------------------------------
+      # Lightweight e2e smoke: spin up dev stack with the bundled
+      # binaries ONLY, then run test_sqlite_clone_minimal.sh.
+      # ---------------------------------------------------------------
+      - name: Fetch WordPress 6.5 source for e2e
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p e2e
+          # e2e/wp-src/ is what dev.sh expects. wp.zip ships in the repo
+          # but may be stale across PHP versions — use the official
+          # tarball here so the dev stack boots cleanly regardless.
+          if [ ! -d e2e/wp-src ]; then
+            curl -fsSL https://wordpress.org/wordpress-6.5.tar.gz -o /tmp/wp.tgz
+            tar -C e2e -xzf /tmp/wp.tgz
+            mv e2e/wordpress e2e/wp-src
+          fi
+
+      - name: Run e2e smoke (test_sqlite_clone_minimal.sh)
+        shell: bash
+        # Hard cap: this step has hung indefinitely in earlier iterations
+        # when `git clone` over the dev stack stalled. A per-step timeout
+        # gives us a real error message and releases the runner instead
+        # of burning 6h on one stuck job. 15 min is generous — a clean
+        # run does dev.sh (~30s) + git clone (~60-120s per LIMITATIONS)
+        # + WP boot probe (~30s) well within that budget.
+        timeout-minutes: 15
+        env:
+          BUNDLED_PHP: ${{ github.workspace }}/branched-wp/runtime/bin/php
+          BUNDLED_DOLT: ${{ github.workspace }}/branched-wp/runtime/bin/dolt
+        run: |
+          set -euo pipefail
+          # Preflight: confirm the bundled binaries actually execute and
+          # branchfs is statically present in the PHP binary. dev.sh
+          # auto-detects via `php -m` and skips the -d extension flag
+          # when branchfs is already loaded.
+          "$BUNDLED_PHP" -r \
+            'if(!extension_loaded("branchfs")){fwrite(STDERR,"branchfs not built into PHP\n");exit(1);} echo "branchfs statically present\n";'
+          "$BUNDLED_DOLT" version
+          # Start the dev stack with bundled binaries only. dev.sh
+          # respects PHP_BIN and DOLT env vars.
+          export PHP_BIN="$BUNDLED_PHP"
+          export DOLT="$BUNDLED_DOLT"
+          # Background dev.sh so the shell doesn't hold it open.
+          nohup bash e2e/dev.sh > /tmp/dev.log 2>&1 &
+          DEV_PID=$!
+          echo "dev.sh PID=$DEV_PID"
+          # Wait for the site to come up (dev.sh normally takes ~30s).
+          for i in $(seq 1 90); do
+            if curl -sf -H "Host: wp.localhost" -o /dev/null http://127.0.0.1:18080/; then
+              echo "dev stack up after ${i}s"
+              break
+            fi
+            if ! kill -0 "$DEV_PID" 2>/dev/null; then
+              echo "dev.sh died early:" >&2
+              tail -60 /tmp/dev.log >&2
+              exit 1
+            fi
+            sleep 1
+          done
+          if ! curl -sf -H "Host: wp.localhost" -o /dev/null http://127.0.0.1:18080/; then
+            echo "dev stack never came up" >&2
+            tail -80 /tmp/dev.log >&2
+            exit 1
+          fi
+          # Run the minimal test. Wrap with a portable 300s timeout so a
+          # hung `git clone` against the dev stack surfaces as a clean
+          # timeout + log dump rather than a stuck job. `timeout(1)`
+          # isn't in macOS coreutils by default; use perl alarm which
+          # exists on both runner images.
+          set +e
+          perl -e 'use POSIX; alarm shift; exec @ARGV; die "exec:$!"' \
+            300 env PHP_BIN="$BUNDLED_PHP" bash e2e/test_sqlite_clone_minimal.sh
+          rc=$?
+          set -e
+          # perl with alarm exits 142 (128 + SIGALRM=14); coreutils
+          # timeout exits 124. Dump logs on either signature.
+          if [ "$rc" -eq 142 ] || [ "$rc" -eq 124 ]; then
+            echo "=== e2e test timed out (>300s) — dev.log tail ===" >&2
+            tail -120 /tmp/dev.log >&2 || true
+          fi
+          # Shut down dev stack. dev.sh ends in `tail -f php-server.log`,
+          # which means bash's TERM trap is deferred until the current
+          # foreground command returns — and `tail -f` never does. So
+          # `wait $DEV_PID` after a plain SIGTERM would block forever
+          # (previously burned ~2h of runner time before cancellation).
+          # Kill the tail -f child first so bash's trap can fire, then
+          # SIGTERM the shell itself, then SIGKILL anything left. We
+          # deliberately skip `wait` — the job-level timeout-minutes:15
+          # is the outer safety net.
+          pkill -P "$DEV_PID" -x tail 2>/dev/null || true
+          kill -TERM "$DEV_PID" 2>/dev/null || true
+          for _ in 1 2 3 4 5; do
+            kill -0 "$DEV_PID" 2>/dev/null || break
+            sleep 1
+          done
+          kill -KILL "$DEV_PID" 2>/dev/null || true
+          # Mop up any surviving dev-stack children (dolt, php -S).
+          pkill -f 'dolt sql-server.*--port=13306' 2>/dev/null || true
+          pkill -f 'php.*18080' 2>/dev/null || true
+          exit "$rc"
+
+      # ---------------------------------------------------------------
+      # Build gitpress, consuming the pre-staged runtime directory.
+      # ---------------------------------------------------------------
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
+
+      - name: Cache cargo registry + target
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            branched-wp/target
+          key: cargo-${{ matrix.rust-target }}-${{ hashFiles('branched-wp/Cargo.lock') }}
+
+      # Linux musl targets need `musl-tools` for the `musl-gcc` linker.
+      - name: Install musl toolchain (Linux only)
+        if: matrix.os-tag == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends musl-tools
+
+      - name: Build gitpress
+        shell: bash
+        env:
+          GITPRESS_RUNTIME_DIR: ${{ github.workspace }}/branched-wp/runtime
+        run: |
+          set -euo pipefail
+          cargo build --release -p gitpress --target "${{ matrix.rust-target }}"
+          ls -la "target/${{ matrix.rust-target }}/release/gitpress"
+
+      # ---------------------------------------------------------------
+      # Package: one tar.gz containing ONLY the launcher + a README.
+      # The runtime bundle is already compiled into the launcher via
+      # `include_bytes!(env!("GITPRESS_RUNTIME_BUNDLE"))`, so shipping a
+      # second copy alongside would be ~100 MB of pure redundancy.
+      # Layout inside the tarball:
+      #   gitpress                  <- launcher (self-contained, embeds runtime)
+      #   README.txt                <- quick-start
+      # ---------------------------------------------------------------
+      - name: Package release tarball
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          name="${{ steps.version.outputs.artifact-name }}"
+          stage="/tmp/${name}"
+          mkdir -p "$stage"
+          cp "target/${{ matrix.rust-target }}/release/gitpress" "$stage/gitpress"
+          chmod +x "$stage/gitpress"
+          cat > "$stage/README.txt" <<EOF
+          gitpress ${{ steps.version.outputs.version }} — ${{ matrix.os-tag }}-${{ matrix.arch-tag }} (statically linked)
+
+          Single self-contained binary. Extracts its embedded runtime
+          (static PHP + Dolt + WordPress + branchfs) to ~/.gitpress/runtime/
+          on first run.
+
+          Usage:
+            ./gitpress start                  # launch dev stack on :18080
+            ./gitpress branch create <name>   # create a preview branch
+            ./gitpress --help
+
+          Homepage: http://localhost:18080/ (Host: wp.localhost)
+          Admin:    http://localhost:18080/wp-login.php  (admin / admin)
+
+          Full docs: https://github.com/adamziel/experiments/tree/main/branched-wp
+          Build from source: branched-wp/BUILDING.md
+          EOF
+          tar -C /tmp -czf "/tmp/${name}.tar.gz" "$name"
+          (cd /tmp && shasum -a 256 "${name}.tar.gz" > "${name}.sha256")
+          echo "tarball=/tmp/${name}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "checksum=/tmp/${name}.sha256" >> "$GITHUB_OUTPUT"
+
+      # On dry_run OR push: always upload as workflow artifact so the
+      # checksums job can pick them up. The release-attach happens in
+      # a separate step below.
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.version.outputs.artifact-name }}
+          path: |
+            /tmp/${{ steps.version.outputs.artifact-name }}.tar.gz
+            /tmp/${{ steps.version.outputs.artifact-name }}.sha256
+          retention-days: 14
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            /tmp/${{ steps.version.outputs.artifact-name }}.tar.gz
+          fail_on_unmatched_files: true
+
+  checksums:
+    name: checksums + release summary
+    needs: build
+    runs-on: ubuntu-24.04
+    if: always() && needs.build.result == 'success'
+    steps:
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compose SHA256SUMS
+        id: compose
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          # Flatten: artifacts/<name>/<name>.tar.gz + <name>.sha256
+          find artifacts -name '*.tar.gz' -print
+          (cd artifacts && find . -name '*.tar.gz' -exec shasum -a 256 {} \;) \
+            | sed 's|\./[^/]*/|  |' \
+            > out/SHA256SUMS
+          cat out/SHA256SUMS
+          # Version tag for upload naming, same logic as the build job.
+          if [ "${{ github.event_name }}" = "push" ]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=dry-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Upload SHA256SUMS as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SHA256SUMS
+          path: out/SHA256SUMS
+          retention-days: 14
+
+      - name: Attach SHA256SUMS to Release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/SHA256SUMS
+          fail_on_unmatched_files: true

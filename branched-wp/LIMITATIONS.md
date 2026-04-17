@@ -174,10 +174,64 @@ or use `curl -H "Host: <branch>.wp.localhost"`.
 
 ## OS / runtime assumptions
 
-### Linux + glibc only
+### Supported tier-1 targets (design — **not yet validated on CI**)
 
-The extension uses `fnmatch(3)` and `realpath(3)` from glibc. Not tested
-on musl (Alpine) or macOS.
+The release pipeline (`.github/workflows/branched-wp-release.yml`)
+targets these four platforms for every tag:
+
+| OS | Arch | Libc | Dolt build |
+| --- | --- | --- | --- |
+| Linux | x86_64  | musl (static) | `dolt-linux-amd64` |
+| Linux | aarch64 | musl (static) | `dolt-linux-arm64` |
+| macOS | x86_64  | Apple libSystem | `dolt-darwin-amd64` |
+| macOS | aarch64 | Apple libSystem | `dolt-darwin-arm64` |
+
+`ext/branchfs.c` uses only POSIX APIs (`fnmatch(3)`, `realpath(3)`,
+`<sys/stat.h>`, `<dirent.h>`) available on Linux (glibc + musl) and
+Darwin. On macOS the `Makefile` switches the linker to produce a
+`-bundle` with `-undefined dynamic_lookup` so undefined PHP/Zend
+symbols resolve at `dlopen()` time — but only in local-dev mode.
+
+The release pipeline compiles branchfs *into* the static PHP binary
+as a first-class static-php-cli extension (see
+`branched-wp/ci/spc-branchfs/`) — musl-static PHP is built without
+`HAVE_LIBDL`, so `dlopen()`-based loading of an external `.so` is
+impossible on the Linux legs. The builtin approach sidesteps that
+entirely and also removes an extra file from the shipped bundle.
+The Makefile's `.so` build and `-d extension=...` entrypoints are
+retained for local development with a dynamically-linked Homebrew /
+apt PHP; `e2e/dev.sh` and the test harness auto-detect which mode
+is in effect.
+
+Other Unix-likes (FreeBSD, OpenBSD, Solaris-family) *should* work in
+theory but aren't part of CI; run at your own risk.
+
+### Windows: not yet supported
+
+The branchfs C extension, its Makefile, and the gitpress packaging
+don't target Windows. Port blockers:
+
+- **No native `fnmatch(3)`.** Windows CRT doesn't expose it; we'd
+  need to vendor a BSD-licensed polyfill (e.g. from musl or the
+  Android Bionic tree).
+- **`realpath(3)` vs `_fullpath` / `GetFullPathNameW`.** Semantics
+  differ (symlink resolution, case folding, drive-letter roots). The
+  wrapper that overrides PHP's `realpath()` would need a Windows
+  branch that translates between POSIX-shaped virtual paths and
+  Windows canonicalization.
+- **Build system divergence.** PHP on Windows uses MSVC + a
+  `phpize`-less `configure.js` / `config.w32` pipeline. Our current
+  `config.m4` + glibc-friendly `Makefile` can't be retargeted with a
+  cross-compiler; a separate MSBuild/NMake config needs to be
+  written.
+- **Path separator + case-insensitive semantics.** The overlay
+  assumes forward slashes and case-sensitive lookups; both
+  assumptions are baked into the SQLite `files` table layout and the
+  `branchfs://` URL parser. A real port would need a compatibility
+  layer in `store_*` and everywhere `"/"` is used as a separator.
+
+Tracking placeholder: `WP_BRANCHED_WINDOWS_ISSUE` — no GitHub issue
+is filed yet; search for this string when one is opened.
 
 ### PHP 8.2 only
 

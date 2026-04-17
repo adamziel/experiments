@@ -17,12 +17,30 @@ fn main() -> Result<()> {
 
     println!("cargo:rerun-if-env-changed=GITPRESS_PHP_BIN");
     println!("cargo:rerun-if-env-changed=GITPRESS_DOLT_BIN");
-
-    ensure_branchfs_binary(repo_root)?;
+    println!("cargo:rerun-if-env-changed=GITPRESS_RUNTIME_DIR");
 
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
     let bundle_path = out_dir.join("gitpress-runtime.tar.gz");
-    build_runtime_bundle(repo_root, &bundle_path)?;
+
+    // Two modes:
+    //   1. GITPRESS_RUNTIME_DIR is set → CI/cross-compile mode. A pre-staged
+    //      directory contains bin/php, bin/dolt, and optionally
+    //      lib/branchfs.so built for the target platform. Release builds
+    //      now compile branchfs *into* the static PHP binary (spc
+    //      builtin ext) so lib/branchfs.so is absent; it is still
+    //      supported for dynamic-PHP runtime bundles. Host tooling
+    //      (make, ldd, readelf) is never invoked — critical when
+    //      building for a foreign arch.
+    //   2. Unset → local-dev fallback. Build ext/branchfs.so via `make`,
+    //      resolve host php/dolt via PATH, and capture their shared-lib
+    //      closure with ldd + readelf (Linux glibc only).
+    if let Ok(runtime_dir) = env::var("GITPRESS_RUNTIME_DIR") {
+        let runtime_dir = PathBuf::from(runtime_dir);
+        build_runtime_bundle_from_dir(repo_root, &runtime_dir, &bundle_path)?;
+    } else {
+        ensure_branchfs_binary(repo_root)?;
+        build_runtime_bundle(repo_root, &bundle_path)?;
+    }
 
     println!(
         "cargo:rustc-env=GITPRESS_RUNTIME_BUNDLE={}",
@@ -84,6 +102,95 @@ fn build_runtime_bundle(repo_root: &Path, bundle_path: &Path) -> Result<()> {
     add_file(&mut tar, repo_root, "e2e/bootstrap_wp.php")?;
     add_file(&mut tar, repo_root, "e2e/wp.zip")?;
     add_portable_runtime(&mut tar, repo_root)?;
+
+    tar.finish()?;
+    let encoder = tar.into_inner()?;
+    encoder.finish()?;
+    Ok(())
+}
+
+/// Pre-staged runtime mode: the caller has already produced
+///   $GITPRESS_RUNTIME_DIR/bin/php
+///   $GITPRESS_RUNTIME_DIR/bin/dolt
+/// for the target platform, plus optionally
+///   $GITPRESS_RUNTIME_DIR/lib/branchfs.so
+/// when PHP is dynamically linked. The release pipeline builds branchfs
+/// *into* a static PHP via spc, so lib/branchfs.so is usually absent —
+/// the runtime launcher detects this and skips the extension flag.
+/// We just tar the PHP/WP sources + available artifacts, without
+/// invoking make/ldd/readelf on the host.
+fn build_runtime_bundle_from_dir(
+    repo_root: &Path,
+    runtime_dir: &Path,
+    bundle_path: &Path,
+) -> Result<()> {
+    let php_bin = runtime_dir.join("bin/php");
+    let dolt_bin = runtime_dir.join("bin/dolt");
+    let branchfs_so = runtime_dir.join("lib/branchfs.so");
+
+    for (label, path) in [("bin/php", &php_bin), ("bin/dolt", &dolt_bin)] {
+        if !path.exists() {
+            bail!(
+                "GITPRESS_RUNTIME_DIR={} is missing {}",
+                runtime_dir.display(),
+                label
+            );
+        }
+    }
+
+    println!("cargo:rerun-if-changed={}", php_bin.display());
+    println!("cargo:rerun-if-changed={}", dolt_bin.display());
+    println!("cargo:rerun-if-changed={}", branchfs_so.display());
+
+    let file = File::create(bundle_path).with_context(|| {
+        format!(
+            "failed to create runtime bundle at {}",
+            bundle_path.display()
+        )
+    })?;
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut tar = Builder::new(encoder);
+
+    add_tree(&mut tar, repo_root, "scripts")?;
+    add_tree(&mut tar, repo_root, "sql")?;
+    add_tree(&mut tar, repo_root, "vendor")?;
+    add_tree(&mut tar, repo_root, "wp-plugin")?;
+    // branchfs.so is optional: when PHP has branchfs compiled in (the
+    // static-musl release path), there is no separate .so to ship.
+    if branchfs_so.exists() {
+        add_file_as(&mut tar, &branchfs_so, "ext/branchfs.so")?;
+    }
+    add_file(&mut tar, repo_root, "e2e/router.php")?;
+    add_file(&mut tar, repo_root, "e2e/bootstrap_wp.php")?;
+    add_file(&mut tar, repo_root, "e2e/wp.zip")?;
+
+    // With a statically-linked PHP and a statically-linked dolt we have no
+    // shared-lib closure to capture — just drop the two binaries at the
+    // same portable-runtime/ paths the runtime extractor expects.
+    add_file_as(&mut tar, &php_bin, "portable-runtime/bin/php")?;
+    add_file_as(&mut tar, &dolt_bin, "portable-runtime/bin/dolt")?;
+
+    // If the caller staged any extra shared libraries under
+    // $GITPRESS_RUNTIME_DIR/lib/ (not branchfs.so itself), include them.
+    // Static PHP builds won't ship any; dynamic builds will.
+    let lib_dir = runtime_dir.join("lib");
+    if lib_dir.is_dir() {
+        for entry in WalkDir::new(&lib_dir).min_depth(1).max_depth(1) {
+            let entry = entry?;
+            if !entry.file_type().is_file() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name == "branchfs.so" {
+                continue;
+            }
+            add_file_as(
+                &mut tar,
+                entry.path(),
+                &format!("portable-runtime/lib/{name}"),
+            )?;
+        }
+    }
 
     tar.finish()?;
     let encoder = tar.into_inner()?;

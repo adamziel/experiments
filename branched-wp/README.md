@@ -238,23 +238,65 @@ bash e2e/test_findings_live.sh
 ## `gitpress` Single Binary
 
 There is now a Rust CLI that packages the PHP runtime assets, vendored
-git server code, WordPress bootstrap helpers, `ext/branchfs.so`, the
-`php` executable, the `dolt` executable, and the shared libraries needed
-by the embedded PHP runtime into a single static launcher binary + extracted
-runtime bundle.
+git server code, WordPress bootstrap helpers, `ext/branchfs.so`, a
+statically-linked `php` executable, the `dolt` executable, and any
+supporting libraries into a single launcher binary + embedded runtime
+bundle.
 
-Build it from the repo root:
+### Downloads
+
+Pre-built release tarballs are published to the GitHub Releases page
+for every tag. Pick the asset matching your machine:
+
+| Platform | Asset name |
+| --- | --- |
+| Linux x86_64 (glibc or musl) | `gitpress-<version>-linux-x86_64.tar.gz` |
+| Linux aarch64 (glibc or musl) | `gitpress-<version>-linux-aarch64.tar.gz` |
+| macOS x86_64 (Intel) | `gitpress-<version>-macos-x86_64.tar.gz` |
+| macOS aarch64 (Apple Silicon) | `gitpress-<version>-macos-aarch64.tar.gz` |
+
+Install + verify:
 
 ```bash
-rustup target add x86_64-unknown-linux-musl
+VERSION=0.1.0   # replace with the latest release tag (without the leading 'v')
+OS_ARCH=linux-x86_64   # or linux-aarch64, macos-x86_64, macos-aarch64
+BASE="https://github.com/adamziel/experiments/releases/download/v${VERSION}"
+
+curl -fsSL -O "${BASE}/gitpress-${VERSION}-${OS_ARCH}.tar.gz"
+curl -fsSL -O "${BASE}/SHA256SUMS"
+shasum -a 256 -c SHA256SUMS --ignore-missing
+tar xzf "gitpress-${VERSION}-${OS_ARCH}.tar.gz"
+cd "gitpress-${VERSION}-${OS_ARCH}"
+./gitpress start
+```
+
+Windows is **not yet supported** — see `LIMITATIONS.md` for the port
+blockers and tracking placeholder.
+
+**Pre-built availability today:** only `linux-x86_64` ships as a
+Release asset. The macOS matrix legs are blocked on CI billing; you
+can reproduce the same tarball locally on a Mac following
+[`BUILDING.md`](BUILDING.md) — the build is fully scripted.
+
+### Building from source
+
+For a production-shaped tarball (static PHP with branchfs compiled in,
+identical to what CI produces), follow [`BUILDING.md`](BUILDING.md).
+Full build is ~20–40 min cold.
+
+For local dev iteration against your system PHP (fast rebuilds, no
+spc), the Makefile's existing flow still works:
+
+```bash
+rustup target add x86_64-unknown-linux-musl   # or your platform triple
 cargo build --release -p gitpress
 # or
 make gitpress
 ```
 
-No host `php`, `dolt`, or glibc runtime installation is required for the
-launcher itself. `gitpress` is built as a static musl binary and extracts
-its own bundled PHP + Dolt runtime by default.
+In that mode the launcher walks the host's `ldd` / dylib closure
+instead of using a pre-built static PHP. Fine for a dev machine; not
+what CI produces.
 
 Start a local site + branch router + git smart-HTTP server:
 

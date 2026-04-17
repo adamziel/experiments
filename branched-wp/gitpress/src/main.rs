@@ -585,12 +585,18 @@ fn start_php_server(
 
 fn php_base_command(layout: &Layout, runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
     let mut command = php_command(runtime, shared);
+    // branchfs may be either a separate .so (dynamic-PHP runtime bundle)
+    // or statically compiled into the PHP binary (release path — spc
+    // musl-static PHP has no dlopen support). Only pass -d extension=
+    // when the .so is actually present; otherwise the static module is
+    // already registered at startup.
+    let branchfs_so = layout.runtime_dir.join("ext/branchfs.so");
+    if branchfs_so.exists() {
+        command
+            .arg("-d")
+            .arg(format!("extension={}", branchfs_so.display()));
+    }
     command
-        .arg("-d")
-        .arg(format!(
-            "extension={}",
-            layout.runtime_dir.join("ext/branchfs.so").display()
-        ))
         .arg("-d")
         .arg("display_errors=Off")
         .arg("-d")
@@ -633,13 +639,25 @@ fn php_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
         return Command::new(php_bin);
     }
 
-    let mut command = Command::new(&runtime.loader);
-    command
-        .arg("--library-path")
-        .arg(&runtime.lib_dir)
-        .arg(&runtime.php)
-        .env("LD_LIBRARY_PATH", &runtime.lib_dir);
-    command
+    // Two PHP binary flavors ship in the runtime bundle:
+    //   1. Dynamic PHP (local-dev, dynamic Homebrew/apt build): needs the
+    //      staged `lib/ld-linux-x86-64.so.2` + `lib/` shared libs, invoked
+    //      via the loader so we're independent of the host's glibc.
+    //   2. Static PHP (release path, spc-built musl binary with branchfs
+    //      compiled in): self-contained, no loader or lib/ dir shipped.
+    // Probe for the loader: when absent, the binary is static, invoke
+    // directly. Otherwise wrap with the loader to pin the library path.
+    if runtime.loader.exists() {
+        let mut command = Command::new(&runtime.loader);
+        command
+            .arg("--library-path")
+            .arg(&runtime.lib_dir)
+            .arg(&runtime.php)
+            .env("LD_LIBRARY_PATH", &runtime.lib_dir);
+        command
+    } else {
+        Command::new(&runtime.php)
+    }
 }
 
 fn dolt_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {

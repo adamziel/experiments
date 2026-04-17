@@ -21,6 +21,10 @@ $db = new SQLite3($DB);
 $db->exec(file_get_contents(__DIR__ . '/../sql/schema.sql'));
 $db->close();
 
+// macOS canonicalizes /tmp → /private/tmp via symlink; branchfs needs
+// the canonical root or relative-path lookups miss.
+@mkdir($ROOT, 0755, true);
+$ROOT = realpath($ROOT) ?: $ROOT;
 branchfs_set_db($DB);
 branchfs_set_root($ROOT);
 
@@ -50,8 +54,13 @@ assert_true($blobs_after_delete === $blobs_before_delete,
     "blobs unchanged after branch delete (gc hasn't run yet)");
 
 // Dry-run first.
-$branchctl = escapeshellcmd(PHP_BINARY)
-           . ' -d extension=' . escapeshellarg(realpath(__DIR__ . '/../ext/branchfs.so'))
+// When branchfs is statically compiled into PHP (release path), there
+// is no .so on disk; PHP_BINARY already has branchfs loaded and would
+// refuse -d extension=... for an already-registered module. Pass the
+// flag only if the .so exists (local-dev path).
+$so_path = realpath(__DIR__ . '/../ext/branchfs.so');
+$ext_flag = $so_path !== false ? ' -d extension=' . escapeshellarg($so_path) : '';
+$branchctl = escapeshellcmd(PHP_BINARY) . $ext_flag
            . ' ' . escapeshellarg(__DIR__ . '/../scripts/branchctl.php');
 $out = [];
 $rc  = 0;
