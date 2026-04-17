@@ -127,6 +127,18 @@ jobs:
       #   spc-<target>-<php>-<spc ref>-<extensions>
       # Any change to SPC_EXTENSIONS or SPC_REF invalidates. Per-target
       # because the artifacts inside buildroot/ are platform-specific.
+      # Cancel early if the runner isn't available (macos-15-intel in
+      # particular is not enabled everywhere yet). Pre-compute a stable
+      # extension-set hash for the cache key — cache keys reject commas,
+      # so we can't embed SPC_EXTENSIONS literally.
+      - name: Compute extension-set hash
+        id: ext-hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          h=$(printf '%s' "$SPC_EXTENSIONS" | sha256sum | cut -c1-12)
+          echo "hash=$h" >> "$GITHUB_OUTPUT"
+
       - name: Cache static-php-cli workdir
         id: spc-cache
         uses: actions/cache@v4
@@ -135,7 +147,7 @@ jobs:
             branched-wp/.spc/downloads
             branched-wp/.spc/source
             branched-wp/.spc/buildroot
-          key: spc-${{ matrix.os-tag }}-${{ matrix.arch-tag }}-php${{ env.PHP_VERSION }}-spc${{ env.SPC_REF }}-${{ hashFiles('branched-wp/.github/spc-extensions.txt') }}-${{ env.SPC_EXTENSIONS }}
+          key: spc-${{ matrix.os-tag }}-${{ matrix.arch-tag }}-php${{ env.PHP_VERSION }}-spc${{ env.SPC_REF }}-ext${{ steps.ext-hash.outputs.hash }}
 
       - name: Install static-php-cli
         shell: bash
