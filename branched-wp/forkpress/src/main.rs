@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,14 +13,14 @@ use std::thread;
 use std::time::{Duration, Instant};
 use zip::ZipArchive;
 
-const RUNTIME_BUNDLE: &[u8] = include_bytes!(env!("GITPRESS_RUNTIME_BUNDLE"));
+const RUNTIME_BUNDLE: &[u8] = include_bytes!(env!("FORKPRESS_RUNTIME_BUNDLE"));
 const STARTUP_WARNING_FILTER: &str = "Missing arginfo";
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "gitpress",
+    name = "forkpress",
     version,
-    about = "Single-binary wrapper for BranchFS WordPress + git"
+    about = "Single-binary WordPress with git-style branching"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -37,7 +37,7 @@ enum Commands {
 
 #[derive(Args, Debug, Clone)]
 struct SharedPaths {
-    #[arg(long, default_value = ".gitpress")]
+    #[arg(long, default_value = ".forkpress")]
     work_dir: PathBuf,
 
     #[arg(long)]
@@ -64,7 +64,7 @@ struct StartArgs {
     #[arg(long, default_value = "localhost")]
     root_host: String,
 
-    #[arg(long, default_value = "GitPress")]
+    #[arg(long, default_value = "ForkPress")]
     site_title: String,
 }
 
@@ -98,8 +98,6 @@ struct Layout {
 struct PortableRuntime {
     php: PathBuf,
     dolt: PathBuf,
-    loader: PathBuf,
-    lib_dir: PathBuf,
 }
 
 struct ChildGuard {
@@ -128,7 +126,7 @@ fn main() {
     let code = match run() {
         Ok(code) => code,
         Err(err) => {
-            eprintln!("gitpress: {err:#}");
+            eprintln!("forkpress: {err:#}");
             1
         }
     };
@@ -210,7 +208,7 @@ fn start_command(args: StartArgs) -> Result<i32> {
 
 fn branch_command(args: BranchPassthrough) -> Result<i32> {
     if args.args.is_empty() {
-        bail!("branch requires branchctl arguments, e.g. `gitpress branch create marketing`");
+        bail!("branch requires branchctl arguments, e.g. `forkpress branch create marketing`");
     }
 
     let layout = Layout::new(args.shared.work_dir.clone())?;
@@ -219,7 +217,7 @@ fn branch_command(args: BranchPassthrough) -> Result<i32> {
 
     if !layout.db_path.exists() || !layout.bootstrap_marker.exists() {
         bail!(
-            "no bootstrapped site found in {}. Run `gitpress start` first",
+            "no bootstrapped site found in {}. Run `forkpress start` first",
             layout.work_dir.display()
         );
     }
@@ -261,8 +259,8 @@ impl Layout {
             php_error_log: work_dir.join("logs/php-errors.log"),
             php_server_log: work_dir.join("logs/php-server.log"),
             dolt_server_log: work_dir.join("logs/dolt-server.log"),
-            runtime_ready_marker: work_dir.join("runtime/.gitpress-runtime-ready"),
-            bootstrap_marker: work_dir.join(".gitpress-bootstrap-complete"),
+            runtime_ready_marker: work_dir.join("runtime/.forkpress-runtime-ready"),
+            bootstrap_marker: work_dir.join(".forkpress-bootstrap-complete"),
             work_dir,
         })
     }
@@ -274,19 +272,35 @@ impl PortableRuntime {
         Self {
             php: root.join("bin/php"),
             dolt: root.join("bin/dolt"),
-            loader: root.join("lib/ld-linux-x86-64.so.2"),
-            lib_dir: root.join("lib"),
         }
     }
 }
 
 fn absolutize(path: PathBuf) -> Result<PathBuf> {
-    if path.is_absolute() {
-        return Ok(path);
+    // Make the path absolute and normalize `.` / `..` components. We can't use
+    // std::fs::canonicalize because the directory may not exist yet (first run).
+    // A literal `./` survives a naive join (e.g. `cwd + "./.forkpress"` becomes
+    // `cwd/./.forkpress`), and branchfs's prefix matching does not treat that
+    // as equal to `cwd/.forkpress`, so this normalization is load-bearing.
+    let raw = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .context("failed to read current working directory")?
+            .join(path)
+    };
+
+    let mut out = PathBuf::new();
+    for comp in raw.components() {
+        match comp {
+            std::path::Component::ParentDir => {
+                out.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
     }
-    Ok(std::env::current_dir()
-        .context("failed to read current working directory")?
-        .join(path))
+    Ok(out)
 }
 
 fn prepare_runtime(layout: &Layout) -> Result<()> {
@@ -478,7 +492,7 @@ fn ensure_dolt_repo(
 
     fs::create_dir_all(&layout.dolt_repo_dir)?;
     let output = dolt_command(runtime, shared)
-        .args(["init", "--name", "gitpress", "--email", "gitpress@local"])
+        .args(["init", "--name", "forkpress", "--email", "forkpress@local"])
         .current_dir(&layout.dolt_repo_dir)
         .output()
         .context("failed to initialize bundled dolt repo")?;
@@ -583,14 +597,11 @@ fn start_php_server(
     Ok(guard)
 }
 
-fn php_base_command(layout: &Layout, runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
+fn php_base_command(_layout: &Layout, runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
+    // branchfs is compiled into the php binary as a builtin extension
+    // (see scripts/build-dist.sh), so no -d extension=... flag is needed.
     let mut command = php_command(runtime, shared);
     command
-        .arg("-d")
-        .arg(format!(
-            "extension={}",
-            layout.runtime_dir.join("ext/branchfs.so").display()
-        ))
         .arg("-d")
         .arg("display_errors=Off")
         .arg("-d")
@@ -632,14 +643,9 @@ fn php_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
     if let Some(php_bin) = &shared.php_bin {
         return Command::new(php_bin);
     }
-
-    let mut command = Command::new(&runtime.loader);
-    command
-        .arg("--library-path")
-        .arg(&runtime.lib_dir)
-        .arg(&runtime.php)
-        .env("LD_LIBRARY_PATH", &runtime.lib_dir);
-    command
+    // Static-php-cli produces a self-contained php binary (static on Linux,
+    // only linked against libSystem on macOS). No loader shim needed.
+    Command::new(&runtime.php)
 }
 
 fn dolt_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
@@ -686,5 +692,11 @@ fn tcp_port_open(host: &str, port: u16) -> bool {
 }
 
 fn process_alive(pid: u32) -> bool {
-    Path::new("/proc").join(pid.to_string()).exists()
+    // kill(pid, 0) returns 0 if the pid exists and is signalable, -1 with
+    // errno=EPERM if it exists but we can't signal it, -1 with errno=ESRCH
+    // if it's gone. Works on both macOS and Linux.
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }

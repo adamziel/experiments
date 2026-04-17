@@ -9,3 +9,6 @@ e2e/dolt-data/
 e2e/*.db
 /target/
 /.gitpress/
+/.forkpress/
+/.build/
+/dist/

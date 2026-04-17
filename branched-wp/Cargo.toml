@@ -1,4 +1,4 @@
 [workspace]
-members = ["gitpress"]
-default-members = ["gitpress"]
+members = ["forkpress"]
+default-members = ["forkpress"]
 resolver = "2"

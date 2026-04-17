@@ -1962,17 +1962,57 @@ ZEND_NAMED_FUNCTION(branchfs_override_glob) {
  * Section 10: Module lifecycle
  * ================================================================ */
 
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_set_db, 0, 0, 1)
+    ZEND_ARG_INFO(0, path)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_set_root, 0, 0, 1)
+    ZEND_ARG_INFO(0, path)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_set_branch, 0, 0, 1)
+    ZEND_ARG_INFO(0, branch)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_get_branch, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_activate, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_deactivate, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_create_branch, 0, 0, 1)
+    ZEND_ARG_INFO(0, name)
+    ZEND_ARG_INFO(0, parent)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_import_file, 0, 0, 3)
+    ZEND_ARG_INFO(0, real_path)
+    ZEND_ARG_INFO(0, branch)
+    ZEND_ARG_INFO(0, virtual_path)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_import_dir, 0, 0, 2)
+    ZEND_ARG_INFO(0, branch)
+    ZEND_ARG_INFO(0, virtual_path)
+ZEND_END_ARG_INFO()
+
+ZEND_BEGIN_ARG_INFO_EX(arginfo_branchfs_is_active, 0, 0, 0)
+ZEND_END_ARG_INFO()
+
 static const zend_function_entry branchfs_functions[] = {
-    PHP_FE(branchfs_set_db, NULL)
-    PHP_FE(branchfs_set_root, NULL)
-    PHP_FE(branchfs_set_branch, NULL)
-    PHP_FE(branchfs_get_branch, NULL)
-    PHP_FE(branchfs_activate, NULL)
-    PHP_FE(branchfs_deactivate, NULL)
-    PHP_FE(branchfs_create_branch, NULL)
-    PHP_FE(branchfs_import_file, NULL)
-    PHP_FE(branchfs_import_dir, NULL)
-    PHP_FE(branchfs_is_active, NULL)
+    PHP_FE(branchfs_set_db,        arginfo_branchfs_set_db)
+    PHP_FE(branchfs_set_root,      arginfo_branchfs_set_root)
+    PHP_FE(branchfs_set_branch,    arginfo_branchfs_set_branch)
+    PHP_FE(branchfs_get_branch,    arginfo_branchfs_get_branch)
+    PHP_FE(branchfs_activate,      arginfo_branchfs_activate)
+    PHP_FE(branchfs_deactivate,    arginfo_branchfs_deactivate)
+    PHP_FE(branchfs_create_branch, arginfo_branchfs_create_branch)
+    PHP_FE(branchfs_import_file,   arginfo_branchfs_import_file)
+    PHP_FE(branchfs_import_dir,    arginfo_branchfs_import_dir)
+    PHP_FE(branchfs_is_active,     arginfo_branchfs_is_active)
     PHP_FE_END
 };
 

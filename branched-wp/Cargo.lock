@@ -250,13 +250,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "gitpress"
+name = "forkpress"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
  "ctrlc",
  "flate2",
+ "libc",
  "tar",
  "walkdir",
  "zip",

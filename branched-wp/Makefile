@@ -48,9 +48,9 @@ CFLAGS  := -fPIC -shared -O2 -Wall -DCOMPILE_DL_BRANCHFS -DHAVE_CONFIG_H=0 $(SQL
 INCLUDES := $(PHP_EXTRA_INCS)
 LDFLAGS := $(SQLITE_LIBS)
 RUSTUP ?= $(shell command -v rustup 2>/dev/null)
-GITPRESS_TARGET ?= x86_64-unknown-linux-musl
+FORKPRESS_TARGET ?= x86_64-unknown-linux-musl
 
-.PHONY: all clean test test-compat init-db test-all gitpress
+.PHONY: all clean test test-compat init-db test-all forkpress dist
 
 all: ext/branchfs.so
 
@@ -80,6 +80,13 @@ test-all: ext/branchfs.so
 clean:
 	rm -f ext/branchfs.so /tmp/branchfs_test*.db /tmp/branchfs_wp*.db
 
-gitpress:
-	@if [ -n "$(RUSTUP)" ]; then $(RUSTUP) target add $(GITPRESS_TARGET); fi
-	cargo build --release --target $(GITPRESS_TARGET) -p gitpress
+# Build the per-target runtime bundle (php + dolt + branchfs.so) consumed by
+# forkpress. First-time build compiles static PHP from source and takes
+# ~3-5 minutes on Apple Silicon; subsequent runs reuse the cached PHP.
+dist:
+	scripts/build-dist.sh
+
+# Build the shippable forkpress binary for the host target. Requires `dist`
+# to have run at least once.
+forkpress:
+	cargo build --release -p forkpress

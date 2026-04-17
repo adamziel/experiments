@@ -235,34 +235,39 @@ bash e2e/test_sqlite_clone.sh
 bash e2e/test_findings_live.sh
 ```
 
-## `gitpress` Single Binary
+## `forkpress` Single Binary
 
-There is now a Rust CLI that packages the PHP runtime assets, vendored
-git server code, WordPress bootstrap helpers, `ext/branchfs.so`, the
-`php` executable, the `dolt` executable, and the shared libraries needed
-by the embedded PHP runtime into a single static launcher binary + extracted
-runtime bundle.
+There is now a Rust CLI that packages the PHP runtime, the branchfs
+extension (compiled directly into php), the vendored git server code,
+the WordPress bootstrap helpers, and the `dolt` binary into a single
+self-contained launcher that runs on macOS and Linux with zero host
+dependencies. No system `php`, no system `dolt`, no dynamic libraries
+to worry about.
 
-Build it from the repo root:
-
-```bash
-rustup target add x86_64-unknown-linux-musl
-cargo build --release -p gitpress
-# or
-make gitpress
-```
-
-No host `php`, `dolt`, or glibc runtime installation is required for the
-launcher itself. `gitpress` is built as a static musl binary and extracts
-its own bundled PHP + Dolt runtime by default.
-
-Start a local site + branch router + git smart-HTTP server:
+Building involves two steps. The first builds a per-target runtime bundle
+(static php + dolt + branchfs baked in); the second links that bundle
+into the Rust launcher:
 
 ```bash
-./target/x86_64-unknown-linux-musl/release/gitpress start
+make dist           # one-time, ~3-5 min on Apple Silicon
+make forkpress
 ```
 
-That boots the site into `./.gitpress/` by default and serves:
+`make dist` uses [static-php-cli](https://github.com/crazywhalecc/static-php-cli)
+to compile a standalone PHP, then fetches the dolt binary, then codesigns
+(on macOS) and drops everything into `dist/<triple>/`. branchfs gets
+injected into PHP's source tree and compiled in as a builtin extension
+via `scripts/spc-patch-branchfs.php`, so the produced `php` binary has
+branchfs baked in — no external `.so` to dlopen at runtime.
+
+On first run the launcher extracts its embedded runtime into a
+work directory and boots the stack:
+
+```bash
+./target/release/forkpress start
+```
+
+That boots the site into `./.forkpress/` by default and serves:
 
 - main site at `http://localhost:18080/`
 - branch previews at `http://<branch>.localhost:18080/`
@@ -271,9 +276,13 @@ That boots the site into `./.gitpress/` by default and serves:
 Branch management is exposed through the same binary:
 
 ```bash
-./target/x86_64-unknown-linux-musl/release/gitpress branch create marketing
-./target/x86_64-unknown-linux-musl/release/gitpress branch list
+./target/release/forkpress branch create marketing
+./target/release/forkpress branch list
 ```
+
+Release artifacts for Linux (x86_64 + aarch64) and macOS (aarch64 +
+x86_64) are produced by `.github/workflows/release.yml` on every tag
+push.
 
 **Note on `wp-debug.log` warnings:** `wp-config.php` defines
 `WP_HTTP_BLOCK_EXTERNAL` to keep WordPress from reaching out to
