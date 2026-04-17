@@ -26,6 +26,22 @@ impl Store {
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
+    pub fn open_and_init(db_path: &Path) -> Result<Self> {
+        let conn = Connection::open(db_path)
+            .with_context(|| format!("opening db {:?}", db_path))?;
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.execute_batch(include_str!("../../sql/schema.sql"))?;
+        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+    }
+
+    pub fn list_branches(&self) -> Result<Vec<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare("SELECT name FROM branches ORDER BY name")?;
+        let names = stmt.query_map([], |r| r.get(0))?
+            .collect::<Result<Vec<String>, _>>()?;
+        Ok(names)
+    }
+
     pub fn branch_id(&self, branch_name: &str) -> Result<i64> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -398,5 +414,107 @@ mod tests {
         let files = store.list_files("main").unwrap();
         let found = files.iter().any(|f| f.path == "gone.txt");
         assert!(!found, "tombstoned file should not appear in listing");
+    }
+
+    #[test]
+    fn test_overwrite() {
+        let store = make_store();
+        store.write_file("main", "a.txt", b"v1", "test").unwrap();
+        store.write_file("main", "a.txt", b"v2", "test").unwrap();
+        let data = store.read_file("main", "a.txt").unwrap();
+        assert_eq!(data, b"v2");
+    }
+
+    #[test]
+    fn test_list_files_includes_dirs() {
+        let store = make_store();
+        store.write_file("main", "sub/file.txt", b"data", "test").unwrap();
+        let files = store.list_files("main").unwrap();
+        let sub_dir = files.iter().find(|f| f.path == "sub");
+        assert!(sub_dir.is_some(), "sub dir should appear in listing");
+        assert!(sub_dir.unwrap().is_dir, "sub should be a directory");
+    }
+
+    #[test]
+    fn test_create_dir() {
+        let store = make_store();
+        store.create_dir("main", "mydir").unwrap();
+        let files = store.list_files("main").unwrap();
+        let dir = files.iter().find(|f| f.path == "mydir");
+        assert!(dir.is_some(), "mydir should appear in listing");
+        assert!(dir.unwrap().is_dir, "mydir should be a directory");
+    }
+
+    #[test]
+    fn test_cow_child_overrides_parent() {
+        let store = make_store();
+        store.write_file("main", "f.txt", b"parent", "test").unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO branches(name, parent_branch) VALUES('child', 'main')",
+                [],
+            ).unwrap();
+        }
+        store.write_file("child", "f.txt", b"child", "test").unwrap();
+        let child_data = store.read_file("child", "f.txt").unwrap();
+        let parent_data = store.read_file("main", "f.txt").unwrap();
+        assert_eq!(child_data, b"child");
+        assert_eq!(parent_data, b"parent");
+    }
+
+    #[test]
+    fn test_tombstone_hides_parent_file() {
+        let store = make_store();
+        store.write_file("main", "f.txt", b"data", "test").unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO branches(name, parent_branch) VALUES('child', 'main')",
+                [],
+            ).unwrap();
+        }
+        store.delete_file("child", "f.txt").unwrap();
+        let files = store.list_files("child").unwrap();
+        let found = files.iter().any(|f| f.path == "f.txt");
+        assert!(!found, "tombstoned file should not appear in child listing");
+    }
+
+    #[test]
+    fn test_commit_snapshot_contents() {
+        let store = make_store();
+        store.write_file("main", "snap.txt", b"data", "test").unwrap();
+        let conn = store.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM fs_commit_files WHERE path = 'snap.txt'",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(count > 0, "snap.txt should appear in commit snapshot");
+    }
+
+    #[test]
+    fn test_multi_commit_chain() {
+        let store = make_store();
+        store.write_file("main", "file1.txt", b"data1", "test").unwrap();
+        store.write_file("main", "file2.txt", b"data2", "test").unwrap();
+        let conn = store.conn.lock().unwrap();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM fs_commits",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 2);
+        let second_parent: Option<i64> = conn.query_row(
+            "SELECT parent_id FROM fs_commits ORDER BY id DESC LIMIT 1",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        let first_id: i64 = conn.query_row(
+            "SELECT id FROM fs_commits ORDER BY id ASC LIMIT 1",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(second_parent, Some(first_id), "second commit parent_id should equal first commit id");
     }
 }

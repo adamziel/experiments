@@ -36,6 +36,10 @@ impl Session {
 pub async fn run_smb_server(addr: &str, store: Arc<Store>) -> Result<()> {
     let listener = TcpListener::bind(addr).await?;
     log::info!("SMB2 server listening on {}", addr);
+    run_smb_server_on(listener, store).await
+}
+
+pub async fn run_smb_server_on(listener: TcpListener, store: Arc<Store>) -> Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
         log::info!("SMB2 connection from {}", peer);
@@ -45,6 +49,65 @@ pub async fn run_smb_server(addr: &str, store: Arc<Store>) -> Result<()> {
                 log::warn!("SMB2 connection error: {}", e);
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::smb_proto::SMB2_MAGIC;
+    use tempfile::NamedTempFile;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    fn make_test_store() -> Arc<Store> {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_path_buf();
+        std::mem::forget(f);
+        Arc::new(Store::open_and_init(&path).unwrap())
+    }
+
+    #[tokio::test]
+    async fn test_smb_negotiate() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let store = make_test_store();
+
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            let _ = handle_connection(socket, store).await;
+        });
+
+        let mut stream = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        // Build SMB2 Negotiate request: 64-byte header + 38-byte body
+        let mut msg = [0u8; 102];
+        // Header
+        msg[0..4].copy_from_slice(SMB2_MAGIC);
+        msg[4..6].copy_from_slice(&64u16.to_le_bytes()); // StructureSize
+        // command = 0 (NEGOTIATE), flags = 0, message_id = 0 — all zeros by default
+        // Body at offset 64
+        msg[64..66].copy_from_slice(&36u16.to_le_bytes()); // StructureSize
+        msg[66..68].copy_from_slice(&1u16.to_le_bytes()); // DialectCount
+        msg[68..70].copy_from_slice(&1u16.to_le_bytes()); // SecurityMode
+        // ClientGuid (16 bytes at 76..92): zeros
+        // ClientStartTime (8 bytes at 92..100): zeros
+        msg[100..102].copy_from_slice(&0x0210u16.to_le_bytes()); // SMB 2.1 dialect
+
+        let len = (msg.len() as u32).to_be_bytes();
+        stream.write_all(&len).await.unwrap();
+        stream.write_all(&msg).await.unwrap();
+        stream.flush().await.unwrap();
+
+        // Read NetBIOS-framed response
+        let mut len_buf = [0u8; 4];
+        stream.read_exact(&mut len_buf).await.unwrap();
+        let resp_len = u32::from_be_bytes(len_buf) as usize;
+        let mut resp = vec![0u8; resp_len];
+        stream.read_exact(&mut resp).await.unwrap();
+
+        assert_eq!(&resp[0..4], SMB2_MAGIC.as_slice(), "response must start with SMB2 magic");
+        assert_eq!(&resp[8..12], &[0x00, 0x00, 0x00, 0x00], "status must be STATUS_SUCCESS");
     }
 }
 

@@ -142,6 +142,95 @@ pub fn unix_to_filetime(unix_secs: i64) -> u64 {
     offset + (unix_secs as u64) * 10_000_000
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_valid_header_buf() -> [u8; 64] {
+        let mut buf = [0u8; 64];
+        buf[0..4].copy_from_slice(SMB2_MAGIC);
+        buf[4..6].copy_from_slice(&64u16.to_le_bytes()); // StructureSize
+        buf[12..14].copy_from_slice(&CMD_NEGOTIATE.to_le_bytes());
+        buf[16..20].copy_from_slice(&0u32.to_le_bytes()); // flags
+        buf[24..32].copy_from_slice(&42u64.to_le_bytes()); // message_id
+        buf[32..36].copy_from_slice(&0u32.to_le_bytes()); // reserved
+        buf[36..40].copy_from_slice(&7u32.to_le_bytes()); // tree_id
+        buf[40..48].copy_from_slice(&99u64.to_le_bytes()); // session_id
+        buf
+    }
+
+    #[test]
+    fn test_magic_bytes() {
+        assert_eq!(SMB2_MAGIC, b"\xFESMB");
+    }
+
+    #[test]
+    fn test_header_parse_valid() {
+        let buf = make_valid_header_buf();
+        let hdr = Smb2Header::parse(&buf).expect("should parse valid header");
+        assert_eq!(hdr.command, CMD_NEGOTIATE);
+        assert_eq!(hdr.message_id, 42);
+        assert_eq!(hdr.session_id, 99);
+        assert_eq!(hdr.tree_id, 7);
+    }
+
+    #[test]
+    fn test_header_parse_too_short() {
+        let buf = [0u8; 32];
+        assert!(Smb2Header::parse(&buf).is_none());
+    }
+
+    #[test]
+    fn test_header_parse_bad_magic() {
+        let mut buf = [0u8; 64];
+        buf[0..4].copy_from_slice(b"BADM");
+        assert!(Smb2Header::parse(&buf).is_none());
+    }
+
+    #[test]
+    fn test_write_response_length() {
+        let buf = make_valid_header_buf();
+        let hdr = Smb2Header::parse(&buf).unwrap();
+        let mut resp = Vec::new();
+        hdr.write_response(&mut resp, STATUS_SUCCESS);
+        assert_eq!(resp.len(), 64);
+    }
+
+    #[test]
+    fn test_write_response_magic() {
+        let buf = make_valid_header_buf();
+        let hdr = Smb2Header::parse(&buf).unwrap();
+        let mut resp = Vec::new();
+        hdr.write_response(&mut resp, STATUS_SUCCESS);
+        assert_eq!(&resp[0..4], SMB2_MAGIC.as_slice());
+    }
+
+    #[test]
+    fn test_encode_utf16le_roundtrip() {
+        let s = "hello";
+        let encoded = encode_utf16le(s);
+        let decoded = decode_utf16le(&encoded);
+        assert_eq!(decoded, s);
+    }
+
+    #[test]
+    fn test_encode_utf16le_known() {
+        let encoded = encode_utf16le("A");
+        assert_eq!(encoded, vec![0x41, 0x00]);
+    }
+
+    #[test]
+    fn test_unix_to_filetime_epoch() {
+        assert_eq!(unix_to_filetime(0), 116_444_736_000_000_000u64);
+    }
+
+    #[test]
+    fn test_unix_to_filetime_known() {
+        let expected = 116_444_736_000_000_000u64 + 10_000_000_000_000_000u64;
+        assert_eq!(unix_to_filetime(1_000_000_000), expected);
+    }
+}
+
 pub fn now_filetime() -> u64 {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

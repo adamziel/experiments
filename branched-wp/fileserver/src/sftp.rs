@@ -192,35 +192,40 @@ impl russh_sftp::server::Handler for SftpSession {
         let h = self.handles.get_mut(&handle).ok_or(StatusCode::NoSuchFile)?;
         if h.dir_offset == 0 && h.dir_entries.is_empty() {
             if h.branch.is_empty() {
-                return Err(StatusCode::Eof);
-            }
-            let all = self.store.list_files(&h.branch).map_err(|_| StatusCode::Failure)?;
-            let prefix = if h.path.is_empty() {
-                String::new()
+                // Root listing: show all branches as directories
+                let branches = self.store.list_branches().map_err(|_| StatusCode::Failure)?;
+                h.dir_entries = branches.into_iter()
+                    .map(|name| File::new(name, make_attrs(0, 0, true)))
+                    .collect();
             } else {
-                format!("{}/", h.path.trim_matches('/'))
-            };
-            h.dir_entries = all
-                .iter()
-                .filter(|e| {
-                    let p = e.path.trim_matches('/');
-                    if prefix.is_empty() {
-                        !p.contains('/')
-                    } else {
-                        p.starts_with(&prefix) && !p[prefix.len()..].contains('/')
-                    }
-                })
-                .map(|e| {
-                    let name = e
-                        .path
-                        .trim_matches('/')
-                        .rsplit('/')
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
-                    File::new(name, make_attrs(e.size as u64, e.mtime as u32, e.is_dir))
-                })
-                .collect();
+                let all = self.store.list_files(&h.branch).map_err(|_| StatusCode::Failure)?;
+                let prefix = if h.path.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}/", h.path.trim_matches('/'))
+                };
+                h.dir_entries = all
+                    .iter()
+                    .filter(|e| {
+                        let p = e.path.trim_matches('/');
+                        if prefix.is_empty() {
+                            !p.contains('/')
+                        } else {
+                            p.starts_with(&prefix) && !p[prefix.len()..].contains('/')
+                        }
+                    })
+                    .map(|e| {
+                        let name = e
+                            .path
+                            .trim_matches('/')
+                            .rsplit('/')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        File::new(name, make_attrs(e.size as u64, e.mtime as u32, e.is_dir))
+                    })
+                    .collect();
+            }
         }
         if h.dir_offset >= h.dir_entries.len() {
             return Err(StatusCode::Eof);
@@ -401,4 +406,109 @@ pub async fn run_sftp_server(addr: &str, store: Arc<Store>) -> Result<()> {
     log::info!("SFTP server listening on {}", addr);
     server.run_on_address(config, addr).await?;
     Ok(())
+}
+
+pub async fn run_sftp_server_on(listener: tokio::net::TcpListener, store: Arc<Store>) -> Result<()> {
+    let key = russh::keys::key::KeyPair::generate_ed25519()
+        .ok_or_else(|| anyhow::anyhow!("failed to generate ed25519 key"))?;
+
+    let config = Arc::new(russh::server::Config {
+        auth_rejection_time: std::time::Duration::from_millis(100),
+        auth_rejection_time_initial: Some(std::time::Duration::from_millis(0)),
+        keys: vec![key],
+        ..Default::default()
+    });
+
+    let mut server = SshServer { store };
+    server.run_on_socket(config, &listener).await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use russh_sftp::client::SftpSession;
+    use std::sync::Arc;
+    use tempfile::NamedTempFile;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn make_test_store() -> Arc<Store> {
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_path_buf();
+        std::mem::forget(f);
+        Arc::new(Store::open_and_init(&path).unwrap())
+    }
+
+    struct TestClientHandler;
+
+    #[async_trait::async_trait]
+    impl russh::client::Handler for TestClientHandler {
+        type Error = anyhow::Error;
+
+        async fn check_server_key(
+            &mut self,
+            _server_public_key: &russh::keys::key::PublicKey,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+    }
+
+    async fn connect_sftp(addr: std::net::SocketAddr) -> SftpSession {
+        let config = Arc::new(russh::client::Config::default());
+        let mut session = russh::client::connect(config, addr, TestClientHandler)
+            .await
+            .unwrap();
+        session.authenticate_none("user").await.unwrap();
+        let channel = session.channel_open_session().await.unwrap();
+        channel.request_subsystem(true, "sftp").await.unwrap();
+        SftpSession::new(channel.into_stream()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_sftp_write_and_read() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let store = make_test_store();
+
+        tokio::spawn(async move {
+            let _ = run_sftp_server_on(listener, store).await;
+        });
+
+        // Give server a moment to start accepting
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let sftp = connect_sftp(addr).await;
+
+        // Write file
+        let mut file = sftp.create("/main/hello.txt").await.unwrap();
+        file.write_all(b"integration").await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+
+        // Read file back
+        let mut file = sftp.open("/main/hello.txt").await.unwrap();
+        let mut buf = Vec::new();
+        file.read_to_end(&mut buf).await.unwrap();
+        assert_eq!(buf, b"integration");
+    }
+
+    #[tokio::test]
+    async fn test_sftp_list_root() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let store = make_test_store();
+
+        tokio::spawn(async move {
+            let _ = run_sftp_server_on(listener, store).await;
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let sftp = connect_sftp(addr).await;
+        let entries = sftp.read_dir("/").await.unwrap();
+        let names: Vec<String> = entries.into_iter()
+            .map(|e| e.file_name().to_string())
+            .collect();
+        assert!(names.contains(&"main".to_string()), "root listing should contain 'main' branch, got: {:?}", names);
+    }
 }
