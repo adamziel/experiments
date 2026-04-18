@@ -64,6 +64,16 @@ unchanged. The chunk size is a compile-time constant
 implementations. `branchctl gc` cleans orphaned rows in both `blobs`
 *and* `blob_chunks` in one transaction.
 
+**Inline GC on branch delete.** `branchctl delete <branch>` collects the
+set of blob hashes referenced only by the deleted branch's `files` and
+`fs_commits` rows and reclaims the orphaned ones in the same transaction
+that drops the branch. Cost is bounded by the deleted branch's blob set,
+not the whole store, so delete stays O(deleted branch) instead of
+O(full blob table). Both `blobs` and `blob_chunks` rows are dropped;
+shared blobs (still referenced by a sibling or parent branch) are left
+in place. A stdout line `branchfs: reclaimed N orphaned blob(s), M
+bytes` appears when N > 0.
+
 ### SF2a — Concurrent-writer resilience
 Every PHP writer (branchctl, merge.php, checkpoint.php) opens SQLite with
 `busyTimeout(15000)` (15 s), and the long-running critical transactions
@@ -133,6 +143,7 @@ forkpress start my-blog.fp
   [--sftp-port 2222]  [--smb-port 445]
   [--mysql-port 3306]
   [--workers N]            # PHP HTTP worker count (default: min(8, num_cpus*2))
+  [--gc-interval <dur>]    # background branchctl gc cadence; off by default
   [--dolt-bind 0.0.0.0]    # deprecated no-op, kept for compat
   [--no-fileserver]
   [--logs ./my-blog.logs]
@@ -153,6 +164,16 @@ left unset in that mode so behaviour is byte-identical to the
 pre-multi-worker baseline. The flag is honoured on Linux and macOS;
 Windows is not a target (see Non-requirements).
 
+`--gc-interval <dur>` enables a background thread that runs
+`branchctl gc` on a recurring cadence while the server is up. The
+value is a single-unit duration — one of `<N>s`, `<N>m`, or `<N>h`
+(e.g. `--gc-interval 300s`, `--gc-interval 10m`, `--gc-interval 1h`).
+Compound forms like `1h30m` are not supported. Omitting the flag (or
+passing `0` / an invalid value) leaves background GC disabled; inline
+GC on branch delete runs either way. Each tick logs stdout/stderr to
+`<work-dir>/logs/gc.log` so the primary PHP and fileserver logs stay
+unpolluted.
+
 ### CLI3 — `forkpress branch <site.fp> <subcommand>`
 
 | Subcommand | Description |
@@ -166,8 +187,8 @@ Windows is not a target (see Non-requirements).
 | `merge <from> --into <target>` | 3-way file + DB merge |
 | `reset <name> <hash>` | Reset branch to commit |
 | `rollback <name>` | Reset to previous commit |
-| `delete <name>` | Delete branch + its DB tables + ancestor snapshot rows |
-| `gc` | Remove unreferenced blobs |
+| `delete <name>` | Delete branch + its DB tables + ancestor snapshot rows. Runs an inline GC step that reclaims blobs uniquely owned by the deleted branch — no waiting for a manual `gc` pass. |
+| `gc` | Remove unreferenced blobs across the whole store (shares `fs_gc()` with inline delete-GC). |
 
 ### CLI4 — `forkpress backup <source.fp> <dest.fp>`
 Consistent hot-copy of a running site via SQLite's `VACUUM INTO`.

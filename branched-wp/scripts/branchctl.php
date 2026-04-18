@@ -315,6 +315,116 @@ function fs_find_commit_by_hash(SQLite3 $db, int $branch_id, string $hash): ?arr
     return $row ?: null;
 }
 
+/**
+ * Delete orphaned blobs from the `blobs` store.
+ *
+ * Two modes:
+ *   - $candidate_hashes empty  → full GC: scan the whole blobs table, delete
+ *                                 any hash not referenced by files or
+ *                                 fs_commit_files.
+ *   - $candidate_hashes given  → narrow GC: only those hashes are checked.
+ *                                 Used by the inline-GC path after a branch
+ *                                 delete, so cost scales with the deleted
+ *                                 branch's blob set, not the whole store.
+ *
+ * Chunked blobs (TODO2 #2) store their payload in `blob_chunks`; this helper
+ * removes chunk rows in the same transaction as the blobs row so a half-GC'd
+ * state is never observable.
+ *
+ * Returns [deleted_count, bytes_reclaimed].
+ */
+function fs_gc(SQLite3 $db, array $candidate_hashes = []): array {
+    if (empty($candidate_hashes)) {
+        /* Full sweep: collect every orphan by anti-joining the reference tables. */
+        $to_delete = [];
+        $bytes_free = 0;
+        $r = $db->query(
+            "SELECT hash, size FROM blobs "
+          . "WHERE hash NOT IN (SELECT blob_hash FROM files WHERE blob_hash IS NOT NULL) "
+          . "  AND hash NOT IN (SELECT blob_hash FROM fs_commit_files WHERE blob_hash IS NOT NULL)"
+        );
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $to_delete[] = $row['hash'];
+            $bytes_free += (int)$row['size'];
+        }
+    } else {
+        /* Narrow sweep: per-hash existence check against both reference tables.
+         * Prepared statements reused across the candidate list. */
+        $candidate_hashes = array_values(array_unique(array_filter(
+            $candidate_hashes,
+            fn($h) => is_string($h) && $h !== ''
+        )));
+        $chk_files = $db->prepare(
+            "SELECT 1 FROM files WHERE blob_hash = :h LIMIT 1"
+        );
+        $chk_commits = $db->prepare(
+            "SELECT 1 FROM fs_commit_files WHERE blob_hash = :h LIMIT 1"
+        );
+        $size_q = $db->prepare("SELECT size FROM blobs WHERE hash = :h LIMIT 1");
+
+        $to_delete = [];
+        $bytes_free = 0;
+        foreach ($candidate_hashes as $h) {
+            $chk_files->bindValue(':h', $h, SQLITE3_TEXT);
+            $r1 = $chk_files->execute();
+            $has_file = (bool)$r1->fetchArray(SQLITE3_NUM);
+            $r1->finalize();
+            $chk_files->reset();
+            if ($has_file) continue;
+
+            $chk_commits->bindValue(':h', $h, SQLITE3_TEXT);
+            $r2 = $chk_commits->execute();
+            $has_commit = (bool)$r2->fetchArray(SQLITE3_NUM);
+            $r2->finalize();
+            $chk_commits->reset();
+            if ($has_commit) continue;
+
+            $size_q->bindValue(':h', $h, SQLITE3_TEXT);
+            $sr = $size_q->execute();
+            $srow = $sr->fetchArray(SQLITE3_NUM);
+            $sr->finalize();
+            $size_q->reset();
+            if (!$srow) continue; // blob row already gone; nothing to reclaim
+
+            $to_delete[] = $h;
+            $bytes_free += (int)$srow[0];
+        }
+    }
+
+    if (empty($to_delete)) {
+        return [0, 0];
+    }
+
+    /* One transaction covers both tables so a mid-GC crash either leaves the
+     * blob reachable (no change) or removes both chunk rows and metadata. */
+    $in_outer_tx = false;
+    try {
+        $db->exec('BEGIN IMMEDIATE');
+    } catch (\Throwable $e) {
+        // If we're already inside a caller's transaction (inline-GC path),
+        // reuse it rather than nesting — SQLite does not support nested tx.
+        $in_outer_tx = true;
+    }
+    try {
+        $del_chunks = $db->prepare("DELETE FROM blob_chunks WHERE blob_hash = :h");
+        $del_blob   = $db->prepare("DELETE FROM blobs WHERE hash = :h");
+        foreach ($to_delete as $h) {
+            $del_chunks->bindValue(':h', $h, SQLITE3_TEXT);
+            $del_chunks->execute();
+            $del_chunks->reset();
+            $del_blob->bindValue(':h', $h, SQLITE3_TEXT);
+            $del_blob->execute();
+            $del_blob->reset();
+        }
+        if (!$in_outer_tx) $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        if (!$in_outer_tx) $db->exec('ROLLBACK');
+        throw $e;
+    }
+
+    return [count($to_delete), $bytes_free];
+}
+
 function fs_digest_of_commit(SQLite3 $db, int $commit_id): string {
     $tree = [];
     $r = $db->query("SELECT path, blob_hash, is_dir FROM fs_commit_files WHERE commit_id = $commit_id");
@@ -641,30 +751,87 @@ case 'delete': {
     // a read transaction alive, which blocks DROP TABLE ("database table is locked").
     $r->finalize();
     $s->close();
-    if ($row) {
-        $bid = (int)$row[0];
-        // Drop all WordPress DB tables for this branch.
-        // Collect names first: DROPping modifies sqlite_master, which would
-        // invalidate an open cursor and cause rows to be silently skipped.
-        $prefix = "b{$bid}_wp_";
-        $ts = $db->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :p");
-        $ts->bindValue(':p', $prefix . '%', SQLITE3_TEXT);
-        $tr = $ts->execute();
-        $tables_to_drop = [];
-        while ($trow = $tr->fetchArray(SQLITE3_ASSOC)) {
-            $tables_to_drop[] = $trow['name'];
-        }
-        $tr->finalize();
-        $ts->close();
+    if (!$row) {
+        echo "branchfs: no branch named '$name'\n";
+        break;
+    }
+
+    $bid = (int)$row[0];
+
+    /* Collect candidate blob hashes BEFORE we drop the rows that reference
+     * them. Only hashes referenced by the deleted branch's rows are
+     * candidates — this bounds inline-GC work to O(deleted-branch blobs),
+     * not O(whole blob store). */
+    $candidates = [];
+    $cr = $db->query(
+        "SELECT DISTINCT blob_hash FROM files "
+      . "WHERE branch_id = $bid AND blob_hash IS NOT NULL"
+    );
+    while ($crow = $cr->fetchArray(SQLITE3_NUM)) {
+        $candidates[$crow[0]] = true;
+    }
+    $cr->finalize();
+    $cr2 = $db->query(
+        "SELECT DISTINCT fcf.blob_hash FROM fs_commit_files fcf "
+      . "JOIN fs_commits fc ON fc.id = fcf.commit_id "
+      . "WHERE fc.branch_id = $bid AND fcf.blob_hash IS NOT NULL"
+    );
+    while ($crow = $cr2->fetchArray(SQLITE3_NUM)) {
+        $candidates[$crow[0]] = true;
+    }
+    $cr2->finalize();
+    $candidate_hashes = array_keys($candidates);
+
+    // Collect DROP-TABLE targets BEFORE the transaction: DROP TABLE cannot
+    // run while an iterator over sqlite_master is open, and SQLite's DDL
+    // rules forbid schema changes mid-transaction on some builds.
+    $prefix = "b{$bid}_wp_";
+    $ts = $db->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :p");
+    $ts->bindValue(':p', $prefix . '%', SQLITE3_TEXT);
+    $tr = $ts->execute();
+    $tables_to_drop = [];
+    while ($trow = $tr->fetchArray(SQLITE3_ASSOC)) {
+        $tables_to_drop[] = $trow['name'];
+    }
+    $tr->finalize();
+    $ts->close();
+
+    $reclaimed_n = 0;
+    $reclaimed_bytes = 0;
+    $db->exec('BEGIN IMMEDIATE');
+    try {
         foreach ($tables_to_drop as $tname) {
             $db->exec("DROP TABLE IF EXISTS \"$tname\"");
         }
-        $db->exec("DELETE FROM files         WHERE branch_id = $bid");
-        $db->exec("DELETE FROM db_snapshots  WHERE branch_id = $bid");
-        $db->exec("DELETE FROM branches      WHERE id        = $bid");
-        echo "branchfs: deleted branch '$name'\n";
-    } else {
-        echo "branchfs: no branch named '$name'\n";
+        /* fs_commit_files rows are keyed by commit_id, so they must go
+         * before (or together with) the fs_commits rows to avoid orphan
+         * rows after delete. Previously, the delete path forgot fs_commits
+         * entirely — leaving stale snapshot rows that kept blobs reachable. */
+        $db->exec(
+            "DELETE FROM fs_commit_files "
+          . "WHERE commit_id IN (SELECT id FROM fs_commits WHERE branch_id = $bid)"
+        );
+        $db->exec("DELETE FROM fs_commits  WHERE branch_id = $bid");
+        $db->exec("DELETE FROM files        WHERE branch_id = $bid");
+        $db->exec("DELETE FROM db_snapshots WHERE branch_id = $bid");
+        $db->exec("DELETE FROM branches     WHERE id        = $bid");
+
+        /* Inline GC on the candidate hashes only. fs_gc is transaction-aware:
+         * it reuses our BEGIN IMMEDIATE rather than nesting. */
+        if (!empty($candidate_hashes)) {
+            [$reclaimed_n, $reclaimed_bytes] = fs_gc($db, $candidate_hashes);
+        }
+        $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        $db->exec('ROLLBACK');
+        fwrite(STDERR, "branchctl: delete failed: " . $e->getMessage() . "\n");
+        exit(5);
+    }
+
+    echo "branchfs: deleted branch '$name'\n";
+    if ($reclaimed_n > 0) {
+        printf("branchfs: reclaimed %d orphaned blob(s), %d bytes\n",
+            $reclaimed_n, $reclaimed_bytes);
     }
     break;
 }
@@ -912,33 +1079,29 @@ case 'rollback': {
 }
 
 case 'gc': {
-    /* Collect the set of blob hashes still referenced by either the live
-     * per-branch `files` table or any historical fs_commit's snapshot.
-     * Anything outside that set is unreachable and safe to delete. */
+    /* Full-store orphan sweep. Same semantics as before the fs_gc refactor:
+     * a hash is orphaned when no row in `files` or `fs_commit_files`
+     * references it. --dry-run reports without deleting. */
     $dry = !empty($flags['dry-run']);
 
     $db = sqlite_open($DB_PATH);
 
-    $live = [];
-    $r = $db->query("SELECT DISTINCT blob_hash FROM files WHERE blob_hash IS NOT NULL");
-    while ($row = $r->fetchArray(SQLITE3_NUM)) $live[$row[0]] = true;
-    $r2 = $db->query("SELECT DISTINCT blob_hash FROM fs_commit_files WHERE blob_hash IS NOT NULL");
-    while ($row = $r2->fetchArray(SQLITE3_NUM)) $live[$row[0]] = true;
-
     $total_before = (int)$db->querySingle("SELECT COUNT(*) FROM blobs");
     $bytes_before = (int)$db->querySingle("SELECT COALESCE(SUM(size), 0) FROM blobs");
 
-    $to_delete = [];
-    $bytes_free = 0;
-    $r3 = $db->query("SELECT hash, size FROM blobs");
-    while ($row = $r3->fetchArray(SQLITE3_ASSOC)) {
-        if (!isset($live[$row['hash']])) {
+    if ($dry) {
+        /* Dry-run shares fs_gc's orphan-detection query but skips the DELETE. */
+        $to_delete = [];
+        $bytes_free = 0;
+        $r = $db->query(
+            "SELECT hash, size FROM blobs "
+          . "WHERE hash NOT IN (SELECT blob_hash FROM files WHERE blob_hash IS NOT NULL) "
+          . "  AND hash NOT IN (SELECT blob_hash FROM fs_commit_files WHERE blob_hash IS NOT NULL)"
+        );
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
             $to_delete[] = $row['hash'];
             $bytes_free += (int)$row['size'];
         }
-    }
-
-    if ($dry) {
         printf("branchctl gc (--dry-run): would delete %d blobs, freeing %d bytes\n",
             count($to_delete), $bytes_free);
         printf("  total blobs: %d (%d bytes) -> %d bytes after gc\n",
@@ -946,35 +1109,21 @@ case 'gc': {
         break;
     }
 
-    if (empty($to_delete)) {
+    try {
+        [$n, $bytes_free] = fs_gc($db);
+    } catch (\Throwable $e) {
+        fwrite(STDERR, "branchctl: gc failed: " . $e->getMessage() . "\n");
+        exit(4);
+    }
+
+    if ($n === 0) {
         printf("branchctl gc: nothing to reclaim (%d blobs, %d bytes)\n",
             $total_before, $bytes_before);
         break;
     }
 
-    $db->exec('BEGIN IMMEDIATE');
-    try {
-        /* Delete chunks first (no FK-cascade guarantee on legacy DBs that
-         * were created before blob_chunks existed and then later migrated). */
-        $del_chunks = $db->prepare("DELETE FROM blob_chunks WHERE blob_hash = :h");
-        $del = $db->prepare("DELETE FROM blobs WHERE hash = :h");
-        foreach ($to_delete as $h) {
-            $del_chunks->bindValue(':h', $h, SQLITE3_TEXT);
-            $del_chunks->execute();
-            $del_chunks->reset();
-            $del->bindValue(':h', $h, SQLITE3_TEXT);
-            $del->execute();
-            $del->reset();
-        }
-        $db->exec('COMMIT');
-    } catch (\Throwable $e) {
-        $db->exec('ROLLBACK');
-        fwrite(STDERR, "branchctl: gc failed: " . $e->getMessage() . "\n");
-        exit(4);
-    }
-
     printf("branchctl gc: deleted %d blobs, reclaimed %d bytes (before: %d blobs / %d bytes)\n",
-        count($to_delete), $bytes_free, $total_before, $bytes_before);
+        $n, $bytes_free, $total_before, $bytes_before);
     break;
 }
 

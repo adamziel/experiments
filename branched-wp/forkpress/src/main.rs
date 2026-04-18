@@ -153,9 +153,88 @@ struct StartArgs {
     #[arg(long)]
     workers: Option<usize>,
 
+    /// Run `branchctl gc` on a recurring interval while the server is up.
+    /// Accepts `<N>s`, `<N>m`, or `<N>h` (e.g. `--gc-interval 1h`,
+    /// `--gc-interval 300s`). Omit, pass `0`, or pass an invalid value to
+    /// disable. Inline GC on branch delete still runs regardless.
+    #[arg(long)]
+    gc_interval: Option<String>,
+
     // Deprecated: Dolt has been removed. Accepted but ignored.
     #[arg(long, hide = true, default_value = "127.0.0.1")]
     dolt_bind: String,
+}
+
+/// Parse a duration string in one of `<N>s`, `<N>m`, `<N>h`. Returns `None`
+/// for invalid input, for a missing suffix, or for a value that resolves to
+/// zero (the caller treats `None` as "feature disabled", so `--gc-interval 0`
+/// is equivalent to not passing the flag). Compound forms like `1h30m` are
+/// NOT supported — the user-facing docs promise only a single-unit suffix.
+fn parse_duration(s: &str) -> Option<Duration> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Plain "0" → disabled (keeps the CLI ergonomic: pass `0` to turn off).
+    if s == "0" {
+        return None;
+    }
+    let (num_part, unit_secs) = if let Some(rest) = s.strip_suffix('h') {
+        (rest, 3600u64)
+    } else if let Some(rest) = s.strip_suffix('m') {
+        (rest, 60u64)
+    } else if let Some(rest) = s.strip_suffix('s') {
+        (rest, 1u64)
+    } else {
+        return None;
+    };
+    let n: u64 = num_part.trim().parse().ok()?;
+    if n == 0 {
+        return None;
+    }
+    let total = n.checked_mul(unit_secs)?;
+    Some(Duration::from_secs(total))
+}
+
+#[cfg(test)]
+mod duration_tests {
+    use super::*;
+
+    #[test]
+    fn parses_hours() {
+        assert_eq!(parse_duration("1h"), Some(Duration::from_secs(3600)));
+        assert_eq!(parse_duration("24h"), Some(Duration::from_secs(86400)));
+    }
+
+    #[test]
+    fn parses_minutes() {
+        assert_eq!(parse_duration("10m"), Some(Duration::from_secs(600)));
+        assert_eq!(parse_duration("90m"), Some(Duration::from_secs(5400)));
+    }
+
+    #[test]
+    fn parses_seconds() {
+        assert_eq!(parse_duration("90s"), Some(Duration::from_secs(90)));
+        assert_eq!(parse_duration("1s"), Some(Duration::from_secs(1)));
+    }
+
+    #[test]
+    fn zero_is_disabled() {
+        assert_eq!(parse_duration("0"), None);
+        assert_eq!(parse_duration("0s"), None);
+        assert_eq!(parse_duration("0h"), None);
+    }
+
+    #[test]
+    fn invalid_returns_none() {
+        assert_eq!(parse_duration(""), None);
+        assert_eq!(parse_duration("bogus"), None);
+        assert_eq!(parse_duration("h"), None);
+        assert_eq!(parse_duration("10"), None);   // no suffix
+        assert_eq!(parse_duration("1d"), None);   // unsupported unit
+        assert_eq!(parse_duration("1h30m"), None); // compound not supported
+        assert_eq!(parse_duration("-5s"), None);
+    }
 }
 
 /// Default PHP worker count: min(8, num_cpus * 2). Capped so we don't spawn
@@ -412,6 +491,32 @@ fn start_command(args: StartArgs) -> Result<i32> {
     })
     .context("failed to install Ctrl+C handler")?;
 
+    // Optional background GC. Off by default; enabled with --gc-interval.
+    // Inline GC on branch delete runs regardless of this flag.
+    let gc_thread = if let Some(interval_raw) = args.gc_interval.as_deref() {
+        match parse_duration(interval_raw) {
+            Some(interval) => {
+                println!("Background GC: every {}", interval_raw);
+                let stop_gc = Arc::clone(&stop);
+                let layout_gc = layout.clone();
+                let runtime_gc = runtime.clone();
+                let shared_gc = args.shared.clone();
+                Some(thread::spawn(move || {
+                    run_background_gc(stop_gc, interval, layout_gc, runtime_gc, shared_gc);
+                }))
+            }
+            None => {
+                eprintln!(
+                    "forkpress: --gc-interval {:?} is not a valid duration (expected e.g. 300s / 10m / 1h); background GC disabled",
+                    interval_raw
+                );
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     loop {
         if stop.load(Ordering::SeqCst) {
             println!("Stopping servers...");
@@ -437,7 +542,71 @@ fn start_command(args: StartArgs) -> Result<i32> {
         thread::sleep(Duration::from_millis(250));
     }
 
+    if let Some(h) = gc_thread {
+        // The GC thread checks `stop` between ticks, so it exits within one
+        // tick of the Ctrl-C; join to surface panics rather than leak.
+        let _ = h.join();
+    }
+
     Ok(0)
+}
+
+/// Background GC loop. Runs until `stop` flips true. Each tick invokes
+/// `scripts/branchctl.php gc` via the bundled PHP and appends stdout/stderr
+/// to a dedicated log file (separate from php-server.log so one stream's
+/// rotation doesn't clobber the other).
+fn run_background_gc(
+    stop: Arc<AtomicBool>,
+    interval: Duration,
+    layout: Layout,
+    runtime: PortableRuntime,
+    shared: SharedPaths,
+) {
+    let gc_log_path = layout.logs_dir.join("gc.log");
+    // Poll cadence used to observe the stop flag between ticks. Keeping it
+    // small means Ctrl-C returns near-instantly even with --gc-interval 1h.
+    let poll = Duration::from_millis(250);
+    let mut next_run = Instant::now() + interval;
+    while !stop.load(Ordering::SeqCst) {
+        if Instant::now() >= next_run {
+            if let Err(err) = run_gc_once(&layout, &runtime, &shared, &gc_log_path) {
+                let _ = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&gc_log_path)
+                    .and_then(|mut f| writeln!(f, "forkpress gc: failed: {err:#}"));
+            }
+            next_run = Instant::now() + interval;
+        }
+        thread::sleep(poll);
+    }
+}
+
+fn run_gc_once(
+    layout: &Layout,
+    runtime: &PortableRuntime,
+    shared: &SharedPaths,
+    gc_log_path: &std::path::Path,
+) -> Result<()> {
+    let log = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(gc_log_path)
+        .with_context(|| format!("failed to open {}", gc_log_path.display()))?;
+    let log_err = log.try_clone()?;
+
+    let mut cmd = php_base_command(layout, runtime, shared);
+    cmd.arg(layout.runtime_dir.join("scripts/branchctl.php"))
+        .arg("gc")
+        .env("BRANCHFS_DB", &layout.site_fp)
+        .env("BRANCHFS_SQLITE_WP_DB", &layout.site_fp)
+        .stdout(Stdio::from(log))
+        .stderr(Stdio::from(log_err));
+    let status = cmd.status().context("failed to spawn branchctl gc")?;
+    if !status.success() {
+        bail!("branchctl gc exited with {status}");
+    }
+    Ok(())
 }
 
 fn branch_command(args: BranchPassthrough) -> Result<i32> {

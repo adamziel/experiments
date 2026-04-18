@@ -169,7 +169,7 @@ hangs with no diagnostic.
 
 ---
 
-## [ ] 4. Orphaned blobs accumulate between gc runs [MEDIUM]
+## [x] 4. Orphaned blobs accumulate between gc runs [MEDIUM]
 
 **Problem**
 When a branch is deleted, its `files` rows are deleted, but the `blobs`
