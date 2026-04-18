@@ -3,10 +3,10 @@
 set -euo pipefail
 
 # --- config ---
-HTTP_PORT=19080
-SFTP_PORT=19222
-SMB_PORT=19888
-DOLT_PORT=14306
+HTTP_PORT="${FP_HTTP_PORT:-19080}"
+SFTP_PORT="${FP_SFTP_PORT:-19222}"
+SMB_PORT="${FP_SMB_PORT:-19888}"
+MYSQL_PORT="${FP_MYSQL_PORT:-19336}"
 BRANCH_NAME="sftp-test-$(date +%s)"
 MARKER="/* sftp-e2e-marker-$RANDOM */"
 PASS=0; FAIL=0
@@ -42,37 +42,41 @@ trap 'if [ -n "$FP_PID" ]; then kill "$FP_PID" 2>/dev/null || true; fi; rm -rf "
 
 # --- step 1: start forkpress ---
 step "1/6 Start forkpress"
-"$FP" start \
-    --work-dir "$WORK_DIR" \
-    --port "$HTTP_PORT" \
-    --sftp-port "$SFTP_PORT" \
-    --smb-port "$SMB_PORT" \
-    --dolt-port "$DOLT_PORT" &
-FP_PID=$!
+if [[ "${FP_RUNNING:-0}" == "1" ]]; then
+    echo "  Using existing forkpress on port $HTTP_PORT"
+    pass
+else
+    "$FP" start \
+        --work-dir "$WORK_DIR" \
+        --port "$HTTP_PORT" \
+        --sftp-port "$SFTP_PORT" \
+        --smb-port "$SMB_PORT" \
+        --mysql-port "$MYSQL_PORT" \
+        >"$WORK_DIR/fp.log" 2>&1 &
+    FP_PID=$!
 
-# wait for HTTP readiness (up to 120s)
-echo "  Waiting for HTTP on port $HTTP_PORT..."
-DEADLINE=$(( $(date +%s) + 120 ))
-HTTP_READY=0
-while [ "$(date +%s)" -lt "$DEADLINE" ]; do
-    CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$HTTP_PORT/" 2>/dev/null || true)
-    if [ "$CODE" = "200" ] || [ "$CODE" = "301" ] || [ "$CODE" = "302" ]; then
-        HTTP_READY=1
-        break
-    fi
-    # Check forkpress is still alive
-    if ! kill -0 "$FP_PID" 2>/dev/null; then
-        echo "  FAIL: forkpress exited during startup"
+    echo "  Waiting for HTTP on port $HTTP_PORT..."
+    DEADLINE=$(( $(date +%s) + 180 ))
+    HTTP_READY=0
+    while [ "$(date +%s)" -lt "$DEADLINE" ]; do
+        CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://127.0.0.1:$HTTP_PORT/" 2>/dev/null || true)
+        if [ "$CODE" = "200" ] || [ "$CODE" = "301" ] || [ "$CODE" = "302" ]; then
+            HTTP_READY=1
+            break
+        fi
+        if ! kill -0 "$FP_PID" 2>/dev/null; then
+            echo "  FAIL: forkpress exited during startup"
+            exit 1
+        fi
+        sleep 3
+    done
+
+    if [ "$HTTP_READY" = "0" ]; then
+        echo "  FAIL: timed out waiting for HTTP"
         exit 1
     fi
-    sleep 2
-done
-
-if [ "$HTTP_READY" = "0" ]; then
-    echo "  FAIL: timed out waiting for HTTP"
-    exit 1
+    pass
 fi
-pass
 
 # --- step 2: create branch ---
 step "2/6 Create branch $BRANCH_NAME"
