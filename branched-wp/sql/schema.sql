@@ -65,3 +65,23 @@ CREATE TABLE IF NOT EXISTS fs_commit_files (
 
 -- Seed the 'main' branch
 INSERT OR IGNORE INTO branches (name, parent_branch) VALUES ('main', NULL);
+
+-- Authentication: per-site user accounts and site-wide config flags.
+-- Every write surface (SFTP, SMB, MySQL proxy, git push) consults these
+-- tables; see fileserver/src/store.rs verify_user_password / auth_enabled.
+CREATE TABLE IF NOT EXISTS users (
+    username      TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    mysql_sha1    TEXT,            -- SHA1(SHA1(password)) hex; required for MySQL native auth
+    role          TEXT NOT NULL CHECK(role IN ('admin','write','read')),
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS site_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
+
+-- Brand-new site: auth is enabled by default. Existing sites created
+-- before this change get auth_enabled='0' in branchctl.php::fs_migrate().
+INSERT OR IGNORE INTO site_config (key, value) VALUES ('auth_enabled', '1');

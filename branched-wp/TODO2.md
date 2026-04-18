@@ -21,7 +21,7 @@ All tests from the first round must continue to pass (81 tests, 0 failures).
 
 ---
 
-## [ ] 1. Authentication: SFTP / SMB / MySQL proxy / git all accept any credentials [HIGH]
+## [x] 1. Authentication: SFTP / SMB / MySQL proxy / git all accept any credentials [HIGH]
 
 **Problem**
 Every write surface accepts any credentials (or none):

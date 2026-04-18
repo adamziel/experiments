@@ -1,10 +1,28 @@
 <?php
 /**
  * Initialize the BranchFS SQLite database with schema and seed data.
+ *
+ * Usage: php init_db.php <site.fp> [--admin-password PW]
+ *
+ * Admin password source (first match wins):
+ *   1. --admin-password CLI arg
+ *   2. FORKPRESS_ADMIN_PASSWORD env var
+ *   3. random 24-char password, printed to stdout once
  */
 
 $db_path = $argv[1] ?? __DIR__ . '/../branchfs.db';
 $schema_path = __DIR__ . '/../sql/schema.sql';
+
+// Parse optional --admin-password flag.
+$admin_pw_arg = null;
+for ($i = 2; $i < count($argv); $i++) {
+    if ($argv[$i] === '--admin-password' && isset($argv[$i + 1])) {
+        $admin_pw_arg = $argv[$i + 1];
+        $i++;
+    } elseif (strpos($argv[$i], '--admin-password=') === 0) {
+        $admin_pw_arg = substr($argv[$i], strlen('--admin-password='));
+    }
+}
 
 echo "Initializing BranchFS database at: $db_path\n";
 
@@ -30,5 +48,48 @@ if (!$result) {
 
 echo "Database initialized successfully.\n";
 echo "  - 'main' branch created\n";
+
+// Seed the default admin user (only if none exists yet — re-running init
+// on the same file must not clobber the live admin password).
+$existing_admin_count = (int)$db->querySingle("SELECT COUNT(*) FROM users");
+if ($existing_admin_count === 0) {
+    $admin_password = null;
+    $printed_onetime = false;
+
+    if ($admin_pw_arg !== null && $admin_pw_arg !== '') {
+        $admin_password = $admin_pw_arg;
+    } elseif (($env_pw = getenv('FORKPRESS_ADMIN_PASSWORD')) && $env_pw !== '') {
+        $admin_password = $env_pw;
+    } else {
+        // Random password from /dev/urandom (printable alnum subset).
+        $raw = random_bytes(18);
+        $admin_password = rtrim(strtr(base64_encode($raw), '+/', '-_'), '=');
+        $printed_onetime = true;
+    }
+
+    $hash = password_hash($admin_password, PASSWORD_BCRYPT);
+    $mysql_sha1 = strtolower(bin2hex(sha1(sha1($admin_password, true), true)));
+
+    $stmt = $db->prepare(
+        "INSERT INTO users (username, password_hash, mysql_sha1, role) "
+      . "VALUES (:u, :h, :m, 'admin')"
+    );
+    $stmt->bindValue(':u', 'admin', SQLITE3_TEXT);
+    $stmt->bindValue(':h', $hash, SQLITE3_TEXT);
+    $stmt->bindValue(':m', $mysql_sha1, SQLITE3_TEXT);
+    $stmt->execute();
+
+    echo "  - admin user created (username: admin, role: admin)\n";
+    if ($printed_onetime) {
+        echo "\n";
+        echo "  ==========================================================\n";
+        echo "  One-time admin password (save this now, it won't reappear):\n";
+        echo "  \n";
+        echo "      $admin_password\n";
+        echo "  \n";
+        echo "  Rotate with: forkpress user remove admin && forkpress user add admin\n";
+        echo "  ==========================================================\n";
+    }
+}
 
 $db->close();

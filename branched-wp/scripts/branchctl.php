@@ -195,7 +195,27 @@ CREATE TABLE IF NOT EXISTS db_snapshots (
     row_json   TEXT NOT NULL,
     PRIMARY KEY (branch_id, table_name, row_pk)
 );
+CREATE TABLE IF NOT EXISTS users (
+    username      TEXT PRIMARY KEY,
+    password_hash TEXT NOT NULL,
+    mysql_sha1    TEXT,
+    role          TEXT NOT NULL CHECK(role IN ('admin','write','read')),
+    created_at    TEXT DEFAULT (datetime('now'))
+);
+CREATE TABLE IF NOT EXISTS site_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT
+);
 SQL);
+
+    /* Back-compat: sites created BEFORE this change never had site_config,
+     * so the very first migration on them must leave auth_enabled=0.
+     * Brand-new sites go through init_db.php which seeds auth_enabled=1
+     * before fs_migrate ever runs. */
+    $has_any = (int)$db->querySingle("SELECT COUNT(*) FROM site_config");
+    if ($has_any === 0) {
+        $db->exec("INSERT OR IGNORE INTO site_config (key, value) VALUES ('auth_enabled', '0')");
+    }
 }
 
 function fs_branch_id(SQLite3 $db, string $name): int {

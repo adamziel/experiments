@@ -52,16 +52,30 @@ function git_server_handle(string $db_path, string $wp_root, string $git_path, s
     // Determine request type
     $is_post_receive = ($git_path === '/git-receive-pack');
 
-    // Auth only required on actual push (POST /git-receive-pack)
+    // Auth only required on actual push (POST /git-receive-pack), and
+    // only when the site has auth_enabled='1'. Older sites keep the
+    // open-push behaviour until the admin flips the flag.
     $auth_user = null;
-    if ($is_post_receive) {
-        $auth_user = git_check_auth();
+    if ($is_post_receive && git_site_auth_enabled($sqlite)) {
+        $auth_user = git_check_auth($sqlite);
         if ($auth_user === null) {
             header('WWW-Authenticate: Basic realm="BranchFS Git"');
             http_response_code(401);
             echo "Authentication required for push\n";
             return;
         }
+        // role 'read' cannot push.
+        $role = git_user_role($sqlite, $auth_user);
+        if ($role === 'read') {
+            header('WWW-Authenticate: Basic realm="BranchFS Git"');
+            http_response_code(403);
+            echo "User '$auth_user' has role 'read' and cannot push\n";
+            return;
+        }
+    } elseif ($is_post_receive) {
+        // auth disabled: accept any BASIC user (or anonymous) as "admin"
+        // so downstream commit-author attribution still has a value.
+        $auth_user = $_SERVER['PHP_AUTH_USER'] ?? 'anonymous';
     }
 
     // Capture pre-push state for rollback on failure.
@@ -204,12 +218,49 @@ function git_reserved_branch_names(): array {
 }
 
 /**
- * Validate push auth against BRANCHFS_GIT_USER / BRANCHFS_GIT_PASSWORD_HASH.
- * Defaults to admin/admin for dev. BRANCHFS_PROD=1 forces non-default creds.
+ * Return whether auth_enabled = '1' in site_config. Defaults to false so
+ * sites that pre-date the auth feature (no site_config row) stay open.
+ */
+function git_site_auth_enabled(?SQLite3 $sqlite): bool {
+    if ($sqlite === null) return false;
+    // Ensure the table exists so the SELECT doesn't blow up on stores
+    // still on the old schema.
+    try {
+        $sqlite->exec("CREATE TABLE IF NOT EXISTS site_config (key TEXT PRIMARY KEY, value TEXT)");
+    } catch (\Throwable $e) {
+        return false;
+    }
+    $v = (string)$sqlite->querySingle("SELECT value FROM site_config WHERE key='auth_enabled'");
+    return $v === '1';
+}
+
+/**
+ * Return the role of an authenticated user, or null if the user is absent.
+ */
+function git_user_role(?SQLite3 $sqlite, string $username): ?string {
+    if ($sqlite === null) return null;
+    $s = $sqlite->prepare("SELECT role FROM users WHERE username = :u");
+    $s->bindValue(':u', $username, SQLITE3_TEXT);
+    $r = $s->execute();
+    $row = $r->fetchArray(SQLITE3_NUM);
+    return $row ? (string)$row[0] : null;
+}
+
+/**
+ * Validate push auth.
+ *
+ * Priority:
+ *   1. If a SQLite3 handle is provided AND the users table has any rows,
+ *      validate against it (bcrypt password_verify).
+ *   2. Else fall back to env-var auth (BRANCHFS_GIT_USER /
+ *      BRANCHFS_GIT_PASSWORD_HASH, defaulting to admin/admin in dev and
+ *      rejecting admin/admin under BRANCHFS_PROD=1). This path is
+ *      preserved purely for backward compatibility with existing setups
+ *      and their unit tests; new deployments should use the users table.
  *
  * Returns the authenticated username on success, null on failure.
  */
-function git_check_auth(): ?string {
+function git_check_auth(?SQLite3 $sqlite = null): ?string {
     if (!isset($_SERVER['PHP_AUTH_USER'])) {
         return null;
     }
@@ -217,6 +268,35 @@ function git_check_auth(): ?string {
     $user = (string)($_SERVER['PHP_AUTH_USER'] ?? '');
     $pass = (string)($_SERVER['PHP_AUTH_PW']   ?? '');
 
+    // Prefer DB-backed auth when a users table is populated.
+    if ($sqlite !== null) {
+        try {
+            $sqlite->exec(
+                "CREATE TABLE IF NOT EXISTS users ("
+              . "  username      TEXT PRIMARY KEY, "
+              . "  password_hash TEXT NOT NULL, "
+              . "  mysql_sha1    TEXT, "
+              . "  role          TEXT NOT NULL CHECK(role IN ('admin','write','read')), "
+              . "  created_at    TEXT DEFAULT (datetime('now'))"
+              . ")"
+            );
+        } catch (\Throwable $e) {
+            // ignore — fall through to env fallback below
+        }
+        $user_count = (int)$sqlite->querySingle("SELECT COUNT(*) FROM users");
+        if ($user_count > 0) {
+            $s = $sqlite->prepare("SELECT password_hash FROM users WHERE username = :u");
+            $s->bindValue(':u', $user, SQLITE3_TEXT);
+            $r = $s->execute();
+            $row = $r->fetchArray(SQLITE3_ASSOC);
+            if ($row && password_verify($pass, (string)$row['password_hash'])) {
+                return $user;
+            }
+            return null;
+        }
+    }
+
+    // Env-var fallback for back-compat.
     $env_user = getenv('BRANCHFS_GIT_USER')          ?: 'admin';
     $env_hash = getenv('BRANCHFS_GIT_PASSWORD_HASH') ?: '';
 

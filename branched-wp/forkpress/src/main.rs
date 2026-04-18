@@ -29,16 +29,48 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Create a new site.fp and seed the default admin user.
+    Init(InitArgs),
     Start(StartArgs),
     Branch(BranchPassthrough),
     #[command(alias = "branchctl")]
     Branchctl(BranchPassthrough),
+    /// Manage authentication users (add/list/remove/verify/auth-enabled).
+    User(UserPassthrough),
     /// Consistent hot-copy of a running .fp file via SQLite VACUUM INTO.
     Backup(BackupArgs),
     /// Write a .fp file to a portable directory tree (files + SQL + manifest).
     Export(ExportArgs),
     /// Rebuild a .fp from a directory tree produced by `forkpress export`.
     Import(ImportArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct InitArgs {
+    #[command(flatten)]
+    shared: SharedPaths,
+
+    /// Site title written to site_config. Defaults to "ForkPress".
+    #[arg(long, default_value = "ForkPress")]
+    site_title: String,
+
+    /// Root host used in generated banners. Defaults to "localhost".
+    #[arg(long, default_value = "localhost")]
+    root_host: String,
+
+    /// Admin password. If omitted a random password is generated and
+    /// printed once to stdout.
+    #[arg(long)]
+    admin_password: Option<String>,
+}
+
+#[derive(Args, Debug, Clone)]
+struct UserPassthrough {
+    #[command(flatten)]
+    shared: SharedPaths,
+
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true, action = ArgAction::Append)]
+    args: Vec<String>,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -184,12 +216,76 @@ fn main() {
 fn run() -> Result<i32> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Init(args) => init_command(args),
         Commands::Start(args) => start_command(args),
         Commands::Branch(args) | Commands::Branchctl(args) => branch_command(args),
+        Commands::User(args) => user_command(args),
         Commands::Backup(args) => backup_command(args),
         Commands::Export(args) => export_command(args),
         Commands::Import(args) => import_command(args),
     }
+}
+
+fn init_command(args: InitArgs) -> Result<i32> {
+    let layout = Layout::new(args.shared.work_dir.clone())?;
+    prepare_runtime(&layout)?;
+    let runtime = PortableRuntime::from_layout(&layout);
+
+    if layout.site_fp.exists() {
+        bail!(
+            "init: a site.fp already exists at {}. Remove it or choose a different --work-dir.",
+            layout.site_fp.display()
+        );
+    }
+
+    let mut script_args: Vec<std::ffi::OsString> =
+        vec![layout.site_fp.as_os_str().to_owned()];
+    if let Some(pw) = &args.admin_password {
+        script_args.push(std::ffi::OsString::from("--admin-password"));
+        script_args.push(std::ffi::OsString::from(pw));
+    }
+
+    run_php_script(
+        &layout,
+        &runtime,
+        &args.shared,
+        "scripts/init_db.php",
+        script_args.iter().map(|s| s.as_os_str()),
+    )?;
+
+    println!("forkpress: site initialised at {}", layout.site_fp.display());
+    println!("  title:     {}", args.site_title);
+    println!("  root host: {}", args.root_host);
+    Ok(0)
+}
+
+fn user_command(args: UserPassthrough) -> Result<i32> {
+    if args.args.is_empty() {
+        bail!("user requires a subcommand, e.g. `forkpress user add alice s3cret --role write`");
+    }
+    let layout = Layout::new(args.shared.work_dir.clone())?;
+    prepare_runtime(&layout)?;
+    let runtime = PortableRuntime::from_layout(&layout);
+
+    if !layout.site_fp.exists() {
+        bail!(
+            "no site.fp found in {}. Run `forkpress init` first.",
+            layout.work_dir.display()
+        );
+    }
+
+    let mut command = php_base_command(&layout, &runtime, &args.shared);
+    command.arg(layout.runtime_dir.join("scripts/user_admin.php"));
+    for arg in &args.args {
+        command.arg(arg);
+    }
+    command.env("BRANCHFS_DB", &layout.site_fp);
+
+    let output = command
+        .output()
+        .context("failed to run user command via bundled php")?;
+    write_filtered_output(&output.stdout, &output.stderr)?;
+    Ok(output.status.code().unwrap_or(1))
 }
 
 fn backup_command(args: BackupArgs) -> Result<i32> {

@@ -64,6 +64,15 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().to_path_buf();
         std::mem::forget(f);
+        // Legacy SMB test was written before the auth gate; pre-seed
+        // auth_enabled='0' so the negotiate flow still reaches the
+        // original open-access dispatch path.
+        let pre = rusqlite::Connection::open(&path).unwrap();
+        pre.execute_batch(
+            "CREATE TABLE IF NOT EXISTS site_config (key TEXT PRIMARY KEY, value TEXT);
+             INSERT OR REPLACE INTO site_config(key,value) VALUES('auth_enabled','0');",
+        ).unwrap();
+        drop(pre);
         Arc::new(Store::open_and_init(&path).unwrap())
     }
 
@@ -147,6 +156,18 @@ fn dispatch(
     store: &Arc<Store>,
     session: &Arc<Mutex<Session>>,
 ) -> Vec<u8> {
+    // Hard gate: when the site has auth_enabled, we refuse every SMB op
+    // except NEGOTIATE. Our SMB server speaks a minimal dialect and does
+    // not implement NTLMSSP, so we cannot verify per-user credentials on
+    // the wire. Refusing SESSION_SETUP (rather than silently accepting)
+    // makes the surface match the acceptance criterion that "all four
+    // write surfaces reject requests when auth_enabled=true". Admins
+    // who need SMB can use the SFTP / MySQL surfaces, or disable auth
+    // (`user_admin.php auth-enabled 0`) for the SMB-only use case.
+    // See PRD F4.
+    if store.auth_enabled() && hdr.command != CMD_NEGOTIATE {
+        return error_response(hdr, STATUS_ACCESS_DENIED);
+    }
     match hdr.command {
         CMD_NEGOTIATE => handle_negotiate(hdr, body),
         CMD_SESSION_SETUP => handle_session_setup(hdr, body),

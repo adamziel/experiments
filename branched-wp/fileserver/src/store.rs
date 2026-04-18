@@ -324,6 +324,75 @@ impl Store {
         Ok((columns, rows?))
     }
 
+    /// Whether site_config.auth_enabled = '1'. Returns false when the
+    /// row/table is absent (pre-auth DB, treated as "legacy open site").
+    pub fn auth_enabled(&self) -> bool {
+        let conn = self.conn.lock().unwrap();
+        // Create-if-missing so a brand-new DB opened via Store::open
+        // (without init) doesn't poison subsequent queries.
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS site_config (key TEXT PRIMARY KEY, value TEXT);",
+        );
+        let v: Option<String> = conn
+            .query_row(
+                "SELECT value FROM site_config WHERE key='auth_enabled'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        v.as_deref() == Some("1")
+    }
+
+    /// Verify username+password; returns the user's role on success.
+    /// Uses bcrypt (compatible with PHP's password_hash(PASSWORD_BCRYPT)).
+    pub fn verify_user_password(&self, username: &str, password: &str) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        // Tolerate stores that predate the users table.
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS users (
+                 username      TEXT PRIMARY KEY,
+                 password_hash TEXT NOT NULL,
+                 mysql_sha1    TEXT,
+                 role          TEXT NOT NULL CHECK(role IN ('admin','write','read')),
+                 created_at    TEXT DEFAULT (datetime('now'))
+             );",
+        );
+        let row: Option<(String, String)> = conn
+            .query_row(
+                "SELECT password_hash, role FROM users WHERE username = ?1",
+                params![username],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .ok();
+        let (hash, role) = row?;
+        match bcrypt::verify(password, &hash) {
+            Ok(true) => Some(role),
+            _ => None,
+        }
+    }
+
+    /// Return (mysql_sha1 hex, role) for the user, if any. Used by the
+    /// MySQL proxy's mysql_native_password handshake.
+    pub fn user_mysql_creds(&self, username: &str) -> Option<(String, String)> {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS users (
+                 username      TEXT PRIMARY KEY,
+                 password_hash TEXT NOT NULL,
+                 mysql_sha1    TEXT,
+                 role          TEXT NOT NULL CHECK(role IN ('admin','write','read')),
+                 created_at    TEXT DEFAULT (datetime('now'))
+             );",
+        );
+        conn.query_row(
+            "SELECT COALESCE(mysql_sha1, ''), role FROM users WHERE username = ?1",
+            params![username],
+            |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)),
+        )
+        .ok()
+        .filter(|(m, _)| !m.is_empty())
+    }
+
     pub fn create_dir(&self, branch_name: &str, path: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let branch_id: i64 = conn.query_row(

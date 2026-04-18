@@ -1,8 +1,9 @@
 use anyhow::Result;
 use async_trait::async_trait;
 use opensrv_mysql::*;
+use sha1::{Digest, Sha1};
 use std::io;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWrite;
 
 use crate::store::Store;
@@ -10,12 +11,56 @@ use crate::store::Store;
 pub struct MysqlHandler {
     store: Arc<Store>,
     branch_id: i64,
+    /// Role assigned by the handshake authenticate() call. None = auth
+    /// disabled for this site (legacy open mode).
+    role: Arc<Mutex<Option<String>>>,
 }
 
 impl MysqlHandler {
     pub fn new(store: Arc<Store>) -> Self {
-        Self { store, branch_id: 1 }
+        Self {
+            store,
+            branch_id: 1,
+            role: Arc::new(Mutex::new(None)),
+        }
     }
+
+    fn is_read_only(&self) -> bool {
+        matches!(self.role.lock().unwrap().as_deref(), Some("read"))
+    }
+}
+
+/// Verify a mysql_native_password reply.
+///
+/// Native auth:  reply = SHA1(password) XOR SHA1(salt || SHA1(SHA1(password)))
+///
+/// We store `mysql_sha1 = SHA1(SHA1(password))` in the users table. From that
+/// plus the salt we cannot directly recompute `SHA1(password)`, but we can
+/// still verify the reply because of XOR:
+///
+///   sha1_pw  = reply XOR SHA1(salt || mysql_sha1)
+///   expect   = SHA1(sha1_pw)
+///   ok       = (expect == mysql_sha1)
+fn verify_mysql_native(reply: &[u8], salt: &[u8], mysql_sha1_hex: &str) -> bool {
+    if reply.len() != 20 { return false; }
+    let Ok(mysql_sha1) = hex::decode(mysql_sha1_hex) else { return false; };
+    if mysql_sha1.len() != 20 { return false; }
+
+    // SHA1(salt || mysql_sha1)
+    let mut h = Sha1::new();
+    h.update(salt);
+    h.update(&mysql_sha1);
+    let s2 = h.finalize();
+
+    // sha1_pw = reply XOR s2
+    let sha1_pw: [u8; 20] = std::array::from_fn(|i| reply[i] ^ s2[i]);
+
+    // expect = SHA1(sha1_pw)
+    let mut h2 = Sha1::new();
+    h2.update(&sha1_pw);
+    let expect = h2.finalize();
+
+    expect.as_slice() == mysql_sha1.as_slice()
 }
 
 /// Rewrite bare `wp_` identifier prefixes to `b{id}_wp_`, leaving string
@@ -131,6 +176,38 @@ fn is_ident_cont(b: Option<u8>) -> bool {
 impl<W: AsyncWrite + Unpin + Send> AsyncMysqlShim<W> for MysqlHandler {
     type Error = io::Error;
 
+    async fn authenticate(
+        &self,
+        _auth_plugin: &str,
+        username: &[u8],
+        salt: &[u8],
+        auth_data: &[u8],
+    ) -> bool {
+        if !self.store.auth_enabled() {
+            *self.role.lock().unwrap() = None;
+            return true;
+        }
+        let user = match std::str::from_utf8(username) {
+            Ok(s) => s,
+            Err(_) => return false,
+        };
+        // Empty reply means the client sent no password — reject when auth is on.
+        if auth_data.is_empty() {
+            return false;
+        }
+        match self.store.user_mysql_creds(user) {
+            Some((mysql_sha1, role)) => {
+                if verify_mysql_native(auth_data, salt, &mysql_sha1) {
+                    *self.role.lock().unwrap() = Some(role);
+                    true
+                } else {
+                    false
+                }
+            }
+            None => false,
+        }
+    }
+
     async fn on_prepare<'a>(
         &'a mut self,
         _: &'a str,
@@ -173,6 +250,24 @@ impl<W: AsyncWrite + Unpin + Send> AsyncMysqlShim<W> for MysqlHandler {
         sql: &'a str,
         results: QueryResultWriter<'a, W>,
     ) -> io::Result<()> {
+        // Role 'read' may only run SELECT/SHOW/EXPLAIN/PRAGMA.
+        if self.is_read_only() {
+            let trimmed = sql.trim_start().to_uppercase();
+            let is_read = trimmed.starts_with("SELECT")
+                || trimmed.starts_with("SHOW")
+                || trimmed.starts_with("EXPLAIN")
+                || trimmed.starts_with("PRAGMA")
+                || trimmed.starts_with("SET")
+                || trimmed.is_empty();
+            if !is_read {
+                return results
+                    .error(
+                        ErrorKind::ER_ACCESS_DENIED_ERROR,
+                        b"role 'read' cannot execute writes",
+                    )
+                    .await;
+            }
+        }
         let prefix = format!("b{}_wp_", self.branch_id);
         let rewritten = rewrite_wp_prefix(sql, &prefix);
         match self.store.query_rows(&rewritten) {

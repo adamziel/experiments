@@ -98,9 +98,16 @@ Create a new `.fp` file.
 
 ```
 forkpress init my-blog.fp [--title "My Blog"] [--root-host localhost]
+                          [--admin-password <pw>]
 ```
 
-Creates schema, seeds `main` branch, inserts `site_config`.
+Creates schema, seeds `main` branch, inserts `site_config`. Also creates
+the default `admin` user with role `admin`. Admin password source:
+1. `--admin-password <pw>` CLI flag
+2. `FORKPRESS_ADMIN_PASSWORD` env var
+3. random 24-char password printed **once** to stdout. There is no way
+   to recover this password after the init run — rotate it with
+   `forkpress user remove admin && forkpress user add admin <newpw> --role admin`.
 
 ### CLI2 — `forkpress start <site.fp>`
 Boot the full stack from a `.fp` file.
@@ -150,6 +157,22 @@ Writes the site to a portable directory tree:
 ```
 Suitable for long-term archival and format-version migrations.
 
+### CLI7 — `forkpress user <subcommand>`
+Manage authentication users. Forwards to `scripts/user_admin.php`.
+
+| Subcommand | Description |
+|------------|-------------|
+| `add <user> <pw> [--role admin\|write\|read]` | Insert or update a user. Default role is `write`. |
+| `list` | Print username / role / created_at for every user. |
+| `remove <user>` | Delete a user row. Deleting the last admin locks out the site until the flag `auth_enabled='0'` is set out-of-band. |
+| `verify <user> <pw>` | Exit 0 if the password matches the stored bcrypt hash, 1 otherwise. Used by tests and recovery scripts. |
+| `auth-enabled [0\|1]` | Read or write the `site_config.auth_enabled` flag. With no arg, prints the current value. |
+
+Password hashing: bcrypt via PHP's `password_hash(PASSWORD_BCRYPT)`;
+also stores `mysql_sha1 = SHA1(SHA1(password))` hex so the MySQL proxy
+can run a real `mysql_native_password` handshake without ever holding
+the plaintext or a reversible hash.
+
 ### CLI6 — `forkpress import <input-dir> <new.fp>`
 Reverse of export: runs `init`, recreates branches in topological
 order, replays their files through the branchfs stream wrapper, then
@@ -170,21 +193,42 @@ to the re-assigned `b{new_id}_wp_` on the fly.
 - `git push` — imports files into branch, creates `fs_commits` row
 - One git branch = one forkpress branch
 - Implemented by `scripts/git_server/server.php` + WordPress php-toolkit
+- **Authentication** (see FAUTH): push (`git-receive-pack`) requires
+  HTTP Basic credentials verified against the `users` table when
+  `site_config.auth_enabled='1'`. Users with role `read` get HTTP 403;
+  anyone else gets HTTP 401 with `WWW-Authenticate: Basic realm="BranchFS Git"`.
 
 ### F3 — SFTP access
 - SFTP server on `:2222` (configurable)
 - Path scheme: `/branch-name/path/to/file`
-- Any username/password accepted (prototype auth)
+- **Authentication** (see FAUTH): `auth_enabled='1'` sites require a
+  username+password that verifies against `users.password_hash` via
+  bcrypt. `auth_none` is rejected. Users with role `read` can browse
+  and read files but any write / mkdir / remove returns
+  `SSH_FX_PERMISSION_DENIED`.
 - File close after write → `fs_commits` row with message `sftp: edit <path>`
 
 ### F4 — SMB2 access
 - SMB2 server on `:445` (configurable)
 - Share per branch: `\\host\branch-name\`
+- **Authentication** (see FAUTH): the current SMB2 implementation does
+  not speak NTLMSSP, so per-user credential verification on the wire
+  is not implemented. When `auth_enabled='1'`, the server accepts SMB2
+  NEGOTIATE (so clients can detect the service) but rejects every
+  subsequent command (SESSION_SETUP, TREE_CONNECT, CREATE, …) with
+  `STATUS_ACCESS_DENIED`. Sites that need SMB must either keep
+  `auth_enabled='0'` or use SFTP / the MySQL proxy instead.
 - File close after write → `fs_commits` row
 
 ### F5 — MySQL access
 - MySQL-compatible protocol server on `:3306` (configurable)
 - Connect: `mysql -u root -h localhost -P 3306 <branch-name>`
+- **Authentication** (see FAUTH): implements the MySQL
+  `mysql_native_password` handshake against `users.mysql_sha1` (stored
+  as `SHA1(SHA1(password))` hex) when `auth_enabled='1'`. Empty
+  passwords are rejected. Users with role `read` can run
+  SELECT/SHOW/EXPLAIN/PRAGMA/SET but any INSERT/UPDATE/DELETE/DDL
+  returns `ER_ACCESS_DENIED_ERROR`.
 - The branch-name is the MySQL "database" in the connection string
 - All `b{branch_id}_wp_*` tables for that branch are visible as `wp_*`
   (table name translation: strip the `b{id}_` prefix in responses)
@@ -237,6 +281,37 @@ Implementation (`scripts/opcache.php`):
   `opcache_invalidate()` for each. Safe when OPcache is not loaded — the
   queue is still drained, just without the actual invalidation call.
 
+### FAUTH — Authentication for write surfaces
+Every non-HTTP write surface (SFTP, SMB, MySQL proxy, git push) honours
+a per-site auth gate backed by two new SQLite tables:
+
+- `users(username TEXT PRIMARY KEY, password_hash TEXT, mysql_sha1 TEXT,
+  role TEXT CHECK(role IN ('admin','write','read')), created_at TEXT)`
+- `site_config(key TEXT PRIMARY KEY, value TEXT)` — auth is on when
+  `auth_enabled='1'`.
+
+Role semantics:
+
+| Role | HTTP preview | SFTP read | SFTP write | MySQL SELECT | MySQL DML | SMB | git clone | git push |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `admin`/`write` | open | yes | yes | yes | yes | if `auth_enabled='0'` | yes | yes |
+| `read` | open | yes | **403** | yes | **403** | if `auth_enabled='0'` | yes | **403** |
+| unauthenticated (when `auth_enabled='1'`) | open | **reject** | — | **reject** | — | **reject** | open | **401** |
+
+Back-compat:
+- **new sites** created via `forkpress init` / `scripts/init_db.php`
+  default to `auth_enabled='1'` and ship with an `admin` user whose
+  one-time password is printed during init.
+- **pre-change sites** (the `.fp` was created before this feature) have
+  no `site_config` row at all; the first `fs_migrate()` on them seeds
+  `auth_enabled='0'` so existing workflows don't break. Operators opt
+  into auth by running `forkpress user add admin <pw> --role admin &&
+  forkpress user auth-enabled 1`.
+
+Password recovery is intentionally manual — there is no email loop, no
+reset token. Operators rotate credentials with
+`forkpress user remove <name> && forkpress user add <name> <newpw>`.
+
 ### F9 — Merge
 `branchctl merge <from> --into <target> [--strategy=abort|ours|theirs]`
 
@@ -282,7 +357,8 @@ a real conflict do not touch `db_snapshots`.
 
 ## Non-requirements (explicit out of scope for v1)
 
-- Authentication / access control beyond prototype guest auth
+- (Removed — username+password+role auth implemented for SFTP/SMB/MySQL/git; see FAUTH)
+- OAuth / SSO / TOTP / passwordless authentication
 - TLS / HTTPS
 - Multi-user concurrent editing with conflict resolution
 - Windows binary target
