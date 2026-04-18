@@ -195,6 +195,13 @@ CREATE TABLE IF NOT EXISTS db_snapshots (
     row_json   TEXT NOT NULL,
     PRIMARY KEY (branch_id, table_name, row_pk)
 );
+CREATE TABLE IF NOT EXISTS db_snapshots_schema (
+    branch_id    INTEGER NOT NULL,
+    table_name   TEXT NOT NULL,
+    ddl_sql      TEXT NOT NULL,                  -- the CREATE TABLE statement at fork time
+    indexes_json TEXT NOT NULL DEFAULT '[]',     -- JSON array of CREATE INDEX statements
+    PRIMARY KEY (branch_id, table_name)
+);
 CREATE TABLE IF NOT EXISTS users (
     username      TEXT PRIMARY KEY,
     password_hash TEXT NOT NULL,
@@ -657,9 +664,15 @@ case 'create': {
 
         // Snapshot the newly-copied rows so merge.php has a common ancestor for 3-way DB merge.
         $snap_total = 0;
+        $schema_total = 0;
         $snap_ins = $db->prepare(
             "INSERT OR REPLACE INTO db_snapshots (branch_id, table_name, row_pk, row_json) "
           . "VALUES (:bid, :tname, :rpk, :rjson)"
+        );
+        $schema_ins = $db->prepare(
+            "INSERT OR REPLACE INTO db_snapshots_schema "
+          . "(branch_id, table_name, ddl_sql, indexes_json) "
+          . "VALUES (:bid, :tname, :ddl, :idx)"
         );
         $db->exec('BEGIN IMMEDIATE');
         try {
@@ -690,6 +703,28 @@ case 'create': {
                     $snap_ins->reset();
                     $snap_total++;
                 }
+
+                // Snapshot the table's DDL + index DDLs so schema-merge has
+                // a common ancestor for column-level 3-way diff.
+                $ddl = (string)$db->querySingle(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+                    . SQLite3::escapeString($new_table) . "'"
+                );
+                $indexes = [];
+                $ix = $db->query(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='"
+                    . SQLite3::escapeString($new_table) . "' AND sql IS NOT NULL"
+                );
+                while ($irow = $ix->fetchArray(SQLITE3_NUM)) {
+                    $indexes[] = $irow[0];
+                }
+                $schema_ins->bindValue(':bid',   $new_id,   SQLITE3_INTEGER);
+                $schema_ins->bindValue(':tname', $new_table, SQLITE3_TEXT);
+                $schema_ins->bindValue(':ddl',   $ddl,       SQLITE3_TEXT);
+                $schema_ins->bindValue(':idx',   json_encode($indexes, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                $schema_ins->execute();
+                $schema_ins->reset();
+                $schema_total++;
             }
             $db->exec('COMMIT');
         } catch (\Throwable $e) {
@@ -698,6 +733,9 @@ case 'create': {
         }
         if ($snap_total > 0) {
             echo "branchfs: recorded $snap_total ancestor DB rows in db_snapshots\n";
+        }
+        if ($schema_total > 0) {
+            echo "branchfs: recorded $schema_total ancestor table schemas in db_snapshots_schema\n";
         }
     }
 

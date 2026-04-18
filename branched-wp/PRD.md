@@ -48,6 +48,7 @@ The entire site lives in one SQLite file (WAL mode).
 |-------------|----------|
 | `blobs`, `blob_chunks`, `branches`, `files`, `fs_commits`, `fs_commit_files` | WordPress filesystem (COW) |
 | `b{id}_wp_*` tables | WordPress database, one set of tables per branch |
+| `db_snapshots`, `db_snapshots_schema` | Per-branch fork-time row + schema ancestor for 3-way DB merge |
 | `site_config`, `users` | Site-wide config and authentication |
 
 WAL mode guarantees every committed write is durable even on crash — no
@@ -400,6 +401,42 @@ New tables on source (e.g. new plugin) are created on target with DDL-preserving
 `CREATE TABLE` + `INSERT`. All changes are applied atomically in one transaction.
 `--strategy=abort` leaves the target completely unchanged on any conflict.
 
+**Phase 2b — Column-level schema merge** (implemented)
+For tables present on BOTH source and target, the merge runs a column-level
+3-way diff alongside the row-level diff. The fork-time DDL + index list is
+recorded per branch in `db_snapshots_schema(branch_id, table_name, ddl_sql,
+indexes_json)` at `branchctl create` time. Branches that pre-date this table
+fall back to "source's CURRENT schema is the ancestor" (i.e. assume no schema
+change occurred on source); on the first merge against such a branch,
+`db_snapshots_schema` is opportunistically backfilled from the live schema.
+
+**Per-column 3-way table** (matched by column name):
+
+| Ancestor | Source now | Target now | Result |
+|----------|------------|------------|--------|
+| absent | present | absent | `ALTER TABLE target ADD COLUMN …` (preserves type, NOT NULL, DEFAULT) |
+| absent | present | present, identical | no-op |
+| absent | present | present, different shape | CONFLICT |
+| present | absent | unchanged | `ALTER TABLE target DROP COLUMN …` (3.35+ native, fallback to rebuild) |
+| present | absent | modified | CONFLICT |
+| present | present, type T1 | present, type T2 | rebuild target with source's column definition |
+| present | present | present | no-op |
+
+**Per-index 3-way** (matched by normalized DDL — branch-prefix-independent):
+- Source added the index, target doesn't have it → `CREATE INDEX` on target,
+  with the index name rewritten to use target's `b{tgt_id}_wp_` prefix.
+- Source dropped it, target still has it → `DROP INDEX` from target.
+- Both have / both lack → no-op. Conflicting structures honor `--strategy`.
+
+Schema ops are sorted to run BEFORE row-level ops in the same transaction
+(`drop_index → drop_column → modify_column → add_column → add_index → row
+upserts/deletes`), so a source-side INSERT that uses a brand-new column finds
+that column already on target. The whole merge — schema + rows + ancestor
+snapshot refresh — is one atomic `BEGIN IMMEDIATE … COMMIT`. After a
+successful merge, `db_snapshots_schema` for the source branch is replaced in
+the same transaction so iterative merges don't re-propose already-applied
+schema changes.
+
 **Auto-increment ID collision renumbering (`--on-id-collision`)**
 
 Default `conflict` keeps the historical behaviour: if both source and target
@@ -472,4 +509,4 @@ a real conflict do not touch `db_snapshots`.
   multi-worker HTTP serving is therefore Linux/macOS only
 - (Removed — single-process PHP serving replaced by multi-worker mode in F1 / CLI2)
 - (Removed — now implemented via ancestor snapshot refresh in F9)
-- DB merge for schema changes (column add/drop across branches)
+- (Removed — DB merge for schema changes is now implemented via Phase 2b in F9)

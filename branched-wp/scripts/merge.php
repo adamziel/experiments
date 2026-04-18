@@ -340,6 +340,547 @@ function db_delete_by_pk(SQLite3 $db, string $table, string $pk_json, array $pk_
     $stmt->execute();
 }
 
+// ── Schema-merge helpers ─────────────────────────────────────────────────────
+//
+// Column-level 3-way schema diff for tables that exist on BOTH source and
+// target. Inputs (per side):
+//   - DDL string from sqlite_master (CREATE TABLE …)
+//   - List of CREATE INDEX … statements from sqlite_master
+// We normalize each to a comparable shape so:
+//   - column adds/drops/type changes show up as per-column diffs
+//   - index adds/drops show up as per-index diffs
+// keyed in a way that survives the prefix-rename game (index names / table
+// names embed the b{branch_id}_wp_ prefix and must be normalized away).
+
+/** Read live columns of a table from PRAGMA table_info: ordered list of
+ *  ['name' => …, 'type' => …, 'notnull' => 0|1, 'dflt_value' => …, 'pk' => 0|1+]. */
+function schema_columns_from_pragma(SQLite3 $db, string $table): array {
+    $cols = [];
+    $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($table) . '")');
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $cols[] = [
+            'name'       => (string)$row['name'],
+            'type'       => (string)$row['type'],
+            'notnull'    => (int)$row['notnull'],
+            'dflt_value' => $row['dflt_value'],
+            'pk'         => (int)$row['pk'],
+        ];
+    }
+    return $cols;
+}
+
+/** Read live indexes of a table from sqlite_master: list of
+ *  ['name'=>…,'sql'=>…]. Auto-indexes (sql IS NULL) are skipped. */
+function schema_indexes_from_master(SQLite3 $db, string $table): array {
+    $idx = [];
+    $st = $db->prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type='index' "
+      . "AND tbl_name=:t AND sql IS NOT NULL ORDER BY name"
+    );
+    $st->bindValue(':t', $table, SQLITE3_TEXT);
+    $r = $st->execute();
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $idx[] = ['name' => (string)$row['name'], 'sql' => (string)$row['sql']];
+    }
+    return $idx;
+}
+
+/** Parse a CREATE TABLE DDL string into a normalized columns list of the
+ *  same shape that schema_columns_from_pragma() returns.
+ *
+ *  We attach the parsed schema to a temp DB, then use PRAGMA table_info on it.
+ *  This sidesteps the surprisingly hairy job of writing a full SQLite DDL
+ *  parser in PHP. The temp DB lives only as long as this function call.
+ */
+function schema_columns_from_ddl(string $ddl, string $original_name): array {
+    if ($ddl === '') return [];
+    $tmp = new SQLite3(':memory:');
+    try {
+        // Force the table name to a known stable string so we can PRAGMA it.
+        $rewritten = preg_replace(
+            '/^(CREATE\s+TABLE\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?'
+            . preg_quote($original_name, '/') . '"?(\s*\()/is',
+            '$1IF NOT EXISTS "schema_probe"$2',
+            $ddl, 1
+        );
+        if (!$rewritten) return [];
+        @$tmp->exec($rewritten);
+        $cols = [];
+        $r = $tmp->query('PRAGMA table_info("schema_probe")');
+        if (!$r) return [];
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $cols[] = [
+                'name'       => (string)$row['name'],
+                'type'       => (string)$row['type'],
+                'notnull'    => (int)$row['notnull'],
+                'dflt_value' => $row['dflt_value'],
+                'pk'         => (int)$row['pk'],
+            ];
+        }
+        return $cols;
+    } finally {
+        $tmp->close();
+    }
+}
+
+/** Strip a prefix-specific table or index name out of an index DDL string so
+ *  two indexes that differ ONLY in their b{N}_wp_ prefix compare equal.
+ *  Also trims whitespace, drops double-quotes around identifiers, normalizes
+ *  spacing around parens, and uppercases keywords for stable comparison. */
+function schema_normalize_index_ddl(string $ddl, string $prefix): string {
+    $norm = str_replace($prefix, 'BPFX_', $ddl);
+    // Strip double-quotes around identifiers (sqlite_master may or may not
+    // emit them depending on how the DDL was originally written).
+    $norm = str_replace('"', '', $norm);
+    // Collapse whitespace and normalize whitespace around parens.
+    $norm = preg_replace('/\s+/', ' ', trim($norm));
+    $norm = preg_replace('/\s*\(\s*/', '(', $norm);
+    $norm = preg_replace('/\s*\)\s*/', ')', $norm);
+    $norm = preg_replace('/\s*,\s*/', ',', $norm);
+    return $norm;
+}
+
+/** Normalized key for an index — the DDL minus any branch-specific prefix.
+ *  Two indexes from different branches that describe the same shape will
+ *  produce the same key. */
+function schema_index_key(array $index, string $prefix): string {
+    return schema_normalize_index_ddl($index['sql'], $prefix);
+}
+
+/** Compare two column dicts (from schema_columns_from_*) for "same shape".
+ *  Ignores column ordering — only the per-column attributes matter. */
+function schema_columns_equal(array $a, array $b): bool {
+    // Normalize: trim / uppercase types, compare default values loosely.
+    $norm = function (array $c): array {
+        return [
+            'name'       => $c['name'],
+            'type'       => strtoupper(trim((string)$c['type'])),
+            'notnull'    => (int)$c['notnull'],
+            'dflt_value' => is_null($c['dflt_value']) ? null : (string)$c['dflt_value'],
+            'pk'         => (int)$c['pk'],
+        ];
+    };
+    return $norm($a) === $norm($b);
+}
+
+/**
+ * Build column-level + index-level 3-way diff for a single table that
+ * exists on both source and target.
+ *
+ * Returns an array with:
+ *   ['ops' => [ ... apply ops ... ],
+ *    'conflicts' => [ ... conflict descriptors ... ]]
+ *
+ * Each op is one of:
+ *   ['type'=>'add_column',  'table'=>$tgt, 'col_def'=>$ddl_fragment]
+ *   ['type'=>'drop_column', 'table'=>$tgt, 'col_name'=>$name]
+ *   ['type'=>'modify_column', 'table'=>$tgt, 'col_name'=>$name, 'new_col_def'=>$ddl_fragment, 'src_col'=>$col_dict]
+ *   ['type'=>'add_index', 'src_ddl'=>$sql, 'src_prefix'=>…, 'tgt_prefix'=>…]
+ *   ['type'=>'drop_index', 'name'=>$tgt_index_name]
+ *
+ * Each conflict carries 'desc' + 'theirs_op' + 'ours_op' (ours_op is null
+ * because keeping target's schema means doing nothing).
+ */
+function schema_diff_table(
+    array $anc_cols, array $anc_idx,
+    array $src_cols, array $src_idx,
+    array $tgt_cols, array $tgt_idx,
+    string $src_prefix, string $tgt_prefix,
+    string $src_ddl, string $tgt_table
+): array {
+    $ops = [];
+    $conflicts = [];
+
+    // Build name => col dicts for each side.
+    $by_name = function (array $cols): array {
+        $o = [];
+        foreach ($cols as $c) $o[$c['name']] = $c;
+        return $o;
+    };
+    $a = $by_name($anc_cols);
+    $s = $by_name($src_cols);
+    $t = $by_name($tgt_cols);
+
+    $all_names = array_unique(array_merge(
+        array_keys($a), array_keys($s), array_keys($t)
+    ));
+
+    foreach ($all_names as $name) {
+        $av = $a[$name] ?? null;
+        $sv = $s[$name] ?? null;
+        $tv = $t[$name] ?? null;
+
+        if ($sv !== null && $tv !== null && schema_columns_equal($sv, $tv)) {
+            // Both sides agree on this column.
+            continue;
+        }
+
+        if ($av === null) {
+            // Column is brand new on at least one side.
+            if ($sv !== null && $tv === null) {
+                // Source added it, target doesn't have it yet → ADD on target.
+                $def = schema_extract_column_def($src_ddl, $name);
+                if ($def === null) {
+                    $conflicts[] = [
+                        'desc' => "$tgt_table column '$name' (cannot extract column DDL from source)",
+                        'theirs_op' => null, 'ours_op' => null,
+                    ];
+                    continue;
+                }
+                $ops[] = [
+                    'type'    => 'add_column',
+                    'table'   => $tgt_table,
+                    'col_def' => $def,
+                ];
+            } elseif ($sv === null && $tv !== null) {
+                // Target added it independently — keep it.
+                continue;
+            } elseif ($sv !== null && $tv !== null && !schema_columns_equal($sv, $tv)) {
+                // Both added the same column with DIFFERENT shapes → CONFLICT.
+                $def = schema_extract_column_def($src_ddl, $name);
+                $conflicts[] = [
+                    'desc' => "$tgt_table column '$name' (both branches added different definitions)",
+                    'theirs_op' => $def !== null ? [
+                        'type'        => 'modify_column',
+                        'table'       => $tgt_table,
+                        'col_name'    => $name,
+                        'new_col_def' => $def,
+                        'src_col'     => $sv,
+                    ] : null,
+                    'ours_op' => null,
+                ];
+            }
+            continue;
+        }
+
+        // Ancestor had this column.
+        if ($sv === null && $tv !== null) {
+            if (schema_columns_equal($av, $tv)) {
+                // Source dropped it, target unchanged → DROP on target.
+                $ops[] = [
+                    'type'     => 'drop_column',
+                    'table'    => $tgt_table,
+                    'col_name' => $name,
+                ];
+            } else {
+                // Source dropped, target modified → CONFLICT.
+                $conflicts[] = [
+                    'desc' => "$tgt_table column '$name' (source dropped, target modified)",
+                    'theirs_op' => [
+                        'type'     => 'drop_column',
+                        'table'    => $tgt_table,
+                        'col_name' => $name,
+                    ],
+                    'ours_op' => null,
+                ];
+            }
+            continue;
+        }
+        if ($sv === null && $tv === null) {
+            // Both dropped — already gone, no-op.
+            continue;
+        }
+        if ($sv !== null && $tv !== null) {
+            // Both present, $sv != $tv (we returned earlier when equal).
+            if (schema_columns_equal($sv, $av)) {
+                // Source unchanged, target modified → keep target.
+                continue;
+            } elseif (schema_columns_equal($tv, $av)) {
+                // Source modified, target unchanged → adopt source.
+                $def = schema_extract_column_def($src_ddl, $name);
+                if ($def === null) {
+                    $conflicts[] = [
+                        'desc' => "$tgt_table column '$name' (cannot extract source DDL for type change)",
+                        'theirs_op' => null, 'ours_op' => null,
+                    ];
+                    continue;
+                }
+                $ops[] = [
+                    'type'        => 'modify_column',
+                    'table'       => $tgt_table,
+                    'col_name'    => $name,
+                    'new_col_def' => $def,
+                    'src_col'     => $sv,
+                ];
+            } else {
+                // Both modified differently → CONFLICT.
+                $def = schema_extract_column_def($src_ddl, $name);
+                $conflicts[] = [
+                    'desc' => "$tgt_table column '$name' (both branches modified differently)",
+                    'theirs_op' => $def !== null ? [
+                        'type'        => 'modify_column',
+                        'table'       => $tgt_table,
+                        'col_name'    => $name,
+                        'new_col_def' => $def,
+                        'src_col'     => $sv,
+                    ] : null,
+                    'ours_op' => null,
+                ];
+            }
+        }
+    }
+
+    // ── Index-level diff ─────────────────────────────────────────────────
+    //
+    // Match indexes by their normalized DDL (prefix-independent). For each
+    // unique normalized DDL key, decide based on presence in src/tgt/anc.
+
+    // Build map: normalized_key => [side_idx]
+    $a_idx = [];
+    $s_idx = [];
+    $t_idx = [];
+    foreach ($anc_idx as $i) $a_idx[schema_index_key($i, $src_prefix)] = $i;
+    foreach ($src_idx as $i) $s_idx[schema_index_key($i, $src_prefix)] = $i;
+    foreach ($tgt_idx as $i) $t_idx[schema_index_key($i, $tgt_prefix)] = $i;
+
+    $all_keys = array_unique(array_merge(
+        array_keys($a_idx), array_keys($s_idx), array_keys($t_idx)
+    ));
+
+    foreach ($all_keys as $key) {
+        $av = $a_idx[$key] ?? null;
+        $sv = $s_idx[$key] ?? null;
+        $tv = $t_idx[$key] ?? null;
+
+        $in_a = $av !== null;
+        $in_s = $sv !== null;
+        $in_t = $tv !== null;
+
+        if ($in_s === $in_t) continue; // both have / both lack — no-op
+
+        if (!$in_a) {
+            if ($in_s && !$in_t) {
+                // Source added an index target doesn't have → CREATE on target.
+                $ops[] = [
+                    'type'       => 'add_index',
+                    'src_ddl'    => $sv['sql'],
+                    'src_index_name' => $sv['name'],
+                    'src_prefix' => $src_prefix,
+                    'tgt_prefix' => $tgt_prefix,
+                ];
+            }
+            // !$in_s && $in_t: target added it; keep.
+        } else {
+            if ($in_t && !$in_s) {
+                // Source dropped it, target still has it → DROP from target.
+                $ops[] = [
+                    'type' => 'drop_index',
+                    'name' => $tv['name'],
+                ];
+            }
+            // $in_s && !$in_t: source has it, target dropped it → keep target.
+        }
+    }
+
+    return ['ops' => $ops, 'conflicts' => $conflicts];
+}
+
+/** Best-effort extraction of one column's DDL fragment ("seo_title TEXT NOT
+ *  NULL DEFAULT '50'") from a CREATE TABLE statement. We attach the schema
+ *  to a temp DB and re-emit the column definition by reading PRAGMA + the
+ *  raw DDL slice. This is conservative — falls back to type+nullable+default
+ *  if we can't slice the original token range. */
+function schema_extract_column_def(string $ddl, string $col_name): ?string {
+    if ($ddl === '') return null;
+
+    // Try to grab the column's exact slice from the DDL inside the parens.
+    if (preg_match('/^[^(]*\((.*)\)\s*[^)]*$/s', $ddl, $m)) {
+        $body = $m[1];
+        // Split body on commas not inside parens.
+        $depth = 0;
+        $parts = [];
+        $cur = '';
+        $len = strlen($body);
+        for ($i = 0; $i < $len; $i++) {
+            $ch = $body[$i];
+            if ($ch === '(') $depth++;
+            elseif ($ch === ')') $depth--;
+            if ($ch === ',' && $depth === 0) {
+                $parts[] = trim($cur);
+                $cur = '';
+                continue;
+            }
+            $cur .= $ch;
+        }
+        if ($cur !== '') $parts[] = trim($cur);
+
+        foreach ($parts as $part) {
+            // Match column name (possibly quoted).
+            if (preg_match('/^"?(' . preg_quote($col_name, '/') . ')"?\s+(.+)$/is', $part, $cm)) {
+                // Strip a leading PRIMARY/UNIQUE/CHECK/FOREIGN keyword to skip
+                // table-level constraints accidentally matching.
+                $rest_first = strtoupper(substr(trim($cm[2]), 0, 7));
+                if (in_array(substr($rest_first, 0, 7), ['PRIMARY', 'FOREIGN'])) continue;
+                if (substr($rest_first, 0, 6) === 'UNIQUE') continue;
+                if (substr($rest_first, 0, 5) === 'CHECK')  continue;
+                return '"' . $col_name . '" ' . trim($cm[2]);
+            }
+        }
+    }
+
+    // Fallback: derive from a temp-DB PRAGMA.
+    $tmp = new SQLite3(':memory:');
+    try {
+        $rewritten = preg_replace(
+            '/^(CREATE\s+TABLE\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?[^"\s(]+"?(\s*\()/is',
+            '$1IF NOT EXISTS "schema_probe"$2',
+            $ddl, 1
+        );
+        if (!$rewritten) return null;
+        @$tmp->exec($rewritten);
+        $r = $tmp->query('PRAGMA table_info("schema_probe")');
+        if (!$r) return null;
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            if ((string)$row['name'] !== $col_name) continue;
+            $def = '"' . $col_name . '"';
+            if ($row['type']) $def .= ' ' . $row['type'];
+            if ((int)$row['notnull']) $def .= ' NOT NULL';
+            if ($row['dflt_value'] !== null) {
+                $dv = (string)$row['dflt_value'];
+                $def .= ' DEFAULT ' . $dv;
+            }
+            return $def;
+        }
+        return null;
+    } finally {
+        $tmp->close();
+    }
+}
+
+/** Apply a single schema op against the target table. May rebuild the table
+ *  for DROP/MODIFY ops on older SQLite, or use ALTER TABLE on 3.35+. */
+function schema_apply_op(SQLite3 $db, array $op, string $src_prefix, string $tgt_prefix): void {
+    switch ($op['type']) {
+        case 'add_column':
+            // ALTER TABLE works for ADD COLUMN even on old SQLite.
+            $db->exec('ALTER TABLE "' . SQLite3::escapeString($op['table']) . '" '
+                    . 'ADD COLUMN ' . $op['col_def']);
+            break;
+
+        case 'drop_column':
+            // ALTER TABLE … DROP COLUMN requires SQLite 3.35+; try and fall
+            // back to table-rebuild on failure.
+            $tgt = $op['table'];
+            try {
+                @$db->exec('ALTER TABLE "' . SQLite3::escapeString($tgt) . '" '
+                         . 'DROP COLUMN "' . SQLite3::escapeString($op['col_name']) . '"');
+                // Verify it actually dropped.
+                $still_there = false;
+                $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($tgt) . '")');
+                while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+                    if ((string)$row['name'] === $op['col_name']) { $still_there = true; break; }
+                }
+                if ($still_there) {
+                    schema_rebuild_table_drop_columns($db, $tgt, [$op['col_name']]);
+                }
+            } catch (\Throwable $e) {
+                schema_rebuild_table_drop_columns($db, $tgt, [$op['col_name']]);
+            }
+            break;
+
+        case 'modify_column':
+            // No native ALTER COLUMN in SQLite — rebuild.
+            schema_rebuild_table_modify_column($db, $op['table'], $op['col_name'], $op['new_col_def'], $op['src_col']);
+            break;
+
+        case 'add_index':
+            // Rewrite the source-side index DDL so it lives on target's
+            // table with target's prefix in the index name.
+            $sql = $op['src_ddl'];
+            $old_idx = $op['src_index_name'];
+            $new_idx = str_replace($src_prefix, $tgt_prefix, $old_idx);
+            $sql = preg_replace(
+                '/^(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?'
+                . preg_quote($old_idx, '/') . '"?/i',
+                '$1IF NOT EXISTS "' . $new_idx . '"',
+                $sql, 1
+            );
+            // Rewrite ON "src_table" → ON "tgt_table".
+            $sql = preg_replace_callback(
+                '/\bON\s+"?(' . preg_quote($src_prefix, '/') . '[A-Za-z0-9_]+)"?\s*\(/i',
+                function ($m) use ($src_prefix, $tgt_prefix) {
+                    $tgt = str_replace($src_prefix, $tgt_prefix, $m[1]);
+                    return 'ON "' . $tgt . '" (';
+                },
+                $sql, 1
+            );
+            @$db->exec($sql);
+            break;
+
+        case 'drop_index':
+            $db->exec('DROP INDEX IF EXISTS "' . SQLite3::escapeString($op['name']) . '"');
+            break;
+    }
+}
+
+/** SQLite-3.34-and-older compatible "drop columns" by full table rebuild.
+ *  Also re-creates indexes that don't reference the dropped columns. */
+function schema_rebuild_table_drop_columns(SQLite3 $db, string $table, array $drop_cols): void {
+    $cols = schema_columns_from_pragma($db, $table);
+    $keep = array_values(array_filter($cols, fn($c) => !in_array($c['name'], $drop_cols, true)));
+    if (empty($keep)) return;
+
+    $col_names = array_map(fn($c) => '"' . $c['name'] . '"', $keep);
+    $col_list  = implode(', ', $col_names);
+
+    // Reuse the original DDL minus the dropped columns. We rebuild via
+    // CREATE TABLE … AS SELECT, then re-add an INTEGER PRIMARY KEY by
+    // using the existing column types.
+    $ddl_parts = [];
+    foreach ($keep as $c) {
+        $part = '"' . $c['name'] . '" ' . ($c['type'] !== '' ? $c['type'] : 'TEXT');
+        if ($c['pk']) $part .= ' PRIMARY KEY';
+        if ($c['notnull']) $part .= ' NOT NULL';
+        if ($c['dflt_value'] !== null) $part .= ' DEFAULT ' . $c['dflt_value'];
+        $ddl_parts[] = $part;
+    }
+    $tmp_table = $table . '__rebuild_tmp';
+    $db->exec('CREATE TABLE "' . SQLite3::escapeString($tmp_table) . '" ('
+            . implode(', ', $ddl_parts) . ')');
+    $db->exec('INSERT INTO "' . SQLite3::escapeString($tmp_table) . '" '
+            . '(' . $col_list . ') SELECT ' . $col_list
+            . ' FROM "' . SQLite3::escapeString($table) . '"');
+    $db->exec('DROP TABLE "' . SQLite3::escapeString($table) . '"');
+    $db->exec('ALTER TABLE "' . SQLite3::escapeString($tmp_table)
+            . '" RENAME TO "' . SQLite3::escapeString($table) . '"');
+}
+
+/** Rebuild a table to apply a column-type change. Uses src_col's metadata
+ *  to know the target type. Other columns retain their definitions. */
+function schema_rebuild_table_modify_column(SQLite3 $db, string $table,
+                                            string $col_name, string $new_col_def,
+                                            array $src_col): void {
+    $cols = schema_columns_from_pragma($db, $table);
+    $ddl_parts = [];
+    $col_names = [];
+    foreach ($cols as $c) {
+        $col_names[] = '"' . $c['name'] . '"';
+        if ($c['name'] === $col_name) {
+            // Replace this column's definition with src's.
+            $part = $new_col_def;
+            // strip out "COLUMN" keyword if present (ADD COLUMN ddl)
+            $part = preg_replace('/^\s*COLUMN\s+/i', '', $part);
+            $ddl_parts[] = $part;
+        } else {
+            $part = '"' . $c['name'] . '" ' . ($c['type'] !== '' ? $c['type'] : 'TEXT');
+            if ($c['pk']) $part .= ' PRIMARY KEY';
+            if ($c['notnull']) $part .= ' NOT NULL';
+            if ($c['dflt_value'] !== null) $part .= ' DEFAULT ' . $c['dflt_value'];
+            $ddl_parts[] = $part;
+        }
+    }
+    $col_list = implode(', ', $col_names);
+    $tmp_table = $table . '__rebuild_tmp';
+    $db->exec('CREATE TABLE "' . SQLite3::escapeString($tmp_table) . '" ('
+            . implode(', ', $ddl_parts) . ')');
+    $db->exec('INSERT INTO "' . SQLite3::escapeString($tmp_table) . '" '
+            . '(' . $col_list . ') SELECT ' . $col_list
+            . ' FROM "' . SQLite3::escapeString($table) . '"');
+    $db->exec('DROP TABLE "' . SQLite3::escapeString($table) . '"');
+    $db->exec('ALTER TABLE "' . SQLite3::escapeString($tmp_table)
+            . '" RENAME TO "' . SQLite3::escapeString($table) . '"');
+}
+
 /** Copy DDL + rows from $src_table to $tgt_table (renaming table/index names). */
 function db_copy_table(SQLite3 $db, string $src_table, string $tgt_table,
                        string $src_prefix, string $tgt_prefix): void {
@@ -524,8 +1065,86 @@ $db->exec("CREATE TABLE IF NOT EXISTS db_snapshots (
     PRIMARY KEY (branch_id, table_name, row_pk)
 )");
 
+// Ensure db_snapshots_schema exists. Fork-time schema is the ancestor for
+// column-level 3-way diff. Branches that pre-date this table fall back to
+// "source's CURRENT schema is the ancestor" (i.e. assume no schema changed
+// on the source) — see merge_load_schema_ancestor() below.
+$db->exec("CREATE TABLE IF NOT EXISTS db_snapshots_schema (
+    branch_id    INTEGER NOT NULL,
+    table_name   TEXT NOT NULL,
+    ddl_sql      TEXT NOT NULL,
+    indexes_json TEXT NOT NULL DEFAULT '[]',
+    PRIMARY KEY (branch_id, table_name)
+)");
+
 $src_prefix = "b{$src_id}_wp_";
 $tgt_prefix = "b{$tgt_id}_wp_";
+
+/** Load (ddl, indexes_array) for the ancestor schema of $tname under
+ *  $branch_id. Returns null if no snapshot row exists — caller decides
+ *  fallback. */
+$merge_load_schema_ancestor = function (SQLite3 $db, int $branch_id, string $tname): ?array {
+    $st = $db->prepare("SELECT ddl_sql, indexes_json FROM db_snapshots_schema WHERE branch_id=:b AND table_name=:t");
+    $st->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $st->bindValue(':t', $tname, SQLITE3_TEXT);
+    $r = $st->execute();
+    $row = $r->fetchArray(SQLITE3_ASSOC);
+    if (!$row) return null;
+    $idx = json_decode((string)$row['indexes_json'], true);
+    if (!is_array($idx)) $idx = [];
+    return ['ddl' => (string)$row['ddl_sql'], 'indexes' => $idx];
+};
+
+// Opportunistic backfill of db_snapshots_schema for any existing branch that
+// has live tables but no schema snapshot rows yet. Best-effort: any errors
+// here are non-fatal because the merge can still fall back to "current schema
+// as ancestor" for branches without a snapshot.
+{
+    $branches = [];
+    $br = $db->query("SELECT id FROM branches");
+    while ($brow = $br->fetchArray(SQLITE3_NUM)) $branches[] = (int)$brow[0];
+    foreach ($branches as $bid) {
+        $has_any = (int)$db->querySingle(
+            "SELECT COUNT(*) FROM db_snapshots_schema WHERE branch_id = $bid"
+        );
+        if ($has_any > 0) continue;
+        $bprefix = "b{$bid}_wp_";
+        $tnames = [];
+        $tr = $db->query(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
+            . SQLite3::escapeString($bprefix) . "%'"
+        );
+        while ($trow = $tr->fetchArray(SQLITE3_NUM)) $tnames[] = $trow[0];
+        if (empty($tnames)) continue;
+        try {
+            $st = $db->prepare(
+                "INSERT OR REPLACE INTO db_snapshots_schema "
+              . "(branch_id, table_name, ddl_sql, indexes_json) "
+              . "VALUES (:b, :t, :d, :i)"
+            );
+            foreach ($tnames as $tname) {
+                $ddl = (string)$db->querySingle(
+                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+                    . SQLite3::escapeString($tname) . "'"
+                );
+                $idxs = [];
+                $ir = $db->query(
+                    "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='"
+                    . SQLite3::escapeString($tname) . "' AND sql IS NOT NULL"
+                );
+                while ($irow = $ir->fetchArray(SQLITE3_NUM)) $idxs[] = $irow[0];
+                $st->bindValue(':b', $bid, SQLITE3_INTEGER);
+                $st->bindValue(':t', $tname, SQLITE3_TEXT);
+                $st->bindValue(':d', $ddl, SQLITE3_TEXT);
+                $st->bindValue(':i', json_encode($idxs, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                $st->execute();
+                $st->reset();
+            }
+        } catch (\Throwable $e) {
+            // Non-fatal — merge will still work via the current-schema fallback.
+        }
+    }
+}
 
 // Collect table suffixes present in source, target, and ancestor snapshot.
 $src_tables = [];
@@ -626,6 +1245,58 @@ foreach ($all_suffixes as $suffix) {
 
     // Row-level 3-way merge for tables present in both source and target.
     if ($in_src && $in_tgt) {
+        // ── Schema-level 3-way diff (must run BEFORE row-level so any
+        // ADD COLUMN happens before we INSERT a source row into target).
+        $src_cols = schema_columns_from_pragma($db, $src_tname);
+        $tgt_cols = schema_columns_from_pragma($db, $tgt_tname);
+        $src_idxs = schema_indexes_from_master($db, $src_tname);
+        $tgt_idxs = schema_indexes_from_master($db, $tgt_tname);
+
+        $src_ddl_now = (string)$db->querySingle(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+            . SQLite3::escapeString($src_tname) . "'"
+        );
+
+        $anc_schema = $merge_load_schema_ancestor($db, $src_id, $src_tname);
+        if ($anc_schema === null) {
+            // Backward compat: no schema snapshot for this branch (legacy
+            // branch created before db_snapshots_schema existed). Treat
+            // source's CURRENT schema as the ancestor — i.e. assume no
+            // schema change happened on source.
+            $anc_cols = $src_cols;
+            $anc_idxs = $src_idxs;
+        } else {
+            $anc_cols = schema_columns_from_ddl($anc_schema['ddl'], $src_tname);
+            $anc_idxs = [];
+            foreach ($anc_schema['indexes'] as $isql) {
+                if (preg_match('/^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?"?([^"\s(]+)"?/i', $isql, $im)) {
+                    $anc_idxs[] = ['name' => $im[1], 'sql' => $isql];
+                }
+            }
+        }
+
+        $sd = schema_diff_table(
+            $anc_cols, $anc_idxs,
+            $src_cols, $src_idxs,
+            $tgt_cols, $tgt_idxs,
+            $src_prefix, $tgt_prefix,
+            $src_ddl_now, $tgt_tname
+        );
+        foreach ($sd['ops'] as $sop) {
+            $db_clean_ops[] = ['type' => 'schema', 'op' => $sop];
+        }
+        foreach ($sd['conflicts'] as $sc) {
+            $db_conflict_ops[] = [
+                'desc'      => $sc['desc'],
+                'ours_op'   => $sc['ours_op'] !== null
+                                ? ['type' => 'schema', 'op' => $sc['ours_op']]
+                                : null,
+                'theirs_op' => $sc['theirs_op'] !== null
+                                ? ['type' => 'schema', 'op' => $sc['theirs_op']]
+                                : null,
+            ];
+        }
+
         $src_pk   = db_pk_cols($db, $src_tname);
         $tgt_pk   = db_pk_cols($db, $tgt_tname);
         $src_rows = db_table_rows($db, $src_tname, $src_pk);
@@ -734,11 +1405,17 @@ foreach ($all_suffixes as $suffix) {
     }
 }
 
+$schema_op_count = 0;
+foreach ($db_clean_ops as $cop) {
+    if (($cop['type'] ?? '') === 'schema') $schema_op_count++;
+}
+
 echo "  tables considered: " . count($all_suffixes) . "\n";
 echo "  row no-op:         $db_noop\n";
 echo "  row inserts:       $db_inserted\n";
 echo "  row updates:       $db_updated\n";
 echo "  row deletes:       $db_deleted\n";
+echo "  schema ops:        $schema_op_count\n";
 echo "  id renumbers:      " . count($renumber_log) . "\n";
 echo "  conflicts:         " . count($db_conflict_ops) . "\n";
 
@@ -822,8 +1499,31 @@ if (!empty($renumber_map)) {
 // (source adopted) and --strategy=ours (target kept its value;
 // re-merge will see source unchanged vs ancestor, target changed vs
 // ancestor → keep target, no re-conflict).
+// Sort schema ops to the front so column ADD/DROP/MODIFY happens before any
+// row INSERT into the (possibly new-shaped) target table.
+usort($final_db_ops, function($a, $b) {
+    $rank = function($op) {
+        if ($op['type'] === 'schema') {
+            // Among schema ops: drop_index → modify/drop column → add column → add_index
+            $sub = $op['op']['type'] ?? '';
+            return match ($sub) {
+                'drop_index'    => 0,
+                'drop_column'   => 1,
+                'modify_column' => 2,
+                'add_column'    => 3,
+                'add_index'     => 4,
+                default         => 5,
+            };
+        }
+        if ($op['type'] === 'new_table') return 6;
+        if ($op['type'] === 'drop_table') return 7;
+        return 8; // upsert / delete (row-level) last
+    };
+    return $rank($a) <=> $rank($b);
+});
+
 try {
-    [$db_applied, $snap_total] = sqlite_retry_busy(
+    [$db_applied, $snap_total, $schema_total] = sqlite_retry_busy(
         function() use ($db, $final_db_ops, $src_id, $src_prefix, $tgt_prefix) {
             $db->exec('BEGIN IMMEDIATE');
             try {
@@ -843,16 +1543,25 @@ try {
                             $db->exec('DROP TABLE IF EXISTS "'
                                 . SQLite3::escapeString($op['tgt']) . '"');
                             break;
+                        case 'schema':
+                            schema_apply_op($db, $op['op'], $src_prefix, $tgt_prefix);
+                            break;
                     }
                     $db_applied++;
                 }
 
-                // Refresh source branch's ancestor snapshot.
+                // Refresh source branch's ancestor snapshot (rows + schema).
                 $db->exec('DELETE FROM db_snapshots WHERE branch_id = ' . (int)$src_id);
+                $db->exec('DELETE FROM db_snapshots_schema WHERE branch_id = ' . (int)$src_id);
 
                 $snap_ins = $db->prepare(
                     "INSERT OR REPLACE INTO db_snapshots (branch_id, table_name, row_pk, row_json) "
                   . "VALUES (:bid, :tname, :rpk, :rjson)"
+                );
+                $schema_ins = $db->prepare(
+                    "INSERT OR REPLACE INTO db_snapshots_schema "
+                  . "(branch_id, table_name, ddl_sql, indexes_json) "
+                  . "VALUES (:bid, :tname, :ddl, :idx)"
                 );
 
                 $snap_tables = [];
@@ -863,6 +1572,7 @@ try {
                 }
 
                 $snap_total = 0;
+                $schema_total = 0;
                 foreach ($snap_tables as $tname) {
                     $pk_cols = db_pk_cols($db, $tname);
                     $rows = $db->query('SELECT * FROM "' . SQLite3::escapeString($tname) . '"');
@@ -881,10 +1591,29 @@ try {
                         $snap_ins->reset();
                         $snap_total++;
                     }
+
+                    // Snapshot the (possibly modified) source schema too.
+                    $ddl = (string)$db->querySingle(
+                        "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+                        . SQLite3::escapeString($tname) . "'"
+                    );
+                    $idxs = [];
+                    $ir = $db->query(
+                        "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='"
+                        . SQLite3::escapeString($tname) . "' AND sql IS NOT NULL"
+                    );
+                    while ($irow = $ir->fetchArray(SQLITE3_NUM)) $idxs[] = $irow[0];
+                    $schema_ins->bindValue(':bid',   $src_id, SQLITE3_INTEGER);
+                    $schema_ins->bindValue(':tname', $tname,  SQLITE3_TEXT);
+                    $schema_ins->bindValue(':ddl',   $ddl,    SQLITE3_TEXT);
+                    $schema_ins->bindValue(':idx',   json_encode($idxs, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                    $schema_ins->execute();
+                    $schema_ins->reset();
+                    $schema_total++;
                 }
 
                 $db->exec('COMMIT');
-                return [$db_applied, $snap_total];
+                return [$db_applied, $snap_total, $schema_total];
             } catch (\Throwable $e) {
                 $db->exec('ROLLBACK');
                 throw $e;
@@ -892,7 +1621,7 @@ try {
         }
     );
     echo "  DB ops applied: $db_applied\n";
-    echo "  refreshed ancestor snapshot for '$source': $snap_total rows\n";
+    echo "  refreshed ancestor snapshot for '$source': $snap_total rows, $schema_total tables\n";
 } catch (\Throwable $e) {
     fwrite(STDERR, "merge: DB phase failed: " . $e->getMessage() . "\n");
     $db->close();
