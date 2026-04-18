@@ -53,6 +53,23 @@ The entire site lives in one SQLite file (WAL mode).
 WAL mode guarantees every committed write is durable even on crash — no
 pack/unpack cycle, no temp state.
 
+### SF3 — WAL management
+- SQLite is opened with `PRAGMA wal_autocheckpoint = 500` by every writer
+  (`init_db.php`, `scripts/branchctl.php` sqlite_open, and
+  `fileserver/src/store.rs` Store::open), tighter than the 1000-page
+  default, so steady-state WAL growth stays below ~2 MB.
+- `fileserver` runs an in-process periodic `PRAGMA wal_checkpoint(TRUNCATE)`
+  on a 30-second cadence and one final checkpoint on Ctrl-C / SIGTERM, so
+  the on-disk `.fp` is a complete snapshot when the process exits cleanly.
+- `scripts/checkpoint.php <site.fp>` runs an explicit TRUNCATE checkpoint
+  from the CLI for ops use (shrink after a batch import, verify before
+  copying the `.fp` file).
+- The `.fp` site file is the primary artifact. While the server is
+  running, `.fp-wal` (write-ahead log) and `.fp-shm` (shared memory index)
+  accompany it. A `cp site.fp backup.fp` while the server is up requires
+  copying all three, or running `scripts/checkpoint.php` first to
+  collapse the WAL into the main file.
+
 ### SF2 — Branch isolation
 Both the filesystem and the database are branch-isolated.
 

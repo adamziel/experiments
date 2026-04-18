@@ -36,6 +36,12 @@ async fn main() -> Result<()> {
 
     let store = Arc::new(store::Store::open(&cli.db)?);
 
+    // Keep WAL bounded over long-running sessions: auto-checkpoint (set in
+    // Store::open) fires on its own once the WAL crosses ~500 pages, and
+    // this periodic thread plus the shutdown checkpoint below truncate it
+    // back to zero on a regular cadence. See TODO #5 / PRD F10.
+    store.spawn_periodic_checkpoint(std::time::Duration::from_secs(30));
+
     let sftp_store = Arc::clone(&store);
     let sftp_addr = cli.sftp_addr.clone();
     let sftp_handle = tokio::spawn(async move {
@@ -60,10 +66,21 @@ async fn main() -> Result<()> {
         }
     });
 
+    // Wait for Ctrl-C or any server to exit, whichever comes first, then
+    // flush the WAL before returning so the .fp file on disk is a
+    // complete, checkpointed snapshot — important for `cp site.fp` in
+    // operations and for a fast restart (nothing to replay from a -wal).
     tokio::select! {
-        _ = sftp_handle => {},
-        _ = smb_handle => {},
+        _ = tokio::signal::ctrl_c() => {
+            log::info!("fileserver: received Ctrl-C, shutting down");
+        }
+        _ = sftp_handle  => {},
+        _ = smb_handle   => {},
         _ = mysql_handle => {},
+    }
+
+    if let Err(e) = store.checkpoint_truncate() {
+        log::warn!("fileserver: shutdown wal_checkpoint failed: {}", e);
     }
 
     Ok(())

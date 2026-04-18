@@ -22,16 +22,49 @@ impl Store {
     pub fn open(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)
             .with_context(|| format!("opening db {:?}", db_path))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA foreign_keys=ON;
+             PRAGMA wal_autocheckpoint=500;",
+        )?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
     }
 
     pub fn open_and_init(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)
             .with_context(|| format!("opening db {:?}", db_path))?;
-        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA foreign_keys=ON;
+             PRAGMA wal_autocheckpoint=500;",
+        )?;
         conn.execute_batch(include_str!("../../sql/schema.sql"))?;
         Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+    }
+
+    /// Run `PRAGMA wal_checkpoint(TRUNCATE)` to flush WAL frames back
+    /// into the main DB and reset the `-wal` file to zero length.
+    /// Called on shutdown and periodically from `run_checkpoint_thread`.
+    pub fn checkpoint_truncate(&self) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        Ok(())
+    }
+
+    /// Spawn a background thread that runs `PRAGMA wal_checkpoint(TRUNCATE)`
+    /// every `interval` seconds. Keeps the WAL bounded over long-running
+    /// server lifetimes when writes are steady but not bursty enough to
+    /// trigger auto-checkpoint.
+    pub fn spawn_periodic_checkpoint(self: &Arc<Self>, interval: std::time::Duration) {
+        let this = Arc::clone(self);
+        std::thread::spawn(move || {
+            loop {
+                std::thread::sleep(interval);
+                if let Err(e) = this.checkpoint_truncate() {
+                    log::warn!("periodic wal_checkpoint failed: {}", e);
+                }
+            }
+        });
     }
 
     pub fn list_branches(&self) -> Result<Vec<String>> {

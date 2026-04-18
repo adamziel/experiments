@@ -184,7 +184,7 @@ and before deleting the `branches` row.
 
 ---
 
-## [ ] 5. WAL file can grow without bound [MEDIUM]
+## [x] 5. WAL file can grow without bound [MEDIUM]
 
 **Problem**
 SQLite WAL mode is enabled. By default, SQLite auto-checkpoints every 1000
