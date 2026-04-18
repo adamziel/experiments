@@ -145,9 +145,24 @@ struct StartArgs {
     #[arg(long, default_value_t = false)]
     no_fileserver: bool,
 
+    /// Number of concurrent PHP workers (PHP_CLI_SERVER_WORKERS).
+    /// Defaults to min(8, num_cpus * 2). Pass --workers 1 to force
+    /// single-worker mode (useful for debugging; the env var is then
+    /// left unset so PHP keeps its traditional single-request loop).
+    /// Linux / macOS only — ignored on Windows.
+    #[arg(long)]
+    workers: Option<usize>,
+
     // Deprecated: Dolt has been removed. Accepted but ignored.
     #[arg(long, hide = true, default_value = "127.0.0.1")]
     dolt_bind: String,
+}
+
+/// Default PHP worker count: min(8, num_cpus * 2). Capped so we don't spawn
+/// 32+ PHP processes on a big CI box for no benefit — WordPress request
+/// handling is bounded by SQLite write contention long before CPU.
+fn default_worker_count() -> usize {
+    std::cmp::min(8, num_cpus::get().saturating_mul(2))
 }
 
 #[derive(Args, Debug, Clone)]
@@ -354,13 +369,22 @@ fn start_command(args: StartArgs) -> Result<i32> {
 
     ensure_bootstrapped(&layout, &runtime, &args)?;
 
-    let mut php = start_php_server(&layout, &runtime, &args)?;
+    let workers = args.workers.unwrap_or_else(default_worker_count);
+    let mut php = start_php_server(&layout, &runtime, &args, workers)?;
     let mut fileserver = if args.no_fileserver {
         None
     } else {
         start_fileserver(&layout, &runtime, &args)?
     };
 
+    if workers > 1 {
+        println!(
+            "PHP workers: {} (PHP_CLI_SERVER_WORKERS)",
+            workers
+        );
+    } else {
+        println!("PHP workers: 1 (single-request mode — set --workers >1 for concurrency)");
+    }
     println!("Main site:  http://{}:{}/", args.root_host, args.port);
     println!(
         "Branch site: http://<branch>.{}:{}/",
@@ -650,6 +674,7 @@ fn start_php_server(
     layout: &Layout,
     runtime: &PortableRuntime,
     args: &StartArgs,
+    workers: usize,
 ) -> Result<ChildGuard> {
     let log = OpenOptions::new()
         .create(true)
@@ -657,7 +682,8 @@ fn start_php_server(
         .open(&layout.php_server_log)?;
     let log_err = log.try_clone()?;
 
-    let child = php_base_command(layout, runtime, &args.shared)
+    let mut command = php_base_command(layout, runtime, &args.shared);
+    command
         .arg("-d")
         .arg("log_errors=On")
         .arg("-d")
@@ -676,7 +702,20 @@ fn start_php_server(
         .env("BRANCHFS_WP_ROOT", &layout.wp_root)
         .env("BRANCHFS_ROOT_HOST", &args.root_host)
         .stdout(Stdio::from(log))
-        .stderr(Stdio::from(log_err))
+        .stderr(Stdio::from(log_err));
+
+    // PHP 7.4+ supports PHP_CLI_SERVER_WORKERS for multi-process handling of
+    // concurrent HTTP requests on the built-in server. Without it, a single
+    // slow request (plugin init, search, wp-cron) serializes every other
+    // request on the same server. Only set the env var when >1 so the
+    // single-worker debug path is byte-identical to the pre-workers behaviour.
+    // PHP_CLI_SERVER_WORKERS is a Linux/macOS-only feature — on Windows the
+    // built-in server simply ignores the variable, which is fine.
+    if workers > 1 {
+        command.env("PHP_CLI_SERVER_WORKERS", workers.to_string());
+    }
+
+    let child = command
         .spawn()
         .context("failed to start bundled php server")?;
 

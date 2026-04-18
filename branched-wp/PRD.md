@@ -132,14 +132,26 @@ forkpress start my-blog.fp
   [--host 127.0.0.1]  [--port 18080]
   [--sftp-port 2222]  [--smb-port 445]
   [--mysql-port 3306]
-  [--dolt-bind 0.0.0.0]   # deprecated no-op, kept for compat
+  [--workers N]            # PHP HTTP worker count (default: min(8, num_cpus*2))
+  [--dolt-bind 0.0.0.0]    # deprecated no-op, kept for compat
   [--no-fileserver]
   [--logs ./my-blog.logs]
 ```
 
 Starts: PHP HTTP server, SFTP server, SMB2 server, MySQL proxy.
 
-Startup banner must print connection strings for all active services.
+Startup banner must print connection strings for all active services and
+the active worker count (`PHP workers: N (PHP_CLI_SERVER_WORKERS)`).
+
+`--workers N` controls how many PHP processes the built-in server forks
+to handle concurrent HTTP requests. Default is
+`min(8, num_cpus::get() * 2)` — capped at 8 because WordPress request
+serving is bounded by SQLite write contention long before CPU. Pass
+`--workers 1` to force the legacy single-request loop (useful when
+attaching a debugger to the PHP process); `PHP_CLI_SERVER_WORKERS` is
+left unset in that mode so behaviour is byte-identical to the
+pre-multi-worker baseline. The flag is honoured on Linux and macOS;
+Windows is not a target (see Non-requirements).
 
 ### CLI3 — `forkpress branch <site.fp> <subcommand>`
 
@@ -202,6 +214,16 @@ to the re-assigned `b{new_id}_wp_` on the fly.
 - Main site: `http://localhost:<port>/`
 - Branch site: `http://<branch>.localhost:<port>/`
 - Branch selected by: subdomain > `X-Branch` header > `wp_branch` signed cookie > `?_branch=` query param > `main`
+- **Worker concurrency**: PHP's built-in server is launched with
+  `PHP_CLI_SERVER_WORKERS=N` so concurrent HTTP requests are handled
+  by N independent PHP processes instead of serialised through a
+  single accept loop. N is the resolved value of `forkpress start
+  --workers` (default `min(8, num_cpus*2)`). Each worker is a separate
+  process and opens its own SQLite handle on the `.fp` file; WAL mode
+  plus the SF2a busy-retry helpers keep the multi-writer path safe.
+  The PHP `branchfs` builtin extension is process-local, so workers
+  do not share OPcache bytecode or wrapper state — every worker
+  re-hydrates branchfs on the first request it serves.
 
 ### F2 — Git access
 - `git clone http://host:port/site.git` — exports current branch's file tree
@@ -376,6 +398,8 @@ a real conflict do not touch `db_snapshots`.
 - OAuth / SSO / TOTP / passwordless authentication
 - TLS / HTTPS
 - Multi-user concurrent editing with conflict resolution
-- Windows binary target
+- Windows binary target — implies `PHP_CLI_SERVER_WORKERS` is unavailable;
+  multi-worker HTTP serving is therefore Linux/macOS only
+- (Removed — single-process PHP serving replaced by multi-worker mode in F1 / CLI2)
 - (Removed — now implemented via ancestor snapshot refresh in F9)
 - DB merge for schema changes (column add/drop across branches)

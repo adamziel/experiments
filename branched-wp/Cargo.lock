@@ -982,6 +982,7 @@ dependencies = [
  "ctrlc",
  "flate2",
  "libc",
+ "num_cpus",
  "tar",
  "walkdir",
  "zip",

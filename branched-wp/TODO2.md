@@ -125,7 +125,7 @@ SQLite row, which SQLite handles but with noticeably higher latency.
 
 ---
 
-## [ ] 3. PHP server single-threaded: one slow request blocks the whole site [HIGH]
+## [x] 3. PHP server single-threaded: one slow request blocks the whole site [HIGH]
 
 **Problem**
 `forkpress start` launches PHP's built-in server with default concurrency,
