@@ -60,6 +60,10 @@ if (!extension_loaded('branchfs')) {
 
 require_once __DIR__ . '/opcache.php';
 require_once __DIR__ . '/sqlite_retry.php';
+// Shared with branchctl.php: provides cow_install_parent_triggers etc.,
+// used to recreate parent-side ancestor-capture triggers around schema
+// rebuilds in this script.
+require_once __DIR__ . '/cow_helpers.php';
 
 branchfs_set_db($db_path);
 
@@ -122,6 +126,19 @@ function merge_fk_map(): array {
  * fall back to PRAGMA table_info for a single-INTEGER-PK column.
  */
 function merge_table_is_autoinc_pk(SQLite3 $db, string $table): bool {
+    // For COW views, walk to the underlying overlay — autoincrement
+    // metadata lives on the real table, not the view.
+    $type = (string)$db->querySingle(
+        "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($table) . "'"
+    );
+    if ($type === 'view') {
+        $overlay = $table . '__overlay';
+        if ((string)$db->querySingle(
+            "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($overlay) . "'"
+        ) === 'table') {
+            $table = $overlay;
+        }
+    }
     $ddl = $db->querySingle(
         "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
         . SQLite3::escapeString($table) . "'"
@@ -262,8 +279,23 @@ function merge_find_ancestor(SQLite3 $db, string $src, string $tgt): string {
 
 // ── DB merge helpers ──────────────────────────────────────────────────────────
 
-/** Get ordered PRIMARY KEY column names for a table (empty if no explicit PK). */
+/** Get ordered PRIMARY KEY column names for a table (empty if no explicit PK).
+ *  For COW views (b{N}_wp_X), walk to the underlying overlay table — PRAGMA
+ *  on a view always reports pk=0. The overlay shares the parent's PK shape. */
 function db_pk_cols(SQLite3 $db, string $table): array {
+    // If $table is a COW view, walk to its overlay (which has the real PK).
+    $type = (string)$db->querySingle(
+        "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($table) . "'"
+    );
+    if ($type === 'view') {
+        $overlay = $table . '__overlay';
+        $overlay_type = (string)$db->querySingle(
+            "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($overlay) . "'"
+        );
+        if ($overlay_type === 'table') {
+            $table = $overlay;
+        }
+    }
     $pk = [];
     $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($table) . '")');
     while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
@@ -298,6 +330,232 @@ function db_ancestor_rows(SQLite3 $db, int $branch_id, string $table_name): arra
     $r = $s->execute();
     while ($row = $r->fetchArray(SQLITE3_ASSOC)) $rows[$row['row_pk']] = $row['row_json'];
     return $rows;
+}
+
+/**
+ * COW ancestor row resolution.
+ *
+ * Under COW, a branch's "fork-time" ancestor view is reconstructed lazily:
+ *   - Rows that the branch overlaid (in b{id}_wp_X__overlay) need an ancestor
+ *     reference: that's the parent's row at the same PK at fork time.
+ *   - Rows the branch tombstoned (in b{id}_wp_X__tombstones) need an ancestor:
+ *     the parent's row at fork time.
+ *   - All other rows are inherited unchanged from the parent's current view —
+ *     so source's "current" value equals ancestor (no diff possible from
+ *     source's side), and merge correctly takes a noop.
+ *
+ * Pragmatic approximation: ancestor = parent's CURRENT row at the same PK.
+ * This is exact when the parent hasn't independently mutated that row since
+ * the fork. When the parent HAS mutated it, the merge will either degenerate
+ * to a clean update (if branch's overlay was the only divergence) or surface
+ * a conflict — which is the correct outcome since both sides changed the row.
+ *
+ * Returns [pk_json => row_json] containing entries only for divergent PKs.
+ * Pass-through to db_snapshots for legacy (non-COW) branches still works
+ * via the caller.
+ */
+function db_ancestor_rows_cow(SQLite3 $db, int $branch_id, string $logical_name,
+                              array $pk_cols, string $table_suffix): array {
+    $rows = [];
+    $overlay_name = $logical_name . '__overlay';
+    $tomb_name    = $logical_name . '__tombstones';
+
+    // Look up the parent table for this branch+suffix from db_cow_branches.
+    $st = $db->prepare(
+        "SELECT parent_table_name FROM db_cow_branches "
+      . "WHERE branch_id = :b AND table_suffix = :s"
+    );
+    $st->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $st->bindValue(':s', $table_suffix, SQLITE3_TEXT);
+    $rs = $st->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+    $parent_table = $row ? (string)$row['parent_table_name'] : null;
+    $rs->finalize();
+    $st->close();
+    if ($parent_table === null) return $rows;
+
+    // Gather divergent PKs from overlay + tombstone.
+    $divergent_pks = [];
+    $or = $db->query('SELECT * FROM "' . SQLite3::escapeString($overlay_name) . '"');
+    while ($drow = $or->fetchArray(SQLITE3_ASSOC)) {
+        if (empty($pk_cols)) {
+            $pk_map = $drow;
+        } else {
+            $pk_map = [];
+            foreach ($pk_cols as $c) $pk_map[$c] = $drow[$c] ?? null;
+        }
+        $divergent_pks[json_encode($pk_map, JSON_UNESCAPED_UNICODE)] = $pk_map;
+    }
+    $tr = $db->query('SELECT * FROM "' . SQLite3::escapeString($tomb_name) . '"');
+    while ($drow = $tr->fetchArray(SQLITE3_ASSOC)) {
+        $pk_map = [];
+        foreach ($pk_cols as $c) $pk_map[$c] = $drow[$c] ?? null;
+        $divergent_pks[json_encode($pk_map, JSON_UNESCAPED_UNICODE)] = $pk_map;
+    }
+
+    if (empty($divergent_pks)) return $rows;
+
+    // First: look up captured fork-time ancestors in db_ancestor_overlay
+    // (populated by parent-side BEFORE-UPDATE/DELETE triggers when the
+    // parent diverged before the branch did).
+    $anc_lookup = $db->prepare(
+        "SELECT row_pk, row_json FROM db_ancestor_overlay "
+      . "WHERE branch_id = :b AND table_name = :t"
+    );
+    $anc_lookup->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $anc_lookup->bindValue(':t', $logical_name, SQLITE3_TEXT);
+    $rr = $anc_lookup->execute();
+    while ($row = $rr->fetchArray(SQLITE3_ASSOC)) {
+        // Only include ancestors that match a divergent PK (i.e. that the
+        // branch actually overlays/tombstones — others are noise from
+        // unrelated parent edits).
+        if (isset($divergent_pks[$row['row_pk']])) {
+            $rows[$row['row_pk']] = $row['row_json'];
+        }
+    }
+
+    // Second: any PK that was INSERTED on the parent AFTER fork is "absent
+    // in ancestor" — populated by the parent-side AFTER-INSERT trigger.
+    // Excluding it from $rows leaves the merge to compute $a===null, so
+    // it correctly recognizes "both sides inserted same PK independently"
+    // as a conflict instead of "source modified target's row".
+    $pf_lookup = $db->prepare(
+        "SELECT row_pk FROM db_post_fork_inserts "
+      . "WHERE branch_id = :b AND table_name = :t"
+    );
+    $pf_lookup->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $pf_lookup->bindValue(':t', $logical_name, SQLITE3_TEXT);
+    $pfr = $pf_lookup->execute();
+    $post_fork = [];
+    while ($row = $pfr->fetchArray(SQLITE3_ASSOC)) {
+        $post_fork[$row['row_pk']] = true;
+    }
+
+    // Third: fall back to parent's CURRENT row for any divergent PK we
+    // didn't find in the ancestor overlay AND that wasn't post-fork-inserted.
+    // This is exact when the parent hasn't independently mutated the row
+    // since the fork — i.e. the ancestor IS the parent's current state.
+    $where = empty($pk_cols)
+        ? '0'
+        : implode(' AND ', array_map(fn($c) => '"' . $c . '" = :' . $c, $pk_cols));
+    $sel = $db->prepare(
+        'SELECT * FROM "' . SQLite3::escapeString($parent_table) . '" WHERE ' . $where
+    );
+    foreach ($divergent_pks as $pk_json => $pk_map) {
+        if (isset($rows[$pk_json])) continue; // already from db_ancestor_overlay
+        if (isset($post_fork[$pk_json])) continue; // ancestor absent (parent inserted post-fork)
+        if (empty($pk_cols)) continue;
+        $sel->reset();
+        foreach ($pk_cols as $c) {
+            $v = $pk_map[$c] ?? null;
+            $type = match (true) {
+                $v === null  => SQLITE3_NULL,
+                is_int($v)   => SQLITE3_INTEGER,
+                is_float($v) => SQLITE3_FLOAT,
+                default      => SQLITE3_TEXT,
+            };
+            $sel->bindValue(':' . $c, $v, $type);
+        }
+        $rr = $sel->execute();
+        $prow = $rr->fetchArray(SQLITE3_ASSOC);
+        $rr->finalize();
+        if ($prow !== false && $prow !== null) {
+            $rows[$pk_json] = json_encode($prow, JSON_UNESCAPED_UNICODE);
+        }
+        // If parent doesn't have the row at all (and it wasn't captured
+        // pre-deletion either), ancestor is "absent" → leave $pk_json out.
+    }
+    return $rows;
+}
+
+/** Lazy-fill the COW ancestor rows for any PK where src_rows[$pk] differs
+ *  from tgt_rows[$pk] but $anc_rows[$pk] is missing. Such PKs are
+ *  inherited rows that look "different" (e.g. because a schema change
+ *  made src view return an extra column) — without an ancestor, the row
+ *  diff would falsely classify them as "both inserted different rows".
+ *
+ *  We fill them by looking up the parent's CURRENT row at that PK, which
+ *  is exact when the parent hasn't independently edited the row since
+ *  fork — i.e. it's the same value the branch saw as ancestor through
+ *  inheritance. */
+function db_ancestor_fill_for_diff(
+    SQLite3 $db, int $branch_id, string $table_suffix,
+    array $pk_cols, array $src_rows, array $tgt_rows, array $anc_rows,
+    string $logical_name = ''
+): array {
+    if (empty($pk_cols)) return $anc_rows;
+
+    // Look up the parent table for this branch+suffix.
+    $st = $db->prepare(
+        "SELECT parent_table_name FROM db_cow_branches "
+      . "WHERE branch_id = :b AND table_suffix = :s"
+    );
+    $st->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $st->bindValue(':s', $table_suffix, SQLITE3_TEXT);
+    $rs = $st->execute();
+    $row = $rs->fetchArray(SQLITE3_ASSOC);
+    $parent_table = $row ? (string)$row['parent_table_name'] : null;
+    $rs->finalize();
+    if ($parent_table === null) return $anc_rows;
+
+    // Pre-load post-fork-inserted PKs so we don't fill ancestor for those.
+    // ("Both inserted same PK" must remain a conflict — ancestor must stay
+    // null.)
+    $post_fork = [];
+    if ($logical_name !== '') {
+        $pf = $db->prepare(
+            "SELECT row_pk FROM db_post_fork_inserts "
+          . "WHERE branch_id = :b AND table_name = :t"
+        );
+        $pf->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+        $pf->bindValue(':t', $logical_name, SQLITE3_TEXT);
+        $pfr = $pf->execute();
+        while ($row2 = $pfr->fetchArray(SQLITE3_ASSOC)) {
+            $post_fork[$row2['row_pk']] = true;
+        }
+    }
+
+    $where = implode(' AND ', array_map(fn($c) => '"' . $c . '" = :' . $c, $pk_cols));
+    $sel = $db->prepare(
+        'SELECT * FROM "' . SQLite3::escapeString($parent_table) . '" WHERE ' . $where
+    );
+
+    foreach ($src_rows as $pk => $src_json) {
+        if (isset($anc_rows[$pk])) continue;
+        if (isset($post_fork[$pk])) continue;
+        $tgt_json = $tgt_rows[$pk] ?? null;
+        // If src and tgt agree, no ancestor needed (this PK already noops).
+        if ($src_json === $tgt_json) continue;
+
+        $pk_map = json_decode($pk, true);
+        if (!is_array($pk_map)) continue;
+        $sel->reset();
+        foreach ($pk_cols as $c) {
+            $v = $pk_map[$c] ?? null;
+            $type = match (true) {
+                $v === null  => SQLITE3_NULL,
+                is_int($v)   => SQLITE3_INTEGER,
+                is_float($v) => SQLITE3_FLOAT,
+                default      => SQLITE3_TEXT,
+            };
+            $sel->bindValue(':' . $c, $v, $type);
+        }
+        $rr = $sel->execute();
+        $prow = $rr->fetchArray(SQLITE3_ASSOC);
+        $rr->finalize();
+        if ($prow !== false && $prow !== null) {
+            $anc_rows[$pk] = json_encode($prow, JSON_UNESCAPED_UNICODE);
+        }
+    }
+    return $anc_rows;
+}
+
+/** True iff $branch_id has any COW marker rows in db_cow_branches. */
+function branch_is_cow(SQLite3 $db, int $branch_id): bool {
+    $n = (int)$db->querySingle(
+        "SELECT COUNT(*) FROM db_cow_branches WHERE branch_id = $branch_id"
+    );
+    return $n > 0;
 }
 
 /** INSERT OR REPLACE a row into a table from its JSON representation. */
@@ -353,8 +611,22 @@ function db_delete_by_pk(SQLite3 $db, string $table, string $pk_json, array $pk_
 // names embed the b{branch_id}_wp_ prefix and must be normalized away).
 
 /** Read live columns of a table from PRAGMA table_info: ordered list of
- *  ['name' => …, 'type' => …, 'notnull' => 0|1, 'dflt_value' => …, 'pk' => 0|1+]. */
+ *  ['name' => …, 'type' => …, 'notnull' => 0|1, 'dflt_value' => …, 'pk' => 0|1+].
+ *  For COW views, walks to the underlying overlay so notnull/default/pk
+ *  attributes are accurate (PRAGMA on a view reports them as zero/null). */
 function schema_columns_from_pragma(SQLite3 $db, string $table): array {
+    $type = (string)$db->querySingle(
+        "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($table) . "'"
+    );
+    if ($type === 'view') {
+        $overlay = $table . '__overlay';
+        $overlay_type = (string)$db->querySingle(
+            "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($overlay) . "'"
+        );
+        if ($overlay_type === 'table') {
+            $table = $overlay;
+        }
+    }
     $cols = [];
     $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($table) . '")');
     while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
@@ -747,40 +1019,85 @@ function schema_extract_column_def(string $ddl, string $col_name): ?string {
     }
 }
 
+/** Resolve a logical table name to its physical write target. For COW
+ *  views, this is the overlay. For real tables, it's the table itself. */
+function schema_physical_target(SQLite3 $db, string $name): string {
+    $type = (string)$db->querySingle(
+        "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($name) . "'"
+    );
+    if ($type === 'view') {
+        $overlay = $name . '__overlay';
+        $ov_type = (string)$db->querySingle(
+            "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($overlay) . "'"
+        );
+        if ($ov_type === 'table') return $overlay;
+    }
+    return $name;
+}
+
+/** After a schema-altering op on a COW overlay, recreate the dependent
+ *  view so SELECT * pulls the new column shape. */
+function schema_recreate_view_if_cow(SQLite3 $db, string $logical_name): void {
+    $type = (string)$db->querySingle(
+        "SELECT type FROM sqlite_master WHERE name='" . SQLite3::escapeString($logical_name) . "'"
+    );
+    if ($type !== 'view') return;
+    // Pull the suffix and let branchctl helpers do the work.
+    if (!preg_match('/^b(\d+)_wp_(.+)$/', $logical_name, $m)) return;
+    $suffix = $m[2];
+    if (function_exists('cow_recreate_views_for_table')) {
+        cow_recreate_views_for_table($db, $suffix);
+    }
+}
+
 /** Apply a single schema op against the target table. May rebuild the table
- *  for DROP/MODIFY ops on older SQLite, or use ALTER TABLE on 3.35+. */
+ *  for DROP/MODIFY ops on older SQLite, or use ALTER TABLE on 3.35+.
+ *
+ *  For COW: the op references the logical (view) name; we ALTER the
+ *  underlying overlay and recreate the view. */
 function schema_apply_op(SQLite3 $db, array $op, string $src_prefix, string $tgt_prefix): void {
+    // Translate ops that reference a logical (view) name to the physical
+    // overlay name so the underlying ALTER actually mutates real schema.
+    $logical_for_view_refresh = null;
+    if (isset($op['table'])) {
+        $physical = schema_physical_target($db, $op['table']);
+        if ($physical !== $op['table']) {
+            $logical_for_view_refresh = $op['table'];
+            $op['table'] = $physical;
+        }
+    }
+
     switch ($op['type']) {
         case 'add_column':
             // ALTER TABLE works for ADD COLUMN even on old SQLite.
             $db->exec('ALTER TABLE "' . SQLite3::escapeString($op['table']) . '" '
                     . 'ADD COLUMN ' . $op['col_def']);
+            if ($logical_for_view_refresh !== null) {
+                schema_recreate_view_if_cow($db, $logical_for_view_refresh);
+            }
             break;
 
         case 'drop_column':
             // ALTER TABLE … DROP COLUMN requires SQLite 3.35+; try and fall
-            // back to table-rebuild on failure.
+            // back to table-rebuild on failure. We use schema_rebuild_table_drop_columns
+            // directly here for consistency — a successful native ALTER would
+            // skip the COW dependent-view drop/recreate dance, but with the
+            // dependent view still referencing $tgt, the native ALTER is
+            // blocked anyway (SQLite refuses DROP COLUMN on a column referenced
+            // by a view's SELECT *). Going straight to rebuild handles both.
             $tgt = $op['table'];
-            try {
-                @$db->exec('ALTER TABLE "' . SQLite3::escapeString($tgt) . '" '
-                         . 'DROP COLUMN "' . SQLite3::escapeString($op['col_name']) . '"');
-                // Verify it actually dropped.
-                $still_there = false;
-                $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($tgt) . '")');
-                while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-                    if ((string)$row['name'] === $op['col_name']) { $still_there = true; break; }
-                }
-                if ($still_there) {
-                    schema_rebuild_table_drop_columns($db, $tgt, [$op['col_name']]);
-                }
-            } catch (\Throwable $e) {
-                schema_rebuild_table_drop_columns($db, $tgt, [$op['col_name']]);
+            schema_rebuild_table_drop_columns($db, $tgt, [$op['col_name']]);
+            if ($logical_for_view_refresh !== null) {
+                schema_recreate_view_if_cow($db, $logical_for_view_refresh);
             }
             break;
 
         case 'modify_column':
             // No native ALTER COLUMN in SQLite — rebuild.
             schema_rebuild_table_modify_column($db, $op['table'], $op['col_name'], $op['new_col_def'], $op['src_col']);
+            if ($logical_for_view_refresh !== null) {
+                schema_recreate_view_if_cow($db, $logical_for_view_refresh);
+            }
             break;
 
         case 'add_index':
@@ -813,12 +1130,84 @@ function schema_apply_op(SQLite3 $db, array $op, string $src_prefix, string $tgt
     }
 }
 
+/** Drop COW parent-side ancestor-capture triggers attached to $table, if
+ *  any. Returns the trigger SQL strings so the caller can recreate them
+ *  after a rebuild. */
+function schema_drop_cow_anc_triggers(SQLite3 $db, string $table): array {
+    $rows = [];
+    $st = $db->prepare(
+        "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND tbl_name = :t "
+      . "AND name LIKE 'cow\\_anc\\_\\_%' ESCAPE '\\'"
+    );
+    $st->bindValue(':t', $table, SQLITE3_TEXT);
+    $r = $st->execute();
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
+    foreach ($rows as $row) {
+        $db->exec('DROP TRIGGER IF EXISTS "' . SQLite3::escapeString($row['name']) . '"');
+    }
+    return $rows;
+}
+
+/** Drop COW dependent views (and their INSTEAD OF triggers) that reference
+ *  $parent_table. Returns the (suffix, branch_id, parent_table) tuples
+ *  so cow_recreate_views_for_table can be called per-suffix to rebuild
+ *  them after the parent rebuild completes. */
+function schema_drop_dependent_cow_views(SQLite3 $db, string $parent_table): array {
+    $deps = [];
+    $st = $db->prepare(
+        "SELECT branch_id, table_suffix FROM db_cow_branches WHERE parent_table_name = :p"
+    );
+    $st->bindValue(':p', $parent_table, SQLITE3_TEXT);
+    $r = $st->execute();
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $deps[] = $row;
+    foreach ($deps as $row) {
+        $logical = "b{$row['branch_id']}_wp_{$row['table_suffix']}";
+        foreach (["{$logical}__cow_ins", "{$logical}__cow_upd", "{$logical}__cow_del"] as $trg) {
+            $db->exec("DROP TRIGGER IF EXISTS \"$trg\"");
+        }
+        $db->exec("DROP VIEW IF EXISTS \"$logical\"");
+    }
+    return $deps;
+}
+
+/** Recreate COW dependent views for the suffixes we previously dropped. */
+function schema_recreate_dependent_cow_views(SQLite3 $db, array $deps): void {
+    if (!function_exists('cow_recreate_views_for_table')) return;
+    $seen = [];
+    foreach ($deps as $row) {
+        $sfx = (string)$row['table_suffix'];
+        if (isset($seen[$sfx])) continue;
+        $seen[$sfx] = true;
+        cow_recreate_views_for_table($db, $sfx);
+    }
+}
+
+/** Recreate previously-saved COW parent-side ancestor-capture triggers. */
+function schema_recreate_cow_anc_triggers(SQLite3 $db, array $trigger_defs): void {
+    foreach ($trigger_defs as $tg) {
+        if (!empty($tg['sql'])) {
+            @$db->exec($tg['sql']);
+        }
+    }
+}
+
 /** SQLite-3.34-and-older compatible "drop columns" by full table rebuild.
- *  Also re-creates indexes that don't reference the dropped columns. */
+ *  Also re-creates indexes that don't reference the dropped columns.
+ *  Drops/recreates COW parent-side ancestor triggers around the rebuild
+ *  (otherwise the trigger keeps the table locked during DROP/RENAME).
+ *  Also rebuilds the trigger SQL with the NEW column set so OLD/NEW
+ *  references no longer point at dropped columns. */
 function schema_rebuild_table_drop_columns(SQLite3 $db, string $table, array $drop_cols): void {
+    $saved_triggers = schema_drop_cow_anc_triggers($db, $table);
+    $dropped_views = schema_drop_dependent_cow_views($db, $table);
     $cols = schema_columns_from_pragma($db, $table);
     $keep = array_values(array_filter($cols, fn($c) => !in_array($c['name'], $drop_cols, true)));
-    if (empty($keep)) return;
+    if (empty($keep)) {
+        // Restore triggers (best-effort) before bailing.
+        schema_recreate_cow_anc_triggers($db, $saved_triggers);
+        schema_recreate_dependent_cow_views($db, $dropped_views);
+        return;
+    }
 
     $col_names = array_map(fn($c) => '"' . $c['name'] . '"', $keep);
     $col_list  = implode(', ', $col_names);
@@ -843,6 +1232,16 @@ function schema_rebuild_table_drop_columns(SQLite3 $db, string $table, array $dr
     $db->exec('DROP TABLE "' . SQLite3::escapeString($table) . '"');
     $db->exec('ALTER TABLE "' . SQLite3::escapeString($tmp_table)
             . '" RENAME TO "' . SQLite3::escapeString($table) . '"');
+
+    // Re-install COW parent-side ancestor capture triggers AFTER the
+    // rebuild — but with the new (post-drop) column set baked into the
+    // OLD/NEW JSON projection. We can't just exec the saved trigger SQL
+    // because it references the now-dropped column. cow_install_parent_triggers
+    // re-derives the projection from the live PRAGMA.
+    if (!empty($saved_triggers) && function_exists('cow_install_parent_triggers')) {
+        cow_install_parent_triggers($db, $table);
+    }
+    schema_recreate_dependent_cow_views($db, $dropped_views);
 }
 
 /** Rebuild a table to apply a column-type change. Uses src_col's metadata
@@ -850,6 +1249,8 @@ function schema_rebuild_table_drop_columns(SQLite3 $db, string $table, array $dr
 function schema_rebuild_table_modify_column(SQLite3 $db, string $table,
                                             string $col_name, string $new_col_def,
                                             array $src_col): void {
+    $saved_triggers = schema_drop_cow_anc_triggers($db, $table);
+    $dropped_views = schema_drop_dependent_cow_views($db, $table);
     $cols = schema_columns_from_pragma($db, $table);
     $ddl_parts = [];
     $col_names = [];
@@ -879,6 +1280,11 @@ function schema_rebuild_table_modify_column(SQLite3 $db, string $table,
     $db->exec('DROP TABLE "' . SQLite3::escapeString($table) . '"');
     $db->exec('ALTER TABLE "' . SQLite3::escapeString($tmp_table)
             . '" RENAME TO "' . SQLite3::escapeString($table) . '"');
+
+    if (!empty($saved_triggers) && function_exists('cow_install_parent_triggers')) {
+        cow_install_parent_triggers($db, $table);
+    }
+    schema_recreate_dependent_cow_views($db, $dropped_views);
 }
 
 /** Copy DDL + rows from $src_table to $tgt_table (renaming table/index names). */
@@ -1112,7 +1518,9 @@ $merge_load_schema_ancestor = function (SQLite3 $db, int $branch_id, string $tna
         $tnames = [];
         $tr = $db->query(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
-            . SQLite3::escapeString($bprefix) . "%'"
+            . SQLite3::escapeString($bprefix) . "%' "
+            . "AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+            . "AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'"
         );
         while ($trow = $tr->fetchArray(SQLITE3_NUM)) $tnames[] = $trow[0];
         if (empty($tnames)) continue;
@@ -1147,16 +1555,23 @@ $merge_load_schema_ancestor = function (SQLite3 $db, int $branch_id, string $tna
 }
 
 // Collect table suffixes present in source, target, and ancestor snapshot.
+// Under COW, b{id}_wp_* on a non-main branch is a view, not a table — read
+// from both. Skip overlay/tombstone artifact names so they don't appear
+// as merge candidates.
 $src_tables = [];
-$r = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
-    . SQLite3::escapeString($src_prefix) . "%'");
+$r = $db->query("SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name LIKE '"
+    . SQLite3::escapeString($src_prefix) . "%' "
+    . "AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+    . "AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'");
 while ($row = $r->fetchArray(SQLITE3_NUM)) {
     $src_tables[substr($row[0], strlen($src_prefix))] = $row[0];
 }
 
 $tgt_tables = [];
-$r = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
-    . SQLite3::escapeString($tgt_prefix) . "%'");
+$r = $db->query("SELECT name FROM sqlite_master WHERE type IN ('table','view') AND name LIKE '"
+    . SQLite3::escapeString($tgt_prefix) . "%' "
+    . "AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+    . "AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'");
 while ($row = $r->fetchArray(SQLITE3_NUM)) {
     $tgt_tables[substr($row[0], strlen($tgt_prefix))] = $row[0];
 }
@@ -1165,6 +1580,29 @@ $anc_tables = [];
 $r = $db->query("SELECT DISTINCT table_name FROM db_snapshots WHERE branch_id = $src_id");
 while ($row = $r->fetchArray(SQLITE3_NUM)) {
     $anc_tables[substr($row[0], strlen($src_prefix))] = $row[0];
+}
+
+// Detect whether source is a COW branch — ancestor lookup falls through to
+// db_ancestor_rows_cow() (parent-current-state-based) instead of db_snapshots.
+$src_is_cow = branch_is_cow($db, $src_id);
+
+// Under COW, db_snapshots is empty; treat every INHERITED (i.e. tracked in
+// db_cow_branches) suffix as "ancestor present" so the row-level walk runs
+// against db_ancestor_rows_cow(). Suffixes that exist on the source but were
+// NOT inherited from the parent (e.g. a brand-new plugin table created on
+// the branch) stay out of $anc_tables — they are correctly treated as
+// "new table on source".
+if ($src_is_cow) {
+    $cow_inherited_suffixes = [];
+    $rs = $db->query("SELECT table_suffix FROM db_cow_branches WHERE branch_id = $src_id");
+    while ($crow = $rs->fetchArray(SQLITE3_NUM)) {
+        $cow_inherited_suffixes[(string)$crow[0]] = true;
+    }
+    foreach (array_keys($src_tables) as $sfx) {
+        if (isset($cow_inherited_suffixes[$sfx]) && !isset($anc_tables[$sfx])) {
+            $anc_tables[$sfx] = $src_prefix . $sfx;
+        }
+    }
 }
 
 $all_suffixes = array_unique(array_merge(
@@ -1210,6 +1648,12 @@ foreach ($all_suffixes as $suffix) {
     // Source deleted the table (was in ancestor, no longer in source).
     if ($in_anc && !$in_src) {
         if (!$in_tgt) { $db_noop++; continue; } // both deleted → noop
+        if ($src_is_cow) {
+            // For COW branches, we don't track per-table "deletion" — a missing
+            // suffix means it never existed, never that source dropped it.
+            $db_noop++;
+            continue;
+        }
         $anc_rows = db_ancestor_rows($db, $src_id, $anc_tname);
         $tgt_pk   = db_pk_cols($db, $tgt_tname);
         $tgt_rows = db_table_rows($db, $tgt_tname, $tgt_pk);
@@ -1229,7 +1673,11 @@ foreach ($all_suffixes as $suffix) {
     if ($in_src && !$in_tgt && $in_anc) {
         $src_pk   = db_pk_cols($db, $src_tname);
         $src_rows = db_table_rows($db, $src_tname, $src_pk);
-        $anc_rows = db_ancestor_rows($db, $src_id, $anc_tname);
+        if ($src_is_cow) {
+            $anc_rows = db_ancestor_rows_cow($db, $src_id, $src_tname, $src_pk, $suffix);
+        } else {
+            $anc_rows = db_ancestor_rows($db, $src_id, $anc_tname);
+        }
         if ($src_rows === $anc_rows) {
             $db_noop++; // source unchanged; target's deletion wins
         } else {
@@ -1247,15 +1695,50 @@ foreach ($all_suffixes as $suffix) {
     if ($in_src && $in_tgt) {
         // ── Schema-level 3-way diff (must run BEFORE row-level so any
         // ADD COLUMN happens before we INSERT a source row into target).
+        // For COW source ($src_tname is a view), schema_columns_from_pragma
+        // works on the view directly (PRAGMA returns the view's column
+        // shape) but the source DDL must come from the underlying overlay
+        // table (the view's `CREATE VIEW … SELECT …` text isn't a
+        // CREATE TABLE statement).
         $src_cols = schema_columns_from_pragma($db, $src_tname);
         $tgt_cols = schema_columns_from_pragma($db, $tgt_tname);
         $src_idxs = schema_indexes_from_master($db, $src_tname);
         $tgt_idxs = schema_indexes_from_master($db, $tgt_tname);
 
-        $src_ddl_now = (string)$db->querySingle(
-            "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+        $src_ddl_source_tbl = $src_tname;
+        $src_type = (string)$db->querySingle(
+            "SELECT type FROM sqlite_master WHERE name='"
             . SQLite3::escapeString($src_tname) . "'"
         );
+        if ($src_type === 'view') {
+            $src_ddl_source_tbl = $src_tname . '__overlay';
+            // Read indexes from the overlay too, then rewrite their
+            // attached-table reference to the LOGICAL name so the merge's
+            // generic prefix-rename machinery works downstream.
+            $src_idxs = schema_indexes_from_master($db, $src_ddl_source_tbl);
+            foreach ($src_idxs as &$_ix) {
+                $_ix['sql'] = preg_replace(
+                    '/\bON\s+"?' . preg_quote($src_ddl_source_tbl, '/') . '"?\s*\(/i',
+                    'ON "' . $src_tname . '" (',
+                    $_ix['sql'], 1
+                );
+            }
+            unset($_ix);
+        }
+        $src_ddl_now_raw = (string)$db->querySingle(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+            . SQLite3::escapeString($src_ddl_source_tbl) . "'"
+        );
+        // Rewrite the overlay's DDL so its embedded CREATE TABLE name
+        // matches $src_tname (the view's logical name) — schema_extract_column_def
+        // and friends key off this name.
+        $src_ddl_now = preg_replace(
+            '/^(CREATE\s+TABLE\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?'
+            . preg_quote($src_ddl_source_tbl, '/') . '"?/is',
+            '$1IF NOT EXISTS "' . $src_tname . '"',
+            $src_ddl_now_raw, 1
+        );
+        if ($src_ddl_now === null || $src_ddl_now === '') $src_ddl_now = $src_ddl_now_raw;
 
         $anc_schema = $merge_load_schema_ancestor($db, $src_id, $src_tname);
         if ($anc_schema === null) {
@@ -1301,7 +1784,22 @@ foreach ($all_suffixes as $suffix) {
         $tgt_pk   = db_pk_cols($db, $tgt_tname);
         $src_rows = db_table_rows($db, $src_tname, $src_pk);
         $tgt_rows = db_table_rows($db, $tgt_tname, $tgt_pk);
-        $anc_rows = $in_anc ? db_ancestor_rows($db, $src_id, $anc_tname) : [];
+        if ($src_is_cow) {
+            // COW source: ancestor for divergent rows = captured fork-time
+            // value (or parent's current as fallback). For non-divergent
+            // rows that nevertheless differ src vs tgt (e.g. because the
+            // branch ALTERed schema), populate ancestor as parent's current
+            // row — that lets the row walk compute "src changed, target
+            // unchanged → upsert source" instead of falsely flagging
+            // "both inserted different rows".
+            $anc_rows = db_ancestor_rows_cow($db, $src_id, $src_tname, $src_pk, $suffix);
+            $anc_rows = db_ancestor_fill_for_diff(
+                $db, $src_id, $suffix, $src_pk, $src_rows, $tgt_rows, $anc_rows,
+                $src_tname
+            );
+        } else {
+            $anc_rows = $in_anc ? db_ancestor_rows($db, $src_id, $anc_tname) : [];
+        }
 
         $all_pks = array_unique(array_merge(
             array_keys($src_rows), array_keys($tgt_rows), array_keys($anc_rows)
@@ -1442,6 +1940,11 @@ if ($db_conflict_ops && $strategy === 'abort') {
 
 // Resolve conflicts per strategy.
 $final_db_ops = $db_clean_ops;
+// For COW: track PKs whose conflicts were resolved via "ours" so we can
+// stamp db_ancestor_overlay with source's current row. That way the next
+// merge sees s == a → noop, preserving the user's "ours" decision across
+// iterative merges (the legacy code achieved this via db_snapshots refresh).
+$ours_resolved_pks = []; // [tgt_table => [pk_json => true]]
 if ($strategy === 'theirs') {
     foreach ($db_conflict_ops as $c) {
         if ($c['theirs_op'] !== null) $final_db_ops[] = $c['theirs_op'];
@@ -1449,6 +1952,25 @@ if ($strategy === 'theirs') {
 } elseif ($strategy === 'ours') {
     foreach ($db_conflict_ops as $c) {
         if ($c['ours_op'] !== null) $final_db_ops[] = $c['ours_op'];
+        // Record PKs from "both modified" / "both inserted" / "delete vs modify"
+        // conflicts so we can refresh COW ancestor for them post-merge.
+        if (isset($c['theirs_op']) && is_array($c['theirs_op'])
+            && in_array($c['theirs_op']['type'] ?? '', ['upsert', 'delete'], true)
+            && isset($c['theirs_op']['table'])) {
+            $tname = $c['theirs_op']['table'];
+            if (isset($c['theirs_op']['pk'])) {
+                $ours_resolved_pks[$tname][$c['theirs_op']['pk']] = true;
+            } elseif (isset($c['theirs_op']['row_json'])) {
+                // Reconstruct PK from row_json + table's PK cols.
+                $pkc = db_pk_cols($db, $tname);
+                $rj  = json_decode($c['theirs_op']['row_json'], true);
+                if (is_array($rj) && !empty($pkc)) {
+                    $pkmap = [];
+                    foreach ($pkc as $col) $pkmap[$col] = $rj[$col] ?? null;
+                    $ours_resolved_pks[$tname][json_encode($pkmap, JSON_UNESCAPED_UNICODE)] = true;
+                }
+            }
+        }
     }
 }
 
@@ -1524,7 +2046,8 @@ usort($final_db_ops, function($a, $b) {
 
 try {
     [$db_applied, $snap_total, $schema_total] = sqlite_retry_busy(
-        function() use ($db, $final_db_ops, $src_id, $src_prefix, $tgt_prefix) {
+        function() use ($db, $final_db_ops, $src_id, $src_prefix, $tgt_prefix,
+                       $src_is_cow, $ours_resolved_pks) {
             $db->exec('BEGIN IMMEDIATE');
             try {
                 $db_applied = 0;
@@ -1553,6 +2076,138 @@ try {
                 // Refresh source branch's ancestor snapshot (rows + schema).
                 $db->exec('DELETE FROM db_snapshots WHERE branch_id = ' . (int)$src_id);
                 $db->exec('DELETE FROM db_snapshots_schema WHERE branch_id = ' . (int)$src_id);
+
+                if ($src_is_cow) {
+                    // COW source: refresh db_ancestor_overlay for PKs we
+                    // just propagated from source to target (upserts). Without
+                    // this, the next merge sees a stale ancestor (the value
+                    // captured BEFORE the row was merged) and falsely
+                    // conflicts on rows the user already merged. This is the
+                    // COW analog of the legacy db_snapshots-refresh fix.
+                    $merge_synced_pks = []; // [tgt_table => [pk_json => true]]
+                    foreach ($final_db_ops as $op) {
+                        if (($op['type'] ?? '') !== 'upsert') continue;
+                        if (empty($op['table']) || empty($op['row_json'])) continue;
+                        $pkc = db_pk_cols($db, $op['table']);
+                        if (empty($pkc)) continue;
+                        $rj = json_decode($op['row_json'], true);
+                        if (!is_array($rj)) continue;
+                        $pkmap = [];
+                        foreach ($pkc as $col) $pkmap[$col] = $rj[$col] ?? null;
+                        $merge_synced_pks[$op['table']][json_encode($pkmap, JSON_UNESCAPED_UNICODE)] = true;
+                    }
+                    if (!empty($merge_synced_pks)) {
+                        $upsert_anc = $db->prepare(
+                            "INSERT OR REPLACE INTO db_ancestor_overlay "
+                          . "(branch_id, table_name, row_pk, row_json) "
+                          . "VALUES (:b, :t, :pk, :rj)"
+                        );
+                        foreach ($merge_synced_pks as $tgt_table => $pks) {
+                            // Map target table to source's logical name.
+                            $suffix = '';
+                            if (preg_match('/^' . preg_quote($tgt_prefix, '/') . '(.*)$/', $tgt_table, $m)) {
+                                $suffix = $m[1];
+                            }
+                            if ($suffix === '') continue;
+                            $src_table = $src_prefix . $suffix;
+                            $pkc = db_pk_cols($db, $src_table);
+                            if (empty($pkc)) continue;
+                            $where = implode(' AND ',
+                                array_map(fn($c) => '"' . $c . '" = :' . $c, $pkc));
+                            $sel = $db->prepare(
+                                'SELECT * FROM "' . SQLite3::escapeString($src_table)
+                              . '" WHERE ' . $where
+                            );
+                            foreach (array_keys($pks) as $pk_json) {
+                                $pk_map = json_decode($pk_json, true);
+                                if (!is_array($pk_map)) continue;
+                                $sel->reset();
+                                foreach ($pkc as $col) {
+                                    $v = $pk_map[$col] ?? null;
+                                    $type = match (true) {
+                                        $v === null  => SQLITE3_NULL,
+                                        is_int($v)   => SQLITE3_INTEGER,
+                                        is_float($v) => SQLITE3_FLOAT,
+                                        default      => SQLITE3_TEXT,
+                                    };
+                                    $sel->bindValue(':' . $col, $v, $type);
+                                }
+                                $rr = $sel->execute();
+                                $srow = $rr->fetchArray(SQLITE3_ASSOC);
+                                $rr->finalize();
+                                if ($srow === false || $srow === null) continue;
+                                $upsert_anc->bindValue(':b',  $src_id,    SQLITE3_INTEGER);
+                                $upsert_anc->bindValue(':t',  $src_table, SQLITE3_TEXT);
+                                $upsert_anc->bindValue(':pk', $pk_json,   SQLITE3_TEXT);
+                                $upsert_anc->bindValue(':rj',
+                                    json_encode($srow, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                                $upsert_anc->execute();
+                                $upsert_anc->reset();
+                            }
+                        }
+                    }
+
+                    // Also: for rows whose conflict was resolved via
+                    // --strategy=ours (target kept its value), record source's
+                    // CURRENT row in db_ancestor_overlay so the next merge
+                    // sees s == a → noop (preserves the user's "ours"
+                    // decision across iterative merges).
+                    if (!empty($ours_resolved_pks)) {
+                        $upsert_anc = $db->prepare(
+                            "INSERT OR REPLACE INTO db_ancestor_overlay "
+                          . "(branch_id, table_name, row_pk, row_json) "
+                          . "VALUES (:b, :t, :pk, :rj)"
+                        );
+                        foreach ($ours_resolved_pks as $tgt_table => $pks) {
+                            // Map target table back to source's logical name.
+                            // tgt_table is "b{tgt_id}_wp_X"; source's logical
+                            // is "b{src_id}_wp_X".
+                            $suffix = '';
+                            if (preg_match('/^' . preg_quote($tgt_prefix, '/') . '(.*)$/', $tgt_table, $m)) {
+                                $suffix = $m[1];
+                            }
+                            if ($suffix === '') continue;
+                            $src_table = $src_prefix . $suffix;
+                            $pkc = db_pk_cols($db, $src_table);
+                            if (empty($pkc)) continue;
+                            // Lookup source's CURRENT row at each PK
+                            $where = implode(' AND ',
+                                array_map(fn($c) => '"' . $c . '" = :' . $c, $pkc));
+                            $sel = $db->prepare(
+                                'SELECT * FROM "' . SQLite3::escapeString($src_table)
+                              . '" WHERE ' . $where
+                            );
+                            foreach (array_keys($pks) as $pk_json) {
+                                $pk_map = json_decode($pk_json, true);
+                                if (!is_array($pk_map)) continue;
+                                $sel->reset();
+                                foreach ($pkc as $col) {
+                                    $v = $pk_map[$col] ?? null;
+                                    $type = match (true) {
+                                        $v === null  => SQLITE3_NULL,
+                                        is_int($v)   => SQLITE3_INTEGER,
+                                        is_float($v) => SQLITE3_FLOAT,
+                                        default      => SQLITE3_TEXT,
+                                    };
+                                    $sel->bindValue(':' . $col, $v, $type);
+                                }
+                                $rr = $sel->execute();
+                                $srow = $rr->fetchArray(SQLITE3_ASSOC);
+                                $rr->finalize();
+                                if ($srow === false || $srow === null) continue;
+                                $upsert_anc->bindValue(':b',  $src_id,    SQLITE3_INTEGER);
+                                $upsert_anc->bindValue(':t',  $src_table, SQLITE3_TEXT);
+                                $upsert_anc->bindValue(':pk', $pk_json,   SQLITE3_TEXT);
+                                $upsert_anc->bindValue(':rj',
+                                    json_encode($srow, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                                $upsert_anc->execute();
+                                $upsert_anc->reset();
+                            }
+                        }
+                    }
+                    $db->exec('COMMIT');
+                    return [$db_applied, 0, 0];
+                }
 
                 $snap_ins = $db->prepare(
                     "INSERT OR REPLACE INTO db_snapshots (branch_id, table_name, row_pk, row_json) "

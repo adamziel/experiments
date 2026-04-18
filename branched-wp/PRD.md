@@ -47,8 +47,9 @@ The entire site lives in one SQLite file (WAL mode).
 | Table group | Contents |
 |-------------|----------|
 | `blobs`, `blob_chunks`, `branches`, `files`, `fs_commits`, `fs_commit_files` | WordPress filesystem (COW) |
-| `b{id}_wp_*` tables | WordPress database, one set of tables per branch |
-| `db_snapshots`, `db_snapshots_schema` | Per-branch fork-time row + schema ancestor for 3-way DB merge |
+| `b{id}_wp_*` (main): real tables. `b{id}_wp_*` (non-main branches): VIEWS backed by `b{id}_wp_*__overlay` (changed/added rows) and `b{id}_wp_*__tombstones` (deleted PKs). | WordPress database, COW per branch |
+| `db_cow_branches`, `db_ancestor_overlay`, `db_post_fork_inserts`, `db_snapshots_schema` | COW branch metadata + lazy fork-time ancestor for 3-way DB merge |
+| `db_snapshots` | Legacy per-row ancestor (still consulted for branches in pre-COW format; lazy-migrated to COW on first merge) |
 | `site_config`, `users` | Site-wide config and authentication |
 
 WAL mode guarantees every committed write is durable even on crash — no
@@ -111,9 +112,19 @@ Both the filesystem and the database are branch-isolated.
   multi-MB media asset never holds the entire payload in a single SQLite
   row — peak memory stays bounded by the chunk size instead of the file
   size.
-- **Database**: each branch owns its own set of WordPress tables with prefix
-  `b{branch_id}_wp_` (e.g. `b1_wp_posts`, `b2_wp_options`). Creating a branch
-  copies the parent's tables into the new prefix.
+- **Database (COW)**: each branch owns its own set of WordPress tables with
+  prefix `b{branch_id}_wp_` (e.g. `b2_wp_posts`). For NON-MAIN branches,
+  `b{id}_wp_X` is a **VIEW** that UNION-ALLs an overlay (changed/added rows)
+  with the parent's view minus tombstones (deleted PKs). INSTEAD OF triggers
+  on the view route INSERT/UPDATE/DELETE to overlay/tombstones — WordPress
+  and the MySQL proxy both write to the view transparently, no SQL rewrite.
+  For MAIN (id=1), `b1_wp_X` remains a real table (no view layer); branches
+  inherit from main via the chain.
+
+  Branch creation is therefore **O(num_tables)**, not O(num_rows): a 10k-row
+  site forks in milliseconds and grows the `.fp` file by ~12 KB per table
+  instead of copying every row. Storage is proportional to the divergent
+  rows the branch actually overlays — empty branches are nearly free.
 
 ---
 
@@ -301,17 +312,67 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   slugs, capability keys, and meta-key values (`'wp_capabilities'`,
   `'wp_user_roles'`, `'wp_user_level'`) round-trip intact.
 
-### F6 — Branching with DB isolation
-- `branchctl create my-branch [--from main]` copies:
-  - Filesystem: new entry in `branches` table (COW, no file copy needed)
-  - Database: recreates every `b{parent_id}_wp_X` table under `b{new_id}_wp_X`
-    using the original DDL from `sqlite_master` so all constraints (PRIMARY KEY,
-    UNIQUE, NOT NULL, indexes) are preserved, then `INSERT INTO … SELECT *`
-  - Ancestor snapshot: every copied row is stored in `db_snapshots(branch_id,
-    table_name, row_pk, row_json)` to enable 3-way DB merge later
-- All branches see their own isolated database state
+### F6 — Branching with DB isolation (COW)
+- `branchctl create my-branch [--from main]`:
+  - **Filesystem**: new entry in `branches` table (COW, no file copy needed)
+  - **Database**: for each parent table `b{parent_id}_wp_X`, creates a
+    view + overlay + tombstone trio under `b{new_id}_wp_X`:
+    - `b{new_id}_wp_X__overlay` — empty real table mirroring parent's DDL
+      (PK, UNIQUE, NOT NULL, defaults all preserved). Replicates non-PK
+      indexes from the parent, with branch-prefixed names.
+    - `b{new_id}_wp_X__tombstones` — PK-only table marking inherited rows
+      the branch has deleted.
+    - `b{new_id}_wp_X` (VIEW) — `SELECT * FROM overlay UNION ALL SELECT *
+      FROM <parent's view> WHERE pk NOT IN (overlay) AND pk NOT IN
+      (tombstones)`. Composite PKs use row-value tuples
+      `(pk1, pk2) NOT IN (SELECT pk1, pk2 FROM overlay)`.
+    - INSTEAD OF triggers on the view route writes to overlay/tombstones.
+    - `sqlite_sequence` row for the parent's table is copied to the
+      overlay so AUTOINCREMENT IDs the branch generates don't collide
+      with parent IDs added after fork.
+  - **Parent-side ancestor capture**: BEFORE-UPDATE/DELETE and AFTER-INSERT
+    triggers are installed on the parent's real table so that any
+    pre-divergence row state needed by 3-way merge (`db_ancestor_overlay`)
+    or any post-fork insertion (`db_post_fork_inserts`) is captured
+    automatically as the parent mutates.
+  - **Marker**: `db_cow_branches(branch_id, table_suffix, parent_branch_id,
+    parent_table_name, fork_token)` records that the branch is in COW
+    format and tracks the parent's table for merge-time ancestor lookup.
+  - **Schema snapshot**: `db_snapshots_schema` stores the fork-time DDL
+    (rewritten to reference the branch's logical name) so column-level
+    schema-merge has a true ancestor.
+- **Cost**: O(num_tables × small constant). For a typical WP site with
+  ~22 tables, branch create is < 200 ms regardless of row count. A 100k-row
+  site grows the `.fp` file by ~95 KB on branch create (vs ~50 MB+ under
+  the old row-copy behavior).
+- All branches see their own isolated database state — INSTEAD OF triggers
+  enforce isolation; UPDATEs on the branch view only touch the branch's
+  overlay, never the parent's table.
 - `router.php` sets `$GLOBALS['_branchfs_table_prefix'] = "b{id}_wp_"` before
-  WordPress boots so HTTP requests use the correct branch's tables
+  WordPress boots so HTTP requests use the correct branch's tables (the
+  view layer is transparent to WordPress and the MySQL proxy).
+- **Schema-change propagation**: when a `branchctl alter-add-column` (or
+  any tooling that goes through the COW helpers) changes a parent table's
+  shape, every descendant branch's view is dropped and recreated so
+  `SELECT *` resolves the new column set.
+
+### F6a — Lazy migration of legacy (pre-COW) branches
+Branches in older `.fp` files use the original row-copy format
+(real tables under `b{id}_wp_X`, with row data captured into
+`db_snapshots`). On the first `branchctl merge` involving such a branch,
+`branchctl` detects the legacy format (a real table where a view would
+now be) and migrates it in-place:
+- For each `b{id}_wp_X` real table, compute the diff vs the parent's
+  current state.
+- Drop the real table; create overlay + tombstone + view + triggers.
+- Bulk-insert into overlay every row whose value differs from the
+  parent's same-PK row (the branch's modifications + additions).
+- Bulk-insert into tombstones every parent PK absent from the branch
+  (the branch's deletions).
+- Continue with the normal merge flow.
+After migration, the branch is indistinguishable from a brand-new COW
+branch and benefits from the same storage / fork-time guarantees on
+future operations.
 
 ### F7 — Committing
 - `branchctl commit <branch>` records a snapshot in `fs_commits` + `fs_commit_files`
@@ -381,9 +442,31 @@ Uses the fork-time `fs_commits` snapshot as the common ancestor. Per-path:
 - Both changed identically → no-op
 - Both changed differently → conflict (honour `--strategy`)
 
-**Phase 2 — DB 3-way merge** (implemented)
-Uses `db_snapshots` rows recorded at `branchctl create` time as the common
-ancestor. Per row (keyed by primary key JSON):
+**Phase 2 — DB 3-way merge** (implemented; COW-aware)
+Ancestor model is **diff-based** under COW: instead of pre-snapshotting every
+row at fork time (legacy `db_snapshots` semantics), the merge reconstructs
+a fork-time row value lazily, only for rows the branch actually overlaid
+or tombstoned.
+
+Lookup order for ancestor row at PK X on a COW branch:
+1. **`db_ancestor_overlay`** — populated by parent-side BEFORE-UPDATE/DELETE
+   triggers. If parent independently mutated the row before the branch
+   touched it, the OLD value was captured here at parent-mutation time.
+   This is the *exact* fork-time value.
+2. **`db_post_fork_inserts`** — populated by parent-side AFTER-INSERT
+   triggers. If the PK is in this set, ancestor is "absent" (parent
+   inserted the row after fork). Treating it as absent makes the merge
+   correctly classify "both sides inserted same PK independently" as a
+   conflict instead of falsely "source modified target's row".
+3. **Parent's CURRENT row at PK X** — fallback. Exact when the parent
+   hasn't independently mutated this row since fork (the common case).
+   When stale, the merge degrades gracefully: the worst case is a
+   spurious clean apply where a conflict should fire, mitigated in
+   practice by (1) and (2) above.
+
+For legacy non-COW branches, `db_snapshots` is consulted as before.
+
+Per row (keyed by primary key JSON):
 
 | Ancestor | Source now | Target now | Result |
 |----------|------------|------------|--------|
@@ -487,15 +570,21 @@ ID collision renumbers (1):
 ```
 
 **Ancestor snapshot refresh (iterative merges)**
-After a successful merge (i.e. the DB ops transaction committed — strategies
-`theirs` and `ours`, or `abort` with zero conflicts), the source branch's
+
+For LEGACY (non-COW) branches: after a successful merge the source branch's
 `db_snapshots` rows are replaced in the same transaction with a fresh
-snapshot of the source branch's current tables. This keeps iterative
-"merge → tweak → merge" workflows clean: without the refresh, rows the
-first merge propagated to target would show up on the second merge as
-"both sides changed vs (stale) ancestor" and trigger spurious conflicts
-on every previously-merged row. Merges that exit via `--strategy=abort` on
-a real conflict do not touch `db_snapshots`.
+snapshot of the source branch's current tables.
+
+For COW branches: after a successful merge, for each PK that was upserted
+from source to target, `db_ancestor_overlay` is updated to source's
+CURRENT row at that PK. This makes the next merge's ancestor lookup
+return the just-merged value, so re-merging without further changes is a
+clean noop instead of a spurious "both sides changed" conflict.
+Additionally, conflicts resolved via `--strategy=ours` (target kept its
+value) get the same ancestor refresh: source's CURRENT value is recorded
+so the next merge sees `s == a → noop`, preserving the user's "ours"
+decision across iterative merges. Merges that exit via `--strategy=abort`
+on a real conflict do not touch any ancestor table.
 
 ---
 

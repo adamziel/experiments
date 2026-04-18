@@ -548,28 +548,37 @@ class TestDBMergeIntegrity:
         assert before == after, "source tables were modified by merge"
 
     def test_ancestor_snapshot_matches_fork_state(self, branched_db):
-        """db_snapshots captured correctly at branch-create time."""
+        """Ancestor reference is reachable at fork time.
+
+        Under COW, db_snapshots is no longer populated at fork (storage is
+        O(divergent rows)). Instead, the ancestor view is reconstructed from
+        (a) parent-side ancestor-capture triggers in db_ancestor_overlay
+        and (b) the parent's CURRENT state for non-divergent rows. Either
+        way, the merge can recover a fork-time view for any row the
+        branch eventually overlays.
+
+        This test asserts that the branch's view returns ALL of the parent's
+        rows post-fork (the COW analog of "ancestor matches fork state").
+        """
         site_fp = branched_db["site_fp"]
         fid = branched_db["feature_id"]
 
-        # Query snapshot rows for the feature branch's options table
-        snap_rows = sqlite_q(site_fp,
-            "SELECT row_json FROM db_snapshots WHERE branch_id=? AND table_name=?",
-            (fid, f"b{fid}_wp_options"))
+        # Branch view should return parent's rows.
+        view_rows = sqlite_q(site_fp,
+            f"SELECT option_name FROM b{fid}_wp_options ORDER BY option_name")
+        names = [r[0] for r in view_rows]
+        assert "blogname" in names
+        assert "siteurl" in names
+        assert "shared_option" in names
 
-        assert snap_rows, "db_snapshots must have rows for feature branch wp_options"
-
-        # At this point no changes have been made to feature's table,
-        # so snapshot count must match table row count.
-        actual_rows = sqlite_q(site_fp, f"SELECT * FROM b{fid}_wp_options")
-        assert len(snap_rows) == len(actual_rows), \
-            f"snapshot has {len(snap_rows)} rows but table has {len(actual_rows)}"
-
-        # Verify known option_names are in the snapshot
-        snap_json_all = " ".join(r[0] for r in snap_rows)
-        assert "blogname" in snap_json_all
-        assert "siteurl" in snap_json_all
-        assert "shared_option" in snap_json_all
+        # No divergence yet → no entries in db_ancestor_overlay (the
+        # parent triggers fire on parent UPDATE/DELETE/INSERT, not on
+        # branch reads).
+        anc = sqlite_q(site_fp,
+            "SELECT COUNT(*) FROM db_ancestor_overlay WHERE branch_id=?",
+            (fid,))
+        assert anc[0][0] == 0, \
+            "no parent edits since fork → ancestor overlay should be empty"
 
 
 # ── TestDBMergeIterativeReMerge ───────────────────────────────────────────────
@@ -717,30 +726,47 @@ class TestDBMergeIterativeReMerge:
 
     def test_snapshot_rows_refreshed_after_merge(self, branched_db):
         """
-        Direct inspection: after merge, db_snapshots for the source branch
-        must reflect its CURRENT rows, not its fork-time rows.
+        Under legacy (row-copy) format: db_snapshots was refreshed after
+        a successful merge so iterative merges stayed clean.
+
+        Under COW: db_snapshots is no longer populated. Iterative merges
+        stay clean because the row diff is computed as
+        `branch_view == parent_current` for any row already merged into
+        parent — so the next merge naturally noops on it. This test
+        verifies that effective property (re-merging is a noop), not the
+        legacy db_snapshots refresh detail.
         """
         site_fp = branched_db["site_fp"]
         fid = branched_db["feature_id"]
 
-        # Add a brand-new row on feature (not present at fork time).
         sqlite_exec(site_fp,
             f"INSERT INTO b{fid}_wp_options (option_name, option_value) VALUES (?, ?)",
             ("new_after_fork", "v1"))
 
-        # Before merge, snapshot should NOT contain new_after_fork.
-        snap_before = sqlite_q(site_fp,
-            "SELECT row_json FROM db_snapshots WHERE branch_id=? AND table_name=?",
-            (fid, f"b{fid}_wp_options"))
-        snap_text = " ".join(r[0] for r in snap_before)
-        assert "new_after_fork" not in snap_text, \
-            "snapshot should be fork-time (pre-merge) and not yet know about new_after_fork"
-
-        # Merge.
         r = branchctl(site_fp, "merge", "feature", "--into", "main")
         assert r.returncode == 0, f"merge failed:\n{r.stdout}\n{r.stderr}"
 
-        # After merge, snapshot MUST reflect the new row.
+        # First merge propagated the new row to main.
+        rows = sqlite_q(site_fp,
+            "SELECT option_value FROM b1_wp_options WHERE option_name=?",
+            ("new_after_fork",))
+        assert rows and rows[0][0] == "v1"
+
+        # Second merge with no further changes must be a clean noop
+        # (no spurious conflicts on previously-merged rows).
+        r2 = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r2.returncode == 0, (
+            "iterative re-merge should be a clean noop, "
+            "not a spurious conflict\n" + r2.stdout
+        )
+
+        # ── Legacy assertion below kept as a no-op fallthrough (for
+        # legacy non-COW branches if any test creates one). Skip it under COW.
+        cow_marker = sqlite_q(site_fp,
+            "SELECT COUNT(*) FROM db_cow_branches WHERE branch_id=?", (fid,))
+        if cow_marker[0][0] > 0:
+            return
+
         snap_after = sqlite_q(site_fp,
             "SELECT row_json FROM db_snapshots WHERE branch_id=? AND table_name=?",
             (fid, f"b{fid}_wp_options"))

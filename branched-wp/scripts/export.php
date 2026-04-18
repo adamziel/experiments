@@ -98,22 +98,68 @@ function export_resolve_tree(SQLite3 $db, int $branch_id): array {
     return $tree;
 }
 
-/** SQL dump of all b{bid}_wp_* tables. */
+/** SQL dump of all b{bid}_wp_* tables.
+ *
+ *  COW awareness: a non-main branch's b{id}_wp_X is now a VIEW backed by
+ *  an overlay table. To produce a self-contained dump we:
+ *    - emit the LOGICAL CREATE TABLE statement (the overlay's DDL, with
+ *      the table name rewritten to the logical name)
+ *    - SELECT * from the VIEW (so inherited rows appear in the export)
+ *    - dump non-PK indexes from the overlay (rewritten to point at the
+ *      logical name)
+ *  The result is byte-equivalent to a dump of the legacy row-copy format
+ *  — `forkpress import` can replay it without knowing about COW. */
 function export_dump_db(SQLite3 $db, int $branch_id): string {
     $prefix = "b{$branch_id}_wp_";
+    // Real tables (legacy format, or main): logical = table itself.
     $tables = [];
-    $r = $db->query("SELECT name, sql FROM sqlite_master WHERE type='table' AND name LIKE '"
+    $r = $db->query("SELECT name, sql FROM sqlite_master "
+        . "WHERE type='table' AND name LIKE '"
+        . SQLite3::escapeString($prefix) . "%' "
+        . "AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+        . "AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'");
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $tables[$row['name']] = ['name' => $row['name'], 'sql' => $row['sql'], 'physical' => $row['name']];
+    }
+    // COW views: logical name is the view; physical (for DDL/indexes) is the overlay.
+    $r = $db->query("SELECT name FROM sqlite_master WHERE type='view' AND name LIKE '"
         . SQLite3::escapeString($prefix) . "%'");
-    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $tables[] = $row;
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $logical = $row['name'];
+        $overlay = $logical . '__overlay';
+        $overlay_sql = (string)$db->querySingle(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+            . SQLite3::escapeString($overlay) . "'"
+        );
+        $logical_sql = preg_replace(
+            '/^(CREATE\s+TABLE\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?'
+            . preg_quote($overlay, '/') . '"?/is',
+            '$1IF NOT EXISTS "' . $logical . '"',
+            $overlay_sql, 1
+        );
+        $tables[$logical] = ['name' => $logical, 'sql' => $logical_sql ?: $overlay_sql, 'physical' => $overlay];
+    }
 
-    // Collect indexes too so the export restores constraints / unique keys.
+    // Collect indexes from physical tables, rewriting their ON clause to the
+    // logical name (so the export-then-import path produces a real table
+    // with real indexes — not COW machinery).
     $indexes = [];
     foreach ($tables as $t) {
         $ir = $db->query(
             "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='"
-          . SQLite3::escapeString($t['name']) . "' AND sql IS NOT NULL"
+          . SQLite3::escapeString($t['physical']) . "' AND sql IS NOT NULL"
         );
-        while ($row = $ir->fetchArray(SQLITE3_ASSOC)) $indexes[] = $row;
+        while ($row = $ir->fetchArray(SQLITE3_ASSOC)) {
+            $isql = $row['sql'];
+            if ($t['physical'] !== $t['name']) {
+                $isql = preg_replace(
+                    '/\bON\s+"?' . preg_quote($t['physical'], '/') . '"?\s*\(/i',
+                    'ON "' . $t['name'] . '" (',
+                    $isql, 1
+                );
+            }
+            $indexes[] = ['name' => $row['name'], 'sql' => $isql];
+        }
     }
 
     $out = "-- ForkPress DB export for branch_id=$branch_id (prefix=$prefix)\n";
@@ -121,6 +167,8 @@ function export_dump_db(SQLite3 $db, int $branch_id): string {
     foreach ($tables as $t) {
         if (!$t['sql']) continue;
         $out .= $t['sql'] . ";\n";
+        // SELECT from the LOGICAL name so inherited rows are included
+        // (the view does the UNION ALL transparently).
         $rr = $db->query('SELECT * FROM "' . SQLite3::escapeString($t['name']) . '"');
         while ($row = $rr->fetchArray(SQLITE3_ASSOC)) {
             $cols = array_keys($row);

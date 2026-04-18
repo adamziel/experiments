@@ -195,6 +195,56 @@ CREATE TABLE IF NOT EXISTS db_snapshots (
     row_json   TEXT NOT NULL,
     PRIMARY KEY (branch_id, table_name, row_pk)
 );
+/* COW (copy-on-write) branch fork markers. One row per (branch, table)
+ * recorded at branch-create time. The marker captures the parent's
+ * physical table name + a fork token (we use parent rowid max as a
+ * cheap watermark). The presence of a row here also flags the branch
+ * as "COW format" — branches without a row predate this feature and
+ * are migrated lazily on first merge. */
+CREATE TABLE IF NOT EXISTS db_cow_branches (
+    branch_id          INTEGER NOT NULL,
+    table_suffix       TEXT NOT NULL,             -- e.g. 'posts', 'options'
+    parent_branch_id   INTEGER NOT NULL,
+    parent_table_name  TEXT NOT NULL,             -- e.g. 'b1_wp_posts'
+    fork_token         TEXT NOT NULL DEFAULT '',  -- opaque marker, opaque to merge
+    created_at         TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (branch_id, table_suffix)
+);
+/* Lazy fork-time ancestor capture for COW branches.
+ *
+ * On parent-side UPDATE/DELETE, an AFTER-row trigger pushes the OLD row
+ * into this table for every descendant branch that has a COW marker for
+ * the parent's table. The push is INSERT OR IGNORE so only the FIRST
+ * pre-divergence value is preserved — that's the true fork-time ancestor
+ * the branch saw via its inheriting view.
+ *
+ * Storage cost is O(parent UPDATE/DELETE events × descendant branches),
+ * not O(total rows). For workflows where parents are mostly read-only
+ * and branches are short-lived (the typical preview/PR pattern), this
+ * stays small.
+ *
+ * row_pk_json is JSON-encoded ordered PK column map.
+ * row_json is the full pre-change row (for UPDATE: OLD values; for
+ * DELETE: the deleted row).
+ */
+CREATE TABLE IF NOT EXISTS db_ancestor_overlay (
+    branch_id  INTEGER NOT NULL,
+    table_name TEXT NOT NULL,             -- the BRANCH's logical name, e.g. b2_wp_posts
+    row_pk     TEXT NOT NULL,             -- JSON-encoded PK
+    row_json   TEXT NOT NULL,             -- full row JSON
+    created_at TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (branch_id, table_name, row_pk)
+);
+/* Companion to db_ancestor_overlay: PKs the parent INSERTED after the
+ * fork. Lets the merge correctly recognize "both inserted same PK
+ * independently" as a conflict (ancestor absent), instead of "source
+ * adopted target's row" (false ancestor lookup). */
+CREATE TABLE IF NOT EXISTS db_post_fork_inserts (
+    branch_id  INTEGER NOT NULL,
+    table_name TEXT NOT NULL,             -- the BRANCH's logical name
+    row_pk     TEXT NOT NULL,             -- JSON-encoded PK
+    PRIMARY KEY (branch_id, table_name, row_pk)
+);
 CREATE TABLE IF NOT EXISTS db_snapshots_schema (
     branch_id    INTEGER NOT NULL,
     table_name   TEXT NOT NULL,
@@ -288,6 +338,11 @@ function fs_resolve_tree(SQLite3 $db, int $branch_id): array {
     }
     return $tree;
 }
+
+// Shared COW (copy-on-write) DB branch helpers. merge.php require_once's
+// the same file so it can drop/recreate parent triggers around table
+// rebuilds without duplicating the trigger-DDL generation logic.
+require_once __DIR__ . '/cow_helpers.php';
 
 /* Deterministic hash of a resolved tree, used to detect uncommitted
  * changes against the last fs_commit. Fast enough for O(3000 files). */
@@ -584,158 +639,54 @@ case 'create': {
         echo "branchfs: initial snapshot recorded\n";
     }
 
-    // Copy parent's WordPress database tables to new branch
+    // ── COW (copy-on-write) DB branch creation ──────────────────────────
+    //
+    // Old behavior copied every parent row into b{new}_wp_* tables and
+    // snapshotted them into db_snapshots — O(N rows) in time and storage.
+    // New behavior creates a view + overlay + tombstones trio per table,
+    // O(num_tables) and a few KB regardless of row count.
+    //
+    // The branch's view UNION-ALLs its overlay with the parent's view minus
+    // tombstones. Reads transparently inherit; writes get caught by INSTEAD OF
+    // triggers that route to overlay/tombstones.
     $parent_id = fs_branch_id($db, $from);
     $new_id    = fs_branch_id($db, $name);
     if ($parent_id > 0 && $new_id > 0) {
-        $prefix_old = "b{$parent_id}_wp_";
-        $prefix_new = "b{$new_id}_wp_";
+        $prefix_parent = "b{$parent_id}_wp_";
 
-        // Collect table names first (iterating sqlite_master while modifying it
-        // via CREATE TABLE is unreliable in SQLite).
+        // Collect parent table/view suffixes — anything matching b{parent}_wp_*
+        // that ISN'T an internal __overlay / __tombstones artifact. Both real
+        // tables (parent is main) and views (parent is itself a branch) qualify.
         $tables_stmt = $db->prepare(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :p"
+            "SELECT name, type FROM sqlite_master "
+          . "WHERE name LIKE :p "
+          . "  AND type IN ('table', 'view') "
+          . "  AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+          . "  AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'"
         );
-        $tables_stmt->bindValue(':p', $prefix_old . '%', SQLITE3_TEXT);
+        $tables_stmt->bindValue(':p', $prefix_parent . '%', SQLITE3_TEXT);
         $tables_result = $tables_stmt->execute();
-        $tables_to_copy = [];
+        $suffixes_to_cow = [];
         while ($row = $tables_result->fetchArray(SQLITE3_ASSOC)) {
-            $tables_to_copy[] = $row['name'];
+            $suffixes_to_cow[] = substr($row['name'], strlen($prefix_parent));
         }
+        $tables_result->finalize();
+        $tables_stmt->close();
 
-        $copied = 0;
-        foreach ($tables_to_copy as $old_table) {
-            $new_table = $prefix_new . substr($old_table, strlen($prefix_old));
-
-            // Use the original DDL so PRIMARY KEY, UNIQUE, NOT NULL and other
-            // constraints are preserved. CREATE TABLE … AS SELECT strips them.
-            $old_ddl = $db->querySingle(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
-                . SQLite3::escapeString($old_table) . "'"
-            );
-            if ($old_ddl) {
-                $new_ddl = preg_replace(
-                    '/^(CREATE\s+TABLE\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?' . preg_quote($old_table, '/') . '"?(\s*\()/is',
-                    '$1IF NOT EXISTS "' . $new_table . '"$2',
-                    $old_ddl, 1
-                );
-                if ($new_ddl) {
-                    $db->exec($new_ddl);
-                    $db->exec("INSERT INTO \"$new_table\" SELECT * FROM \"$old_table\"");
-                } else {
-                    $db->exec("CREATE TABLE IF NOT EXISTS \"$new_table\" AS SELECT * FROM \"$old_table\"");
-                }
-            } else {
-                $db->exec("CREATE TABLE IF NOT EXISTS \"$new_table\" AS SELECT * FROM \"$old_table\"");
-            }
-
-            // Recreate named indexes (inline UNIQUE in DDL is already preserved above;
-            // this covers separately-created CREATE INDEX statements).
-            $idx_stmt = $db->prepare(
-                "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=:t AND sql IS NOT NULL"
-            );
-            $idx_stmt->bindValue(':t', $old_table, SQLITE3_TEXT);
-            $idx_res   = $idx_stmt->execute();
-            $idx_rows  = [];
-            while ($irow = $idx_res->fetchArray(SQLITE3_ASSOC)) {
-                $idx_rows[] = $irow;
-            }
-            foreach ($idx_rows as $irow) {
-                $old_idx = $irow['name'];
-                $new_idx = str_replace($prefix_old, $prefix_new, $old_idx);
-                $idx_sql = preg_replace(
-                    '/^(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?' . preg_quote($old_idx, '/') . '"?/i',
-                    '$1IF NOT EXISTS "' . $new_idx . '"',
-                    $irow['sql'], 1
-                );
-                $idx_sql = preg_replace(
-                    '/\bON\s+"?' . preg_quote($old_table, '/') . '"?\s*\(/i',
-                    'ON "' . $new_table . '" (',
-                    $idx_sql, 1
-                );
-                @$db->exec($idx_sql);
-            }
-
-            $copied++;
-        }
-        if ($copied > 0) {
-            echo "branchfs: copied $copied WordPress DB tables (b{$parent_id} -> b{$new_id})\n";
-        }
-
-        // Snapshot the newly-copied rows so merge.php has a common ancestor for 3-way DB merge.
-        $snap_total = 0;
-        $schema_total = 0;
-        $snap_ins = $db->prepare(
-            "INSERT OR REPLACE INTO db_snapshots (branch_id, table_name, row_pk, row_json) "
-          . "VALUES (:bid, :tname, :rpk, :rjson)"
-        );
-        $schema_ins = $db->prepare(
-            "INSERT OR REPLACE INTO db_snapshots_schema "
-          . "(branch_id, table_name, ddl_sql, indexes_json) "
-          . "VALUES (:bid, :tname, :ddl, :idx)"
-        );
+        $created = 0;
         $db->exec('BEGIN IMMEDIATE');
         try {
-            foreach ($tables_to_copy as $old_table) {
-                $new_table = $prefix_new . substr($old_table, strlen($prefix_old));
-
-                $pk_cols = [];
-                $pi = $db->query("PRAGMA table_info(\"" . SQLite3::escapeString($new_table) . "\")");
-                while ($prow = $pi->fetchArray(SQLITE3_ASSOC)) {
-                    if ((int)$prow['pk'] > 0) $pk_cols[(int)$prow['pk']] = $prow['name'];
-                }
-                ksort($pk_cols);
-                $pk_cols = array_values($pk_cols);
-
-                $rows = $db->query("SELECT * FROM \"" . SQLite3::escapeString($new_table) . "\"");
-                while ($row = $rows->fetchArray(SQLITE3_ASSOC)) {
-                    if (empty($pk_cols)) {
-                        $pk_map = ['_rowid_' => $row['rowid'] ?? null];
-                    } else {
-                        $pk_map = [];
-                        foreach ($pk_cols as $col) $pk_map[$col] = $row[$col] ?? null;
-                    }
-                    $snap_ins->bindValue(':bid',   $new_id,    SQLITE3_INTEGER);
-                    $snap_ins->bindValue(':tname', $new_table, SQLITE3_TEXT);
-                    $snap_ins->bindValue(':rpk',   json_encode($pk_map,  JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-                    $snap_ins->bindValue(':rjson', json_encode($row,     JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-                    $snap_ins->execute();
-                    $snap_ins->reset();
-                    $snap_total++;
-                }
-
-                // Snapshot the table's DDL + index DDLs so schema-merge has
-                // a common ancestor for column-level 3-way diff.
-                $ddl = (string)$db->querySingle(
-                    "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
-                    . SQLite3::escapeString($new_table) . "'"
-                );
-                $indexes = [];
-                $ix = $db->query(
-                    "SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='"
-                    . SQLite3::escapeString($new_table) . "' AND sql IS NOT NULL"
-                );
-                while ($irow = $ix->fetchArray(SQLITE3_NUM)) {
-                    $indexes[] = $irow[0];
-                }
-                $schema_ins->bindValue(':bid',   $new_id,   SQLITE3_INTEGER);
-                $schema_ins->bindValue(':tname', $new_table, SQLITE3_TEXT);
-                $schema_ins->bindValue(':ddl',   $ddl,       SQLITE3_TEXT);
-                $schema_ins->bindValue(':idx',   json_encode($indexes, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-                $schema_ins->execute();
-                $schema_ins->reset();
-                $schema_total++;
+            foreach ($suffixes_to_cow as $suffix) {
+                cow_create_branch_table($db, $new_id, $parent_id, $suffix);
+                $created++;
             }
             $db->exec('COMMIT');
         } catch (\Throwable $e) {
             $db->exec('ROLLBACK');
-            echo "warning: DB ancestor snapshot failed: " . $e->getMessage() . "\n";
+            echo "warning: COW branch table creation failed: " . $e->getMessage() . "\n";
         }
-        if ($snap_total > 0) {
-            echo "branchfs: recorded $snap_total ancestor DB rows in db_snapshots\n";
-        }
-        if ($schema_total > 0) {
-            echo "branchfs: recorded $schema_total ancestor table schemas in db_snapshots_schema\n";
+        if ($created > 0) {
+            echo "branchfs: COW-forked $created tables from '$from' (no row copy)\n";
         }
     }
 
@@ -820,16 +771,26 @@ case 'delete': {
     $cr2->finalize();
     $candidate_hashes = array_keys($candidates);
 
-    // Collect DROP-TABLE targets BEFORE the transaction: DROP TABLE cannot
-    // run while an iterator over sqlite_master is open, and SQLite's DDL
-    // rules forbid schema changes mid-transaction on some builds.
+    // Collect DROP targets BEFORE the transaction: DROP cannot run while an
+    // iterator over sqlite_master is open, and SQLite's DDL rules forbid
+    // schema changes mid-transaction on some builds. Both real tables (legacy
+    // copy-format branches) AND views/overlays/tombstones (COW branches)
+    // need to be dropped.
     $prefix = "b{$bid}_wp_";
-    $ts = $db->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :p");
+    $ts = $db->prepare(
+        "SELECT name, type FROM sqlite_master "
+      . "WHERE name LIKE :p AND type IN ('table', 'view')"
+    );
     $ts->bindValue(':p', $prefix . '%', SQLITE3_TEXT);
     $tr = $ts->execute();
+    $views_to_drop  = [];
     $tables_to_drop = [];
     while ($trow = $tr->fetchArray(SQLITE3_ASSOC)) {
-        $tables_to_drop[] = $trow['name'];
+        if ($trow['type'] === 'view') {
+            $views_to_drop[] = $trow['name'];
+        } else {
+            $tables_to_drop[] = $trow['name'];
+        }
     }
     $tr->finalize();
     $ts->close();
@@ -838,9 +799,22 @@ case 'delete': {
     $reclaimed_bytes = 0;
     $db->exec('BEGIN IMMEDIATE');
     try {
+        // Views first so triggers go with them; then tables (overlays + tombstones).
+        // Triggers ON the views are dropped automatically by DROP VIEW.
+        foreach ($views_to_drop as $vname) {
+            $db->exec("DROP VIEW IF EXISTS \"$vname\"");
+        }
         foreach ($tables_to_drop as $tname) {
             $db->exec("DROP TABLE IF EXISTS \"$tname\"");
         }
+        // sqlite_sequence cleanup for the dropped overlays.
+        @$db->exec("DELETE FROM sqlite_sequence WHERE name LIKE '"
+                 . SQLite3::escapeString($prefix) . "%'");
+        // Drop COW marker rows so subsequent helpers don't touch a phantom branch.
+        $db->exec("DELETE FROM db_cow_branches WHERE branch_id = $bid");
+        $db->exec("DELETE FROM db_snapshots_schema WHERE branch_id = $bid");
+        $db->exec("DELETE FROM db_ancestor_overlay WHERE branch_id = $bid");
+        $db->exec("DELETE FROM db_post_fork_inserts WHERE branch_id = $bid");
         /* fs_commit_files rows are keyed by commit_id, so they must go
          * before (or together with) the fs_commits rows to avoid orphan
          * rows after delete. Previously, the delete path forgot fs_commits
@@ -990,6 +964,46 @@ case 'merge': {
     if (!$into) die_usage("`merge` needs --into <target>");
     if (!valid_branch_name($from)) die_usage("invalid source: $from");
     if (!valid_branch_name($into) && $into !== 'main') die_usage("invalid target: $into");
+
+    // Lazy COW migration: if either branch is in the legacy (full-copy)
+    // format, migrate it to view+overlay+tombstone IN PLACE before merge
+    // runs. After this, every non-main branch's b{id}_wp_* objects are
+    // views, and merge.php's row diff sees the same data through the view
+    // layer it would have seen against the real table.
+    {
+        $db_pre = sqlite_open($DB_PATH);
+        $migrated_total = 0;
+        foreach ([$from, $into] as $bn) {
+            if ($bn === 'main') continue;
+            $bid = fs_branch_id($db_pre, $bn);
+            if ($bid <= 0) continue;
+            // Quick check: any real (non-overlay/tombstone) table under this
+            // prefix means legacy format.
+            $has_legacy = (int)$db_pre->querySingle(
+                "SELECT COUNT(*) FROM sqlite_master "
+              . "WHERE type='table' "
+              . "  AND name LIKE 'b{$bid}_wp_%' "
+              . "  AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+              . "  AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'"
+            );
+            if ($has_legacy === 0) continue;
+            $db_pre->exec('BEGIN IMMEDIATE');
+            try {
+                $n = cow_migrate_legacy_branch($db_pre, $bid);
+                $db_pre->exec('COMMIT');
+                $migrated_total += $n;
+                if ($n > 0) {
+                    echo "branchctl: lazy-migrated $n legacy table(s) on '$bn' to COW format\n";
+                }
+            } catch (\Throwable $e) {
+                $db_pre->exec('ROLLBACK');
+                fwrite(STDERR, "branchctl: lazy COW migration on '$bn' failed: "
+                             . $e->getMessage() . "\n");
+                exit(5);
+            }
+        }
+        $db_pre->close();
+    }
 
     $merge_script = __DIR__ . '/merge.php';
     if (!file_exists($merge_script)) {
@@ -1169,6 +1183,58 @@ case 'gc': {
 
     printf("branchctl gc: deleted %d blobs, reclaimed %d bytes (before: %d blobs / %d bytes)\n",
         $n, $bytes_free, $total_before, $bytes_before);
+    break;
+}
+
+case 'alter-add-column': {
+    // alter-add-column <branch> <table_suffix> <col_name> <col_type>
+    //
+    // Wraps ALTER TABLE … ADD COLUMN on the branch's underlying physical
+    // table (or main's real table) AND triggers cow_recreate_views_for_table
+    // so descendant branches' views expose the new column. Used by tests
+    // and by tooling that ALTERs WP schemas (plugin upgrades).
+    $bname    = $pos[1] ?? die_usage("`alter-add-column` needs <branch> <table_suffix> <col_name> <col_type>");
+    $suffix   = $pos[2] ?? die_usage("`alter-add-column` needs <branch> <table_suffix> <col_name> <col_type>");
+    $col_name = $pos[3] ?? die_usage("`alter-add-column` needs <branch> <table_suffix> <col_name> <col_type>");
+    $col_type = $pos[4] ?? die_usage("`alter-add-column` needs <branch> <table_suffix> <col_name> <col_type>");
+    if ($bname !== 'main' && !valid_branch_name($bname)) die_usage("invalid branch: $bname");
+    if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $col_name)) die_usage("invalid col name");
+    if (!preg_match('/^[A-Za-z][A-Za-z0-9_ \(\),]*$/', $col_type)) die_usage("invalid col type");
+    if (!preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $suffix)) die_usage("invalid suffix");
+
+    $db = sqlite_open($DB_PATH);
+    $bid = fs_branch_id($db, $bname);
+    if ($bid <= 0) {
+        fwrite(STDERR, "branchctl: no branch named '$bname'\n");
+        exit(4);
+    }
+    $logical = "b{$bid}_wp_{$suffix}";
+    // Determine the real table to ALTER. For main this is the logical name
+    // itself; for a COW branch we ALTER the overlay (not the view).
+    $physical = $logical;
+    if (cow_is_view($db, $logical)) {
+        $physical = $logical . '__overlay';
+    }
+    if (!cow_is_table($db, $physical)) {
+        fwrite(STDERR, "branchctl: no underlying table '$physical' to alter\n");
+        exit(5);
+    }
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        $db->exec('ALTER TABLE "' . SQLite3::escapeString($physical) . '" '
+                . 'ADD COLUMN "' . $col_name . '" ' . $col_type);
+        // Invalidate descendant branches' views — SELECT * was resolved at
+        // the original CREATE VIEW time, so the new column would otherwise
+        // be invisible.
+        cow_recreate_views_for_table($db, $suffix);
+        $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        $db->exec('ROLLBACK');
+        fwrite(STDERR, "branchctl: alter-add-column failed: " . $e->getMessage() . "\n");
+        exit(5);
+    }
+    echo "branchctl: added column '$col_name' $col_type to b{$bid}_wp_{$suffix} "
+       . "(updated dependent branch views)\n";
     break;
 }
 

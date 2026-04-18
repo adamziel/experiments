@@ -295,10 +295,19 @@ class TestBranchTableConstraints:
         The copied b{id}_wp_options must have a unique constraint on option_name.
         Without it, concurrent WP requests can create duplicate rows for the
         same option, and get_option() returns an unpredictable value.
+
+        Under COW, b{id}_wp_options is a view backed by an overlay table —
+        the UNIQUE index lives on b{id}_wp_options__overlay.
         """
         site_fp = site_with_branch["site_fp"]
         cid = self._child_id(site_fp)
         table = f"b{cid}_wp_options"
+
+        # If COW: walk to overlay for index/DDL inspection.
+        type_rows = sqlite_q(site_fp,
+            "SELECT type FROM sqlite_master WHERE name=?", (table,))
+        if type_rows and type_rows[0][0] == "view":
+            table = f"b{cid}_wp_options__overlay"
 
         indexes = sqlite_q(site_fp,
             "SELECT name, sql FROM sqlite_master "
@@ -666,10 +675,11 @@ class TestBranchDeleteCleansDB:
 
     def test_delete_removes_db_snapshots_rows(self, site_with_branch):
         """
-        After `branchctl delete <branch>`, every row in db_snapshots
-        belonging to that branch must be gone. Otherwise per-branch-id
-        snapshot rows accumulate forever on sites with high branch churn
-        (CI previews, per-PR branches).
+        After `branchctl delete <branch>`, every per-branch row in
+        ancestor-tracking tables (legacy db_snapshots; COW db_cow_branches /
+        db_ancestor_overlay / db_post_fork_inserts) must be gone.
+        Otherwise per-branch rows accumulate forever on sites with high
+        branch churn (CI previews, per-PR branches).
         """
         site_fp = site_with_branch["site_fp"]
 
@@ -678,21 +688,30 @@ class TestBranchDeleteCleansDB:
         assert rows, "snap-leak branch not created"
         bid = rows[0][0]
 
-        before = sqlite_q(site_fp,
-            "SELECT COUNT(*) FROM db_snapshots WHERE branch_id=?", (bid,))
-        assert before[0][0] > 0, (
-            "branchctl create must record db_snapshots for the new branch — "
-            "this is F6's ancestor snapshot used by later 3-way merge."
+        # Either (legacy) db_snapshots or (COW) db_cow_branches must hold
+        # an ancestor reference per branch — pick whichever applies.
+        legacy_n = sqlite_q(site_fp,
+            "SELECT COUNT(*) FROM db_snapshots WHERE branch_id=?", (bid,))[0][0]
+        cow_n = sqlite_q(site_fp,
+            "SELECT COUNT(*) FROM db_cow_branches WHERE branch_id=?", (bid,))[0][0]
+        assert (legacy_n > 0) or (cow_n > 0), (
+            "branchctl create must record an ancestor reference for the new "
+            "branch (db_snapshots in legacy format, db_cow_branches in COW)."
         )
 
         branchctl(site_fp, "delete", "snap-leak")
 
-        after = sqlite_q(site_fp,
-            "SELECT COUNT(*) FROM db_snapshots WHERE branch_id=?", (bid,))
-        assert after[0][0] == 0, (
-            f"After delete, {after[0][0]} db_snapshots rows remain for "
-            f"branch id={bid}. These leak across branch lifecycles."
-        )
+        # After delete, BOTH legacy and COW per-branch rows must be gone.
+        for table in ("db_snapshots", "db_cow_branches", "db_ancestor_overlay",
+                      "db_post_fork_inserts", "db_snapshots_schema"):
+            try:
+                n = sqlite_q(site_fp,
+                    f"SELECT COUNT(*) FROM {table} WHERE branch_id=?", (bid,))[0][0]
+            except Exception:
+                continue # table may not exist on older DBs
+            assert n == 0, (
+                f"After delete, {n} {table} rows remain for branch id={bid}."
+            )
 
 
 # ══════════════════════════════════════════════════════════════════════════════
