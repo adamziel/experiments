@@ -133,6 +133,129 @@ function merge_find_ancestor(SQLite3 $db, string $src, string $tgt): string {
     return 'main';
 }
 
+// ── DB merge helpers ──────────────────────────────────────────────────────────
+
+/** Get ordered PRIMARY KEY column names for a table (empty if no explicit PK). */
+function db_pk_cols(SQLite3 $db, string $table): array {
+    $pk = [];
+    $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($table) . '")');
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        if ((int)$row['pk'] > 0) $pk[(int)$row['pk']] = $row['name'];
+    }
+    ksort($pk);
+    return array_values($pk);
+}
+
+/** Read all rows from a table; returns [pk_json => row_json]. */
+function db_table_rows(SQLite3 $db, string $table, array $pk_cols): array {
+    $rows = [];
+    $r = $db->query('SELECT * FROM "' . SQLite3::escapeString($table) . '"');
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        if (empty($pk_cols)) {
+            $pk_map = $row; // use whole row as key when no explicit PK
+        } else {
+            $pk_map = [];
+            foreach ($pk_cols as $col) $pk_map[$col] = $row[$col] ?? null;
+        }
+        $rows[json_encode($pk_map, JSON_UNESCAPED_UNICODE)] = json_encode($row, JSON_UNESCAPED_UNICODE);
+    }
+    return $rows;
+}
+
+/** Read ancestor rows from db_snapshots for a given (branch_id, table_name). */
+function db_ancestor_rows(SQLite3 $db, int $branch_id, string $table_name): array {
+    $rows = [];
+    $s = $db->prepare('SELECT row_pk, row_json FROM db_snapshots WHERE branch_id=:b AND table_name=:t');
+    $s->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $s->bindValue(':t', $table_name, SQLITE3_TEXT);
+    $r = $s->execute();
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $rows[$row['row_pk']] = $row['row_json'];
+    return $rows;
+}
+
+/** INSERT OR REPLACE a row into a table from its JSON representation. */
+function db_upsert(SQLite3 $db, string $table, string $row_json): void {
+    $row  = json_decode($row_json, true);
+    $cols = array_keys($row);
+    $quoted = array_map(fn($c) => '"' . $c . '"', $cols);
+    $params  = array_map(fn($c) => ':' . $c, $cols);
+    $sql  = 'INSERT OR REPLACE INTO "' . SQLite3::escapeString($table) . '" ('
+          . implode(', ', $quoted) . ') VALUES (' . implode(', ', $params) . ')';
+    $stmt = $db->prepare($sql);
+    foreach ($row as $col => $val) {
+        $type = match (true) {
+            $val === null  => SQLITE3_NULL,
+            is_int($val)   => SQLITE3_INTEGER,
+            is_float($val) => SQLITE3_FLOAT,
+            default        => SQLITE3_TEXT,
+        };
+        $stmt->bindValue(':' . $col, $val, $type);
+    }
+    $stmt->execute();
+}
+
+/** DELETE a row identified by its JSON-encoded PK. */
+function db_delete_by_pk(SQLite3 $db, string $table, string $pk_json, array $pk_cols): void {
+    $pk    = json_decode($pk_json, true);
+    $conds = array_map(fn($c) => '"' . $c . '" = :' . $c, $pk_cols);
+    $sql   = 'DELETE FROM "' . SQLite3::escapeString($table) . '" WHERE ' . implode(' AND ', $conds);
+    $stmt  = $db->prepare($sql);
+    foreach ($pk_cols as $col) {
+        $val  = $pk[$col] ?? null;
+        $type = match (true) {
+            $val === null  => SQLITE3_NULL,
+            is_int($val)   => SQLITE3_INTEGER,
+            is_float($val) => SQLITE3_FLOAT,
+            default        => SQLITE3_TEXT,
+        };
+        $stmt->bindValue(':' . $col, $val, $type);
+    }
+    $stmt->execute();
+}
+
+/** Copy DDL + rows from $src_table to $tgt_table (renaming table/index names). */
+function db_copy_table(SQLite3 $db, string $src_table, string $tgt_table,
+                       string $src_prefix, string $tgt_prefix): void {
+    $old_ddl = $db->querySingle(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+        . SQLite3::escapeString($src_table) . "'"
+    );
+    if ($old_ddl) {
+        $new_ddl = preg_replace(
+            '/^(CREATE\s+TABLE\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?'
+            . preg_quote($src_table, '/') . '"?(\s*\()/is',
+            '$1IF NOT EXISTS "' . $tgt_table . '"$2',
+            $old_ddl, 1
+        );
+        $db->exec($new_ddl ?: "CREATE TABLE IF NOT EXISTS \"$tgt_table\" AS SELECT * FROM \"$src_table\"");
+    } else {
+        $db->exec("CREATE TABLE IF NOT EXISTS \"$tgt_table\" AS SELECT * FROM \"$src_table\"");
+    }
+    $db->exec("INSERT INTO \"$tgt_table\" SELECT * FROM \"$src_table\"");
+
+    // Recreate named indexes with renamed table/index references.
+    $idx_stmt = $db->prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=:t AND sql IS NOT NULL");
+    $idx_stmt->bindValue(':t', $src_table, SQLITE3_TEXT);
+    $idx_res  = $idx_stmt->execute();
+    $idx_rows = [];
+    while ($irow = $idx_res->fetchArray(SQLITE3_ASSOC)) $idx_rows[] = $irow;
+    foreach ($idx_rows as $irow) {
+        $old_idx = $irow['name'];
+        $new_idx = str_replace($src_prefix, $tgt_prefix, $old_idx);
+        $idx_sql = preg_replace(
+            '/^(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?' . preg_quote($old_idx, '/') . '"?/i',
+            '$1IF NOT EXISTS "' . $new_idx . '"',
+            $irow['sql'], 1
+        );
+        $idx_sql = preg_replace(
+            '/\bON\s+"?' . preg_quote($src_table, '/') . '"?\s*\(/i',
+            'ON "' . $tgt_table . '" (',
+            $idx_sql, 1
+        );
+        @$db->exec($idx_sql);
+    }
+}
+
 $src_id = merge_branch_id($db, $source);
 $tgt_id = merge_branch_id($db, $target);
 if (!$src_id) { fwrite(STDERR, "ERROR: source branch '$source' not found\n"); exit(1); }
@@ -249,7 +372,235 @@ try {
     fwrite(STDERR, "merge: file-side failed: " . $e->getMessage() . "\n");
     exit(4);
 }
-$db->close();
+// ── Phase 2: DB 3-way merge ───────────────────────────────────────────────────
+echo "\nPhase 2: DB 3-way merge ...\n";
 
-echo "\nNote: database merge is not implemented (Dolt has been removed).\n";
+// Ensure db_snapshots exists (idempotent; handles DBs created before this schema).
+$db->exec("CREATE TABLE IF NOT EXISTS db_snapshots (
+    branch_id  INTEGER NOT NULL,
+    table_name TEXT NOT NULL,
+    row_pk     TEXT NOT NULL,
+    row_json   TEXT NOT NULL,
+    PRIMARY KEY (branch_id, table_name, row_pk)
+)");
+
+$src_prefix = "b{$src_id}_wp_";
+$tgt_prefix = "b{$tgt_id}_wp_";
+
+// Collect table suffixes present in source, target, and ancestor snapshot.
+$src_tables = [];
+$r = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
+    . SQLite3::escapeString($src_prefix) . "%'");
+while ($row = $r->fetchArray(SQLITE3_NUM)) {
+    $src_tables[substr($row[0], strlen($src_prefix))] = $row[0];
+}
+
+$tgt_tables = [];
+$r = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
+    . SQLite3::escapeString($tgt_prefix) . "%'");
+while ($row = $r->fetchArray(SQLITE3_NUM)) {
+    $tgt_tables[substr($row[0], strlen($tgt_prefix))] = $row[0];
+}
+
+$anc_tables = [];
+$r = $db->query("SELECT DISTINCT table_name FROM db_snapshots WHERE branch_id = $src_id");
+while ($row = $r->fetchArray(SQLITE3_NUM)) {
+    $anc_tables[substr($row[0], strlen($src_prefix))] = $row[0];
+}
+
+$all_suffixes = array_unique(array_merge(
+    array_keys($src_tables), array_keys($tgt_tables), array_keys($anc_tables)
+));
+
+$db_clean_ops    = [];
+$db_conflict_ops = [];
+$db_noop         = 0;
+$db_inserted     = 0;
+$db_updated      = 0;
+$db_deleted      = 0;
+
+foreach ($all_suffixes as $suffix) {
+    $src_tname = $src_tables[$suffix] ?? null;
+    $tgt_tname = $tgt_tables[$suffix] ?? null;
+    $anc_tname = $anc_tables[$suffix] ?? null;
+
+    $in_src = $src_tname !== null;
+    $in_tgt = $tgt_tname !== null;
+    $in_anc = $anc_tname !== null;
+
+    // Table only in target (target added it independently): no-op.
+    if (!$in_src && !$in_anc) { $db_noop++; continue; }
+
+    // New table on source, not in target and not in ancestor: copy to target.
+    if ($in_src && !$in_tgt && !$in_anc) {
+        $db_clean_ops[] = ['type' => 'new_table', 'src' => $src_tname,
+                           'tgt' => $tgt_prefix . $suffix];
+        continue;
+    }
+
+    // Source deleted the table (was in ancestor, no longer in source).
+    if ($in_anc && !$in_src) {
+        if (!$in_tgt) { $db_noop++; continue; } // both deleted → noop
+        $anc_rows = db_ancestor_rows($db, $src_id, $anc_tname);
+        $tgt_pk   = db_pk_cols($db, $tgt_tname);
+        $tgt_rows = db_table_rows($db, $tgt_tname, $tgt_pk);
+        if ($anc_rows === $tgt_rows) {
+            $db_clean_ops[] = ['type' => 'drop_table', 'tgt' => $tgt_tname];
+        } else {
+            $db_conflict_ops[] = [
+                'desc'      => "table $suffix (source deleted, target modified)",
+                'ours_op'   => null,
+                'theirs_op' => ['type' => 'drop_table', 'tgt' => $tgt_tname],
+            ];
+        }
+        continue;
+    }
+
+    // Source has it, target deleted it, was in ancestor.
+    if ($in_src && !$in_tgt && $in_anc) {
+        $src_pk   = db_pk_cols($db, $src_tname);
+        $src_rows = db_table_rows($db, $src_tname, $src_pk);
+        $anc_rows = db_ancestor_rows($db, $src_id, $anc_tname);
+        if ($src_rows === $anc_rows) {
+            $db_noop++; // source unchanged; target's deletion wins
+        } else {
+            $db_conflict_ops[] = [
+                'desc'      => "table $suffix (source modified, target deleted table)",
+                'ours_op'   => null,
+                'theirs_op' => ['type' => 'new_table', 'src' => $src_tname,
+                                'tgt' => $tgt_prefix . $suffix],
+            ];
+        }
+        continue;
+    }
+
+    // Row-level 3-way merge for tables present in both source and target.
+    if ($in_src && $in_tgt) {
+        $src_pk   = db_pk_cols($db, $src_tname);
+        $tgt_pk   = db_pk_cols($db, $tgt_tname);
+        $src_rows = db_table_rows($db, $src_tname, $src_pk);
+        $tgt_rows = db_table_rows($db, $tgt_tname, $tgt_pk);
+        $anc_rows = $in_anc ? db_ancestor_rows($db, $src_id, $anc_tname) : [];
+
+        $all_pks = array_unique(array_merge(
+            array_keys($src_rows), array_keys($tgt_rows), array_keys($anc_rows)
+        ));
+
+        foreach ($all_pks as $pk) {
+            $a = $anc_rows[$pk] ?? null;
+            $s = $src_rows[$pk] ?? null;
+            $t = $tgt_rows[$pk] ?? null;
+
+            if ($s === $t) { $db_noop++; continue; }
+
+            if ($a === null) {
+                if ($s !== null && $t === null) {
+                    $db_clean_ops[] = ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s];
+                    $db_inserted++;
+                } elseif ($s !== null && $t !== null) {
+                    $db_conflict_ops[] = [
+                        'desc'      => "$tgt_tname pk=$pk (both inserted different rows)",
+                        'ours_op'   => null,
+                        'theirs_op' => ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s],
+                    ];
+                }
+                // $s===null && $t!==null: target added it, source doesn't have it → keep (noop)
+                continue;
+            }
+
+            if ($s === null) {
+                if ($t === $a) {
+                    $db_clean_ops[] = ['type' => 'delete', 'table' => $tgt_tname,
+                                       'pk' => $pk, 'pk_cols' => $tgt_pk];
+                    $db_deleted++;
+                } else {
+                    $db_conflict_ops[] = [
+                        'desc'      => "$tgt_tname pk=$pk (source deleted, target modified)",
+                        'ours_op'   => null,
+                        'theirs_op' => ['type' => 'delete', 'table' => $tgt_tname,
+                                        'pk' => $pk, 'pk_cols' => $tgt_pk],
+                    ];
+                }
+                continue;
+            }
+
+            // Both present (s != t), ancestor exists.
+            if ($s === $a) {
+                $db_noop++; // source unchanged, target changed → keep target
+            } elseif ($t === $a) {
+                $db_clean_ops[] = ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s];
+                $db_updated++;
+            } else {
+                $db_conflict_ops[] = [
+                    'desc'      => "$tgt_tname pk=$pk (both modified)",
+                    'ours_op'   => null,
+                    'theirs_op' => ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s],
+                ];
+            }
+        }
+    }
+}
+
+echo "  tables considered: " . count($all_suffixes) . "\n";
+echo "  row no-op:         $db_noop\n";
+echo "  row inserts:       $db_inserted\n";
+echo "  row updates:       $db_updated\n";
+echo "  row deletes:       $db_deleted\n";
+echo "  conflicts:         " . count($db_conflict_ops) . "\n";
+
+if ($db_conflict_ops && $strategy === 'abort') {
+    echo "\nDB CONFLICTS (merge aborted; pass --strategy=ours or --strategy=theirs to override):\n";
+    foreach (array_slice($db_conflict_ops, 0, 20) as $c) {
+        echo "  - " . $c['desc'] . "\n";
+    }
+    if (count($db_conflict_ops) > 20) {
+        echo "  ... and " . (count($db_conflict_ops) - 20) . " more\n";
+    }
+    $db->close();
+    exit(2);
+}
+
+// Resolve conflicts per strategy.
+$final_db_ops = $db_clean_ops;
+if ($strategy === 'theirs') {
+    foreach ($db_conflict_ops as $c) {
+        if ($c['theirs_op'] !== null) $final_db_ops[] = $c['theirs_op'];
+    }
+} elseif ($strategy === 'ours') {
+    foreach ($db_conflict_ops as $c) {
+        if ($c['ours_op'] !== null) $final_db_ops[] = $c['ours_op'];
+    }
+}
+
+// Apply DB ops in a single transaction.
+$db->exec('BEGIN IMMEDIATE');
+try {
+    $db_applied = 0;
+    foreach ($final_db_ops as $op) {
+        switch ($op['type']) {
+            case 'upsert':
+                db_upsert($db, $op['table'], $op['row_json']);
+                break;
+            case 'delete':
+                db_delete_by_pk($db, $op['table'], $op['pk'], $op['pk_cols']);
+                break;
+            case 'new_table':
+                db_copy_table($db, $op['src'], $op['tgt'], $src_prefix, $tgt_prefix);
+                break;
+            case 'drop_table':
+                $db->exec('DROP TABLE IF EXISTS "' . SQLite3::escapeString($op['tgt']) . '"');
+                break;
+        }
+        $db_applied++;
+    }
+    $db->exec('COMMIT');
+    echo "  DB ops applied: $db_applied\n";
+} catch (\Throwable $e) {
+    $db->exec('ROLLBACK');
+    fwrite(STDERR, "merge: DB phase failed: " . $e->getMessage() . "\n");
+    $db->close();
+    exit(4);
+}
+
+$db->close();
 echo "\nMerge complete.\n";

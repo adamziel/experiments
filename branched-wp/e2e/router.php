@@ -61,6 +61,23 @@ branchfs_set_root($wp_root);
 branchfs_set_branch($branch);
 branchfs_activate();
 
+// Set per-branch WordPress table prefix so wp-config.php uses b{id}_wp_
+// instead of the static b1_wp_ fallback for every branch.
+$_fp_sqlite = new SQLite3($db_path, SQLITE3_OPEN_READONLY);
+$_fp_branch_id = (int)($_fp_sqlite->querySingle(
+    "SELECT id FROM branches WHERE name='" . SQLite3::escapeString($branch) . "'"
+) ?: 1);
+$_fp_sqlite->close();
+unset($_fp_sqlite);
+$GLOBALS['_branchfs_table_prefix'] = "b{$_fp_branch_id}_wp_";
+
+// Configure sqlite-database-integration to use the same .fp file
+if (!defined('FQDB')) {
+    define('FQDB',    $db_path);
+    define('DB_DIR',  dirname($db_path));
+    define('DB_FILE', basename($db_path));
+}
+
 // chdir keeps relative-path-based libraries happy; PHP requires go through
 // branchfs:// URLs below so OPcache keys per-branch.
 chdir($wp_root);

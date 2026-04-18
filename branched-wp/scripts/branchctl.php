@@ -183,6 +183,13 @@ CREATE TABLE IF NOT EXISTS fs_commit_files (
     FOREIGN KEY (commit_id) REFERENCES fs_commits(id),
     FOREIGN KEY (blob_hash) REFERENCES blobs(hash)
 );
+CREATE TABLE IF NOT EXISTS db_snapshots (
+    branch_id  INTEGER NOT NULL,
+    table_name TEXT NOT NULL,
+    row_pk     TEXT NOT NULL,
+    row_json   TEXT NOT NULL,
+    PRIMARY KEY (branch_id, table_name, row_pk)
+);
 SQL);
 }
 
@@ -386,21 +393,121 @@ case 'create': {
     if ($parent_id > 0 && $new_id > 0) {
         $prefix_old = "b{$parent_id}_wp_";
         $prefix_new = "b{$new_id}_wp_";
+
+        // Collect table names first (iterating sqlite_master while modifying it
+        // via CREATE TABLE is unreliable in SQLite).
         $tables_stmt = $db->prepare(
             "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :p"
         );
         $tables_stmt->bindValue(':p', $prefix_old . '%', SQLITE3_TEXT);
         $tables_result = $tables_stmt->execute();
-        $copied = 0;
+        $tables_to_copy = [];
         while ($row = $tables_result->fetchArray(SQLITE3_ASSOC)) {
-            $old_table = $row['name'];
+            $tables_to_copy[] = $row['name'];
+        }
+
+        $copied = 0;
+        foreach ($tables_to_copy as $old_table) {
             $new_table = $prefix_new . substr($old_table, strlen($prefix_old));
-            // CREATE TABLE new AS SELECT * FROM old (copies structure + data)
-            $db->exec("CREATE TABLE IF NOT EXISTS \"$new_table\" AS SELECT * FROM \"$old_table\"");
+
+            // Use the original DDL so PRIMARY KEY, UNIQUE, NOT NULL and other
+            // constraints are preserved. CREATE TABLE … AS SELECT strips them.
+            $old_ddl = $db->querySingle(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+                . SQLite3::escapeString($old_table) . "'"
+            );
+            if ($old_ddl) {
+                $new_ddl = preg_replace(
+                    '/^(CREATE\s+TABLE\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?' . preg_quote($old_table, '/') . '"?(\s*\()/is',
+                    '$1IF NOT EXISTS "' . $new_table . '"$2',
+                    $old_ddl, 1
+                );
+                if ($new_ddl) {
+                    $db->exec($new_ddl);
+                    $db->exec("INSERT INTO \"$new_table\" SELECT * FROM \"$old_table\"");
+                } else {
+                    $db->exec("CREATE TABLE IF NOT EXISTS \"$new_table\" AS SELECT * FROM \"$old_table\"");
+                }
+            } else {
+                $db->exec("CREATE TABLE IF NOT EXISTS \"$new_table\" AS SELECT * FROM \"$old_table\"");
+            }
+
+            // Recreate named indexes (inline UNIQUE in DDL is already preserved above;
+            // this covers separately-created CREATE INDEX statements).
+            $idx_stmt = $db->prepare(
+                "SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name=:t AND sql IS NOT NULL"
+            );
+            $idx_stmt->bindValue(':t', $old_table, SQLITE3_TEXT);
+            $idx_res   = $idx_stmt->execute();
+            $idx_rows  = [];
+            while ($irow = $idx_res->fetchArray(SQLITE3_ASSOC)) {
+                $idx_rows[] = $irow;
+            }
+            foreach ($idx_rows as $irow) {
+                $old_idx = $irow['name'];
+                $new_idx = str_replace($prefix_old, $prefix_new, $old_idx);
+                $idx_sql = preg_replace(
+                    '/^(CREATE\s+(?:UNIQUE\s+)?INDEX\s+)(?:IF\s+NOT\s+EXISTS\s+)?"?' . preg_quote($old_idx, '/') . '"?/i',
+                    '$1IF NOT EXISTS "' . $new_idx . '"',
+                    $irow['sql'], 1
+                );
+                $idx_sql = preg_replace(
+                    '/\bON\s+"?' . preg_quote($old_table, '/') . '"?\s*\(/i',
+                    'ON "' . $new_table . '" (',
+                    $idx_sql, 1
+                );
+                @$db->exec($idx_sql);
+            }
+
             $copied++;
         }
         if ($copied > 0) {
             echo "branchfs: copied $copied WordPress DB tables (b{$parent_id} -> b{$new_id})\n";
+        }
+
+        // Snapshot the newly-copied rows so merge.php has a common ancestor for 3-way DB merge.
+        $snap_total = 0;
+        $snap_ins = $db->prepare(
+            "INSERT OR REPLACE INTO db_snapshots (branch_id, table_name, row_pk, row_json) "
+          . "VALUES (:bid, :tname, :rpk, :rjson)"
+        );
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            foreach ($tables_to_copy as $old_table) {
+                $new_table = $prefix_new . substr($old_table, strlen($prefix_old));
+
+                $pk_cols = [];
+                $pi = $db->query("PRAGMA table_info(\"" . SQLite3::escapeString($new_table) . "\")");
+                while ($prow = $pi->fetchArray(SQLITE3_ASSOC)) {
+                    if ((int)$prow['pk'] > 0) $pk_cols[(int)$prow['pk']] = $prow['name'];
+                }
+                ksort($pk_cols);
+                $pk_cols = array_values($pk_cols);
+
+                $rows = $db->query("SELECT * FROM \"" . SQLite3::escapeString($new_table) . "\"");
+                while ($row = $rows->fetchArray(SQLITE3_ASSOC)) {
+                    if (empty($pk_cols)) {
+                        $pk_map = ['_rowid_' => $row['rowid'] ?? null];
+                    } else {
+                        $pk_map = [];
+                        foreach ($pk_cols as $col) $pk_map[$col] = $row[$col] ?? null;
+                    }
+                    $snap_ins->bindValue(':bid',   $new_id,    SQLITE3_INTEGER);
+                    $snap_ins->bindValue(':tname', $new_table, SQLITE3_TEXT);
+                    $snap_ins->bindValue(':rpk',   json_encode($pk_map,  JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                    $snap_ins->bindValue(':rjson', json_encode($row,     JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                    $snap_ins->execute();
+                    $snap_ins->reset();
+                    $snap_total++;
+                }
+            }
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            $db->exec('ROLLBACK');
+            echo "warning: DB ancestor snapshot failed: " . $e->getMessage() . "\n";
+        }
+        if ($snap_total > 0) {
+            echo "branchfs: recorded $snap_total ancestor DB rows in db_snapshots\n";
         }
     }
 
@@ -450,15 +557,27 @@ case 'delete': {
     $s->bindValue(':n', $name, SQLITE3_TEXT);
     $r = $s->execute();
     $row = $r->fetchArray(SQLITE3_NUM);
+    // Finalize the result and statement before DDL — an open read cursor keeps
+    // a read transaction alive, which blocks DROP TABLE ("database table is locked").
+    $r->finalize();
+    $s->close();
     if ($row) {
         $bid = (int)$row[0];
-        // Drop all WordPress DB tables for this branch
+        // Drop all WordPress DB tables for this branch.
+        // Collect names first: DROPping modifies sqlite_master, which would
+        // invalidate an open cursor and cause rows to be silently skipped.
         $prefix = "b{$bid}_wp_";
         $ts = $db->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :p");
         $ts->bindValue(':p', $prefix . '%', SQLITE3_TEXT);
         $tr = $ts->execute();
+        $tables_to_drop = [];
         while ($trow = $tr->fetchArray(SQLITE3_ASSOC)) {
-            $db->exec("DROP TABLE IF EXISTS \"" . $trow['name'] . "\"");
+            $tables_to_drop[] = $trow['name'];
+        }
+        $tr->finalize();
+        $ts->close();
+        foreach ($tables_to_drop as $tname) {
+            $db->exec("DROP TABLE IF EXISTS \"$tname\"");
         }
         $db->exec("DELETE FROM files    WHERE branch_id = $bid");
         $db->exec("DELETE FROM branches WHERE id        = $bid");
@@ -591,14 +710,20 @@ case 'merge': {
         fwrite(STDERR, "branchctl: scripts/merge.php not found next to branchctl.php\n");
         exit(5);
     }
-    echo "branchctl: invoking scripts/merge.php (file-level 3-way merge)...\n";
-    echo "note: database merge is not implemented; only file-level changes are merged.\n";
+    echo "branchctl: invoking scripts/merge.php (3-way file + DB merge)...\n";
 
     $argv_forward = [
         escapeshellarg($from),
         escapeshellarg($into),
         escapeshellarg($DB_PATH),
     ];
+    if (isset($flags['strategy'])) {
+        $strat = (string)$flags['strategy'];
+        if (!in_array($strat, ['abort', 'ours', 'theirs'], true)) {
+            die_usage("invalid --strategy '$strat' (must be abort|ours|theirs)");
+        }
+        $argv_forward[] = '--strategy=' . $strat;
+    }
     $so = realpath(__DIR__ . '/../ext/branchfs.so');
     $php_bin = PHP_BINARY;
     $ext_flag = $so ? '-d extension=' . escapeshellarg($so) : '';
