@@ -21,7 +21,7 @@
  */
 
 if ($argc < 3) {
-    fwrite(STDERR, "Usage: php merge.php {source-branch} {target-branch} [db-path] [--strategy=abort|ours|theirs]\n");
+    fwrite(STDERR, "Usage: php merge.php {source-branch} {target-branch} [db-path] [--strategy=abort|ours|theirs] [--on-id-collision=conflict|renumber]\n");
     exit(1);
 }
 
@@ -29,6 +29,7 @@ $source  = $argv[1];
 $target  = $argv[2];
 $db_path = $argv[3] ?? __DIR__ . '/../branchfs.db';
 $strategy = 'abort';
+$on_id_collision = 'conflict';
 
 for ($i = 3; $i < $argc; $i++) {
     $a = $argv[$i];
@@ -36,11 +37,19 @@ for ($i = 3; $i < $argc; $i++) {
         $strategy = substr($a, strlen('--strategy='));
     } elseif ($a === '--strategy' && isset($argv[$i + 1])) {
         $strategy = $argv[++$i];
+    } elseif (strpos($a, '--on-id-collision=') === 0) {
+        $on_id_collision = substr($a, strlen('--on-id-collision='));
+    } elseif ($a === '--on-id-collision' && isset($argv[$i + 1])) {
+        $on_id_collision = $argv[++$i];
     }
 }
 
 if (!in_array($strategy, ['abort', 'ours', 'theirs'], true)) {
     fwrite(STDERR, "merge: invalid --strategy '$strategy' (must be abort|ours|theirs)\n");
+    exit(1);
+}
+if (!in_array($on_id_collision, ['conflict', 'renumber'], true)) {
+    fwrite(STDERR, "merge: invalid --on-id-collision '$on_id_collision' (must be conflict|renumber)\n");
     exit(1);
 }
 
@@ -57,7 +66,8 @@ branchfs_set_db($db_path);
 echo "=== BranchFS Merge ===\n";
 echo "Source:    $source\n";
 echo "Target:    $target\n";
-echo "Strategy:  $strategy\n\n";
+echo "Strategy:  $strategy\n";
+echo "On-ID-collision: $on_id_collision\n\n";
 
 $db = new SQLite3($db_path);
 // 15s busy timeout + sqlite_retry_busy() wrappers around the two write
@@ -69,6 +79,116 @@ $db->exec('PRAGMA wal_autocheckpoint = 500');
 
 function merge_branch_id(SQLite3 $db, string $name): int {
     return (int)$db->querySingle("SELECT id FROM branches WHERE name = '" . $db->escapeString($name) . "'");
+}
+
+/**
+ * Hard-coded WordPress foreign-key rewrite map used by --on-id-collision=renumber.
+ *
+ * Keys and values are the BARE suffix after the `b{id}_wp_` branch prefix.
+ * For example, `b2_wp_postmeta` has suffix `postmeta`.
+ *
+ * Values are [fk_table_suffix, fk_column] pairs that reference the PK-owning
+ * table's PK column.
+ */
+function merge_fk_map(): array {
+    return [
+        'posts' => [
+            ['postmeta',           'post_id'],
+            ['comments',           'comment_post_ID'],
+            ['term_relationships', 'object_id'],
+            ['posts',              'post_parent'],
+        ],
+        'users' => [
+            ['usermeta', 'user_id'],
+            ['posts',    'post_author'],
+            ['comments', 'user_id'],
+        ],
+        'comments' => [
+            ['commentmeta', 'comment_id'],
+        ],
+        'terms' => [
+            ['term_taxonomy', 'term_id'],
+        ],
+        'term_taxonomy' => [
+            ['term_relationships', 'term_taxonomy_id'],
+        ],
+    ];
+}
+
+/**
+ * True iff $table has a single-column INTEGER PRIMARY KEY AUTOINCREMENT.
+ *
+ * Detection: prefer DDL inspection (sqlite_master.sql LIKE '%AUTOINCREMENT%'),
+ * fall back to PRAGMA table_info for a single-INTEGER-PK column.
+ */
+function merge_table_is_autoinc_pk(SQLite3 $db, string $table): bool {
+    $ddl = $db->querySingle(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+        . SQLite3::escapeString($table) . "'"
+    );
+    if (is_string($ddl) && stripos($ddl, 'AUTOINCREMENT') !== false) {
+        return true;
+    }
+    // Fallback: single PK column typed INTEGER.
+    $pk_cols = [];
+    $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($table) . '")');
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        if ((int)$row['pk'] > 0) {
+            $pk_cols[] = $row;
+        }
+    }
+    if (count($pk_cols) !== 1) return false;
+    return strtoupper((string)$pk_cols[0]['type']) === 'INTEGER';
+}
+
+/**
+ * Current MAX(pk_col) from a (prefixed) table, or 0 if empty/missing.
+ */
+function merge_table_max_pk(SQLite3 $db, string $table, string $pk_col): int {
+    $v = $db->querySingle(
+        'SELECT MAX("' . SQLite3::escapeString($pk_col) . '") FROM "'
+        . SQLite3::escapeString($table) . '"'
+    );
+    return $v === null ? 0 : (int)$v;
+}
+
+/**
+ * Rewrite all FK-column occurrences of $old_id → $new_id in $row_json, but
+ * only for the columns declared in the supplied FK map entry list.
+ *
+ * $fk_cols_for_this_table is a list of column names (strings) in the CURRENT
+ * row's table that point at a renumbered PK in some other table. The caller
+ * supplies only relevant columns for the row's table.
+ *
+ * Leaves NULL and 0 (unset FK) columns unchanged.
+ */
+function merge_rewrite_row_fks(string $row_json, array $fk_rewrites): string {
+    $row = json_decode($row_json, true);
+    if (!is_array($row)) return $row_json;
+    $changed = false;
+    foreach ($fk_rewrites as $entry) {
+        [$col, $map] = $entry; // $map : old_id => new_id
+        if (!array_key_exists($col, $row)) continue;
+        $v = $row[$col];
+        if ($v === null) continue;
+        if ((int)$v === 0) continue;
+        $iv = (int)$v;
+        if (isset($map[$iv])) {
+            $row[$col] = $map[$iv];
+            $changed = true;
+        }
+    }
+    return $changed ? json_encode($row, JSON_UNESCAPED_UNICODE) : $row_json;
+}
+
+/**
+ * Replace the PK column value in a row_json blob with $new_id.
+ */
+function merge_row_with_pk(string $row_json, string $pk_col, int $new_id): string {
+    $row = json_decode($row_json, true);
+    if (!is_array($row)) return $row_json;
+    $row[$pk_col] = $new_id;
+    return json_encode($row, JSON_UNESCAPED_UNICODE);
 }
 
 /** Resolve a branch's full tree by walking parent_branch (COW inheritance). */
@@ -439,6 +559,16 @@ $db_inserted     = 0;
 $db_updated      = 0;
 $db_deleted      = 0;
 
+// --on-id-collision=renumber state:
+//   $renumber_map[$suffix] = [ $old_id => $new_id, ... ]
+//   $renumber_log          = [ ['suffix', 'pk_col', $old, $new], ... ]
+//   $renumber_next_id      = per-suffix next free ID, pre-allocated by inspecting
+//                            MAX(src_pk), MAX(tgt_pk) at the start of each table walk.
+$renumber_map     = [];
+$renumber_log     = [];
+$renumber_next_id = [];
+$FK_MAP           = merge_fk_map();
+
 foreach ($all_suffixes as $suffix) {
     $src_tname = $src_tables[$suffix] ?? null;
     $tgt_tname = $tgt_tables[$suffix] ?? null;
@@ -506,6 +636,22 @@ foreach ($all_suffixes as $suffix) {
             array_keys($src_rows), array_keys($tgt_rows), array_keys($anc_rows)
         ));
 
+        // Renumber eligibility for this table (suffix): only auto-inc single
+        // INTEGER PK tables whose suffix is in $FK_MAP.
+        $renumber_eligible =
+            $on_id_collision === 'renumber'
+            && count($src_pk) === 1
+            && isset($FK_MAP[$suffix])
+            && merge_table_is_autoinc_pk($db, $src_tname)
+            && merge_table_is_autoinc_pk($db, $tgt_tname);
+
+        if ($renumber_eligible && !isset($renumber_next_id[$suffix])) {
+            $pk_col = $src_pk[0];
+            $smax = merge_table_max_pk($db, $src_tname, $pk_col);
+            $tmax = merge_table_max_pk($db, $tgt_tname, $pk_col);
+            $renumber_next_id[$suffix] = max($smax, $tmax) + 1;
+        }
+
         foreach ($all_pks as $pk) {
             $a = $anc_rows[$pk] ?? null;
             $s = $src_rows[$pk] ?? null;
@@ -515,13 +661,38 @@ foreach ($all_suffixes as $suffix) {
 
             if ($a === null) {
                 if ($s !== null && $t === null) {
-                    $db_clean_ops[] = ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s];
+                    $db_clean_ops[] = ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s,
+                                       'suffix' => $suffix];
                     $db_inserted++;
                 } elseif ($s !== null && $t !== null) {
+                    // Collision: both sides independently inserted different
+                    // rows with the same PK. If renumber is requested AND the
+                    // table is autoinc + in the FK map, allocate a new PK for
+                    // source's row and queue an upsert with the rewritten PK.
+                    if ($renumber_eligible) {
+                        $pk_col = $src_pk[0];
+                        $pk_map = json_decode($pk, true);
+                        $old_id = isset($pk_map[$pk_col]) ? (int)$pk_map[$pk_col] : 0;
+                        if ($old_id > 0) {
+                            $new_id = $renumber_next_id[$suffix]++;
+                            $renumber_map[$suffix][$old_id] = $new_id;
+                            $renumber_log[] = [$tgt_tname, $pk_col, $old_id, $new_id];
+                            $renumbered_row = merge_row_with_pk($s, $pk_col, $new_id);
+                            $db_clean_ops[] = [
+                                'type'     => 'upsert',
+                                'table'    => $tgt_tname,
+                                'row_json' => $renumbered_row,
+                                'suffix'   => $suffix,
+                            ];
+                            $db_inserted++;
+                            continue;
+                        }
+                    }
                     $db_conflict_ops[] = [
                         'desc'      => "$tgt_tname pk=$pk (both inserted different rows)",
                         'ours_op'   => null,
-                        'theirs_op' => ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s],
+                        'theirs_op' => ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s,
+                                        'suffix' => $suffix],
                     ];
                 }
                 // $s===null && $t!==null: target added it, source doesn't have it → keep (noop)
@@ -548,13 +719,15 @@ foreach ($all_suffixes as $suffix) {
             if ($s === $a) {
                 $db_noop++; // source unchanged, target changed → keep target
             } elseif ($t === $a) {
-                $db_clean_ops[] = ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s];
+                $db_clean_ops[] = ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s,
+                                   'suffix' => $suffix];
                 $db_updated++;
             } else {
                 $db_conflict_ops[] = [
                     'desc'      => "$tgt_tname pk=$pk (both modified)",
                     'ours_op'   => null,
-                    'theirs_op' => ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s],
+                    'theirs_op' => ['type' => 'upsert', 'table' => $tgt_tname, 'row_json' => $s,
+                                    'suffix' => $suffix],
                 ];
             }
         }
@@ -566,7 +739,17 @@ echo "  row no-op:         $db_noop\n";
 echo "  row inserts:       $db_inserted\n";
 echo "  row updates:       $db_updated\n";
 echo "  row deletes:       $db_deleted\n";
+echo "  id renumbers:      " . count($renumber_log) . "\n";
 echo "  conflicts:         " . count($db_conflict_ops) . "\n";
+
+if (!empty($renumber_log)) {
+    echo "\nID collision renumbers (" . count($renumber_log) . "):\n";
+    foreach ($renumber_log as $entry) {
+        [$tname, $pk_col, $old_id, $new_id] = $entry;
+        echo "  " . str_pad($tname . '.' . $pk_col, 36) . " $old_id -> $new_id\n";
+    }
+    echo "\n";
+}
 
 if ($db_conflict_ops && $strategy === 'abort') {
     echo "\nDB CONFLICTS (merge aborted; pass --strategy=ours or --strategy=theirs to override):\n";
@@ -590,6 +773,39 @@ if ($strategy === 'theirs') {
     foreach ($db_conflict_ops as $c) {
         if ($c['ours_op'] !== null) $final_db_ops[] = $c['ours_op'];
     }
+}
+
+// Pass 2 of the two-pass renumber: rewrite FK columns in source-origin rows
+// that are about to be upserted into FK-bearing tables. For a renumbered
+// wp_posts.ID 42 → 157, source's wp_postmeta rows with post_id=42 now need
+// post_id=157 before the upsert — otherwise they'd either overwrite target's
+// unrelated meta for post 42 or float free.
+//
+// Critical scoping: only rewrite source-origin upserts. Target-origin rows
+// never collide on the renumbered IDs (we just picked IDs beyond both sides'
+// max), so rewriting their FK columns is a no-op in practice — but we only
+// have source-origin rows in $final_db_ops for upsert anyway, since the
+// row_level walk either keeps target unchanged (noop) or upserts source's
+// row_json. So it's safe to walk every upsert here.
+if (!empty($renumber_map)) {
+    // Build: fk_table_suffix => [ [fk_col, map_ref], ... ]
+    $fk_rewrites_by_suffix = [];
+    foreach ($renumber_map as $pk_suffix => $map) {
+        if (empty($map)) continue;
+        if (!isset($FK_MAP[$pk_suffix])) continue;
+        foreach ($FK_MAP[$pk_suffix] as $fk_entry) {
+            [$fk_table_suffix, $fk_col] = $fk_entry;
+            $fk_rewrites_by_suffix[$fk_table_suffix][] = [$fk_col, $map];
+        }
+    }
+    foreach ($final_db_ops as &$op) {
+        if ($op['type'] !== 'upsert') continue;
+        $sfx = $op['suffix'] ?? null;
+        if ($sfx === null) continue;
+        if (!isset($fk_rewrites_by_suffix[$sfx])) continue;
+        $op['row_json'] = merge_rewrite_row_fks($op['row_json'], $fk_rewrites_by_suffix[$sfx]);
+    }
+    unset($op);
 }
 
 // Apply DB ops AND refresh the source branch's ancestor snapshot in a

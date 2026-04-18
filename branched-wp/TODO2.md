@@ -209,7 +209,7 @@ of dead blobs. The `.fp` file grows. Backups get larger. Disk pressure.
 
 ---
 
-## [ ] 5. Auto-increment ID collision on merge: no path forward for the user [MEDIUM]
+## [x] 5. Auto-increment ID collision on merge: no path forward for the user [MEDIUM]
 
 **Problem**
 If `main` inserts `wp_posts` row with ID 42 after the branch was forked,

@@ -972,6 +972,13 @@ case 'merge': {
         }
         $argv_forward[] = '--strategy=' . $strat;
     }
+    if (isset($flags['on-id-collision'])) {
+        $oic = (string)$flags['on-id-collision'];
+        if (!in_array($oic, ['conflict', 'renumber'], true)) {
+            die_usage("invalid --on-id-collision '$oic' (must be conflict|renumber)");
+        }
+        $argv_forward[] = '--on-id-collision=' . $oic;
+    }
     $so = realpath(__DIR__ . '/../ext/branchfs.so');
     $php_bin = PHP_BINARY;
     $ext_flag = $so ? '-d extension=' . escapeshellarg($so) : '';

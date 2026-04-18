@@ -371,7 +371,7 @@ reset token. Operators rotate credentials with
 `forkpress user remove <name> && forkpress user add <name> <newpw>`.
 
 ### F9 — Merge
-`branchctl merge <from> --into <target> [--strategy=abort|ours|theirs]`
+`branchctl merge <from> --into <target> [--strategy=abort|ours|theirs] [--on-id-collision=conflict|renumber]`
 
 **Phase 1 — File 3-way merge** (existing)
 Uses the fork-time `fs_commits` snapshot as the common ancestor. Per-path:
@@ -399,6 +399,55 @@ ancestor. Per row (keyed by primary key JSON):
 New tables on source (e.g. new plugin) are created on target with DDL-preserving
 `CREATE TABLE` + `INSERT`. All changes are applied atomically in one transaction.
 `--strategy=abort` leaves the target completely unchanged on any conflict.
+
+**Auto-increment ID collision renumbering (`--on-id-collision`)**
+
+Default `conflict` keeps the historical behaviour: if both source and target
+independently inserted a new row with the same auto-increment PK after the
+fork, the merge reports a CONFLICT. Resolving it via `--strategy=ours` or
+`--strategy=theirs` would lose one side's data.
+
+`--on-id-collision=renumber` resolves these conflicts non-destructively for
+the standard WordPress tables: source's colliding row is upserted into target
+with a fresh PK that exceeds `max(MAX(source.pk), MAX(target.pk))`, and any
+hard-coded foreign-key column on a source-origin row in the same merge that
+referenced the old PK is rewritten to the new PK before being applied. The
+rewrite map (PK-owning table → list of (FK table, FK column)):
+
+| PK-owning table | Foreign-key references |
+|------------------|------------------------|
+| `wp_posts.ID`            | `wp_postmeta.post_id`, `wp_comments.comment_post_ID`, `wp_term_relationships.object_id`, `wp_posts.post_parent` |
+| `wp_users.ID`            | `wp_usermeta.user_id`, `wp_posts.post_author`, `wp_comments.user_id` |
+| `wp_comments.comment_ID` | `wp_commentmeta.comment_id` |
+| `wp_terms.term_id`       | `wp_term_taxonomy.term_id` |
+| `wp_term_taxonomy.term_taxonomy_id` | `wp_term_relationships.term_taxonomy_id` |
+
+Eligibility is strict — a collision is only auto-renumbered when ALL of the
+following hold:
+
+1. The colliding column is the table's single-column INTEGER PRIMARY KEY
+   AUTOINCREMENT (detected via `sqlite_master.sql LIKE '%AUTOINCREMENT%'`,
+   with a single-INTEGER-PK fallback).
+2. The PK-owning table's bare suffix (e.g. `posts`, `users`) is in the
+   rewrite map above.
+3. The collision is genuinely "both inserted independently after fork" —
+   the ancestor snapshot has no row at this PK, source and target both have
+   distinct rows at this PK.
+
+Unrelated value conflicts (e.g. two different `option_value` for the same
+`option_name`) and PK collisions on tables outside the rewrite map (e.g.
+`wp_options.option_id`, plugin-defined custom tables) still produce CONFLICT
+even when `--on-id-collision=renumber` is passed.
+
+The renumber + FK rewrite + ancestor snapshot refresh all run in the same
+`sqlite_retry_busy` transaction as the existing apply loop, so a renumbered
+post and its rewritten meta become visible atomically. Each renumber is
+listed in the merge summary output:
+
+```
+ID collision renumbers (1):
+  b1_wp_posts.ID                       42 -> 157
+```
 
 **Ancestor snapshot refresh (iterative merges)**
 After a successful merge (i.e. the DB ops transaction committed — strategies
