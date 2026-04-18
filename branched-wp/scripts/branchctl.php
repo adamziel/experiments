@@ -104,7 +104,9 @@ if (!file_exists($DB_PATH)) {
 
 function sqlite_open(string $path): SQLite3 {
     $db = new SQLite3($path, SQLITE3_OPEN_READWRITE);
-    $db->busyTimeout(5000);
+    // 15s busy timeout on top of the retry helper: gives a loser writer
+    // a long polling window before the helper escalates to backoff+retry.
+    $db->busyTimeout(15000);
     // Keep WAL bounded under branchctl write bursts (create/merge/reset
     // all perform many writes in sequence).
     $db->exec('PRAGMA wal_autocheckpoint = 500');

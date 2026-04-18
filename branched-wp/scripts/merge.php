@@ -50,6 +50,7 @@ if (!extension_loaded('branchfs')) {
 }
 
 require_once __DIR__ . '/opcache.php';
+require_once __DIR__ . '/sqlite_retry.php';
 
 branchfs_set_db($db_path);
 
@@ -59,8 +60,12 @@ echo "Target:    $target\n";
 echo "Strategy:  $strategy\n\n";
 
 $db = new SQLite3($db_path);
-$db->busyTimeout(5000);
+// 15s busy timeout + sqlite_retry_busy() wrappers around the two write
+// transactions below handle SQLITE_BUSY under concurrent writer load
+// (parallel HTTP + SFTP + MySQL + other branchctl invocations).
+$db->busyTimeout(15000);
 $db->exec('PRAGMA journal_mode = WAL');
+$db->exec('PRAGMA wal_autocheckpoint = 500');
 
 function merge_branch_id(SQLite3 $db, string $name): int {
     return (int)$db->querySingle("SELECT id FROM branches WHERE name = '" . $db->escapeString($name) . "'");
@@ -335,50 +340,55 @@ if ($conflicts) {
     }
 }
 
-$db->exec('BEGIN IMMEDIATE');
+// Retry the whole file-side transaction on SQLITE_BUSY so a transient
+// write lock from a parallel writer doesn't bubble up as a failed merge.
 try {
-    $applied = 0;
-    $opcache_paths = [];
-    foreach ($to_apply as $path => $entry) {
-        if ($entry === null) {
-            // Deletion from source (tombstone or missing): write a tombstone
-            // on target.
-            $ins = $db->prepare(
-                "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
-              . "VALUES (:b, :p, NULL, 0, :t, 0)"
-            );
-            $ins->bindValue(':b', $tgt_id, SQLITE3_INTEGER);
-            $ins->bindValue(':p', $path, SQLITE3_TEXT);
-            $ins->bindValue(':t', time(), SQLITE3_INTEGER);
-            $ins->execute();
-            $opcache_paths[] = $path;
-            $applied++;
-            continue;
+    $applied = sqlite_retry_busy(function() use ($db, $to_apply, $tgt_id, $target) {
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            $n = 0;
+            $opcache_paths = [];
+            foreach ($to_apply as $path => $entry) {
+                if ($entry === null) {
+                    $ins = $db->prepare(
+                        "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
+                      . "VALUES (:b, :p, NULL, 0, :t, 0)"
+                    );
+                    $ins->bindValue(':b', $tgt_id, SQLITE3_INTEGER);
+                    $ins->bindValue(':p', $path, SQLITE3_TEXT);
+                    $ins->bindValue(':t', time(), SQLITE3_INTEGER);
+                    $ins->execute();
+                    $opcache_paths[] = $path;
+                    $n++;
+                    continue;
+                }
+                $ins = $db->prepare(
+                    "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
+                  . "VALUES (:b, :p, :h, :m, :mt, :d)"
+                );
+                $ins->bindValue(':b',  $tgt_id, SQLITE3_INTEGER);
+                $ins->bindValue(':p',  $path, SQLITE3_TEXT);
+                $ins->bindValue(':h',  $entry['blob_hash'] ?? null,
+                    $entry['blob_hash'] ? SQLITE3_TEXT : SQLITE3_NULL);
+                $ins->bindValue(':m',  (int)($entry['mode']   ?? 0),   SQLITE3_INTEGER);
+                $ins->bindValue(':mt', (int)($entry['mtime']  ?? 0),   SQLITE3_INTEGER);
+                $ins->bindValue(':d',  (int)($entry['is_dir'] ?? 0),   SQLITE3_INTEGER);
+                $ins->execute();
+                if (empty($entry['is_dir'])) $opcache_paths[] = $path;
+                $n++;
+            }
+            foreach ($opcache_paths as $p) {
+                opcache_queue_invalidate($db, $target, $p);
+            }
+            $db->exec('COMMIT');
+            return $n;
+        } catch (\Throwable $e) {
+            $db->exec('ROLLBACK');
+            throw $e;
         }
-        $ins = $db->prepare(
-            "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
-          . "VALUES (:b, :p, :h, :m, :mt, :d)"
-        );
-        $ins->bindValue(':b',  $tgt_id, SQLITE3_INTEGER);
-        $ins->bindValue(':p',  $path, SQLITE3_TEXT);
-        $ins->bindValue(':h',  $entry['blob_hash'] ?? null,
-            $entry['blob_hash'] ? SQLITE3_TEXT : SQLITE3_NULL);
-        $ins->bindValue(':m',  (int)($entry['mode']   ?? 0),   SQLITE3_INTEGER);
-        $ins->bindValue(':mt', (int)($entry['mtime']  ?? 0),   SQLITE3_INTEGER);
-        $ins->bindValue(':d',  (int)($entry['is_dir'] ?? 0),   SQLITE3_INTEGER);
-        $ins->execute();
-        if (empty($entry['is_dir'])) $opcache_paths[] = $path;
-        $applied++;
-    }
-    // Queue OPcache invalidations for every .php path written on target.
-    // Non-.php paths are filtered out inside opcache_queue_invalidate.
-    foreach ($opcache_paths as $p) {
-        opcache_queue_invalidate($db, $target, $p);
-    }
-    $db->exec('COMMIT');
+    });
     echo "  applied: $applied rows\n";
 } catch (\Throwable $e) {
-    $db->exec('ROLLBACK');
     fwrite(STDERR, "merge: file-side failed: " . $e->getMessage() . "\n");
     exit(4);
 }
@@ -596,68 +606,78 @@ if ($strategy === 'theirs') {
 // (source adopted) and --strategy=ours (target kept its value;
 // re-merge will see source unchanged vs ancestor, target changed vs
 // ancestor → keep target, no re-conflict).
-$db->exec('BEGIN IMMEDIATE');
 try {
-    $db_applied = 0;
-    foreach ($final_db_ops as $op) {
-        switch ($op['type']) {
-            case 'upsert':
-                db_upsert($db, $op['table'], $op['row_json']);
-                break;
-            case 'delete':
-                db_delete_by_pk($db, $op['table'], $op['pk'], $op['pk_cols']);
-                break;
-            case 'new_table':
-                db_copy_table($db, $op['src'], $op['tgt'], $src_prefix, $tgt_prefix);
-                break;
-            case 'drop_table':
-                $db->exec('DROP TABLE IF EXISTS "' . SQLite3::escapeString($op['tgt']) . '"');
-                break;
-        }
-        $db_applied++;
-    }
+    [$db_applied, $snap_total] = sqlite_retry_busy(
+        function() use ($db, $final_db_ops, $src_id, $src_prefix, $tgt_prefix) {
+            $db->exec('BEGIN IMMEDIATE');
+            try {
+                $db_applied = 0;
+                foreach ($final_db_ops as $op) {
+                    switch ($op['type']) {
+                        case 'upsert':
+                            db_upsert($db, $op['table'], $op['row_json']);
+                            break;
+                        case 'delete':
+                            db_delete_by_pk($db, $op['table'], $op['pk'], $op['pk_cols']);
+                            break;
+                        case 'new_table':
+                            db_copy_table($db, $op['src'], $op['tgt'], $src_prefix, $tgt_prefix);
+                            break;
+                        case 'drop_table':
+                            $db->exec('DROP TABLE IF EXISTS "'
+                                . SQLite3::escapeString($op['tgt']) . '"');
+                            break;
+                    }
+                    $db_applied++;
+                }
 
-    // Refresh source branch's ancestor snapshot.
-    $db->exec('DELETE FROM db_snapshots WHERE branch_id = ' . (int)$src_id);
+                // Refresh source branch's ancestor snapshot.
+                $db->exec('DELETE FROM db_snapshots WHERE branch_id = ' . (int)$src_id);
 
-    $snap_ins = $db->prepare(
-        "INSERT OR REPLACE INTO db_snapshots (branch_id, table_name, row_pk, row_json) "
-      . "VALUES (:bid, :tname, :rpk, :rjson)"
-    );
+                $snap_ins = $db->prepare(
+                    "INSERT OR REPLACE INTO db_snapshots (branch_id, table_name, row_pk, row_json) "
+                  . "VALUES (:bid, :tname, :rpk, :rjson)"
+                );
 
-    $snap_tables = [];
-    $tr = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
-        . SQLite3::escapeString($src_prefix) . "%'");
-    while ($row = $tr->fetchArray(SQLITE3_NUM)) {
-        $snap_tables[] = $row[0];
-    }
+                $snap_tables = [];
+                $tr = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
+                    . SQLite3::escapeString($src_prefix) . "%'");
+                while ($row = $tr->fetchArray(SQLITE3_NUM)) {
+                    $snap_tables[] = $row[0];
+                }
 
-    $snap_total = 0;
-    foreach ($snap_tables as $tname) {
-        $pk_cols = db_pk_cols($db, $tname);
-        $rows = $db->query('SELECT * FROM "' . SQLite3::escapeString($tname) . '"');
-        while ($row = $rows->fetchArray(SQLITE3_ASSOC)) {
-            if (empty($pk_cols)) {
-                $pk_map = $row;
-            } else {
-                $pk_map = [];
-                foreach ($pk_cols as $col) $pk_map[$col] = $row[$col] ?? null;
+                $snap_total = 0;
+                foreach ($snap_tables as $tname) {
+                    $pk_cols = db_pk_cols($db, $tname);
+                    $rows = $db->query('SELECT * FROM "' . SQLite3::escapeString($tname) . '"');
+                    while ($row = $rows->fetchArray(SQLITE3_ASSOC)) {
+                        if (empty($pk_cols)) {
+                            $pk_map = $row;
+                        } else {
+                            $pk_map = [];
+                            foreach ($pk_cols as $col) $pk_map[$col] = $row[$col] ?? null;
+                        }
+                        $snap_ins->bindValue(':bid',   $src_id, SQLITE3_INTEGER);
+                        $snap_ins->bindValue(':tname', $tname,  SQLITE3_TEXT);
+                        $snap_ins->bindValue(':rpk',   json_encode($pk_map, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                        $snap_ins->bindValue(':rjson', json_encode($row,    JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+                        $snap_ins->execute();
+                        $snap_ins->reset();
+                        $snap_total++;
+                    }
+                }
+
+                $db->exec('COMMIT');
+                return [$db_applied, $snap_total];
+            } catch (\Throwable $e) {
+                $db->exec('ROLLBACK');
+                throw $e;
             }
-            $snap_ins->bindValue(':bid',   $src_id, SQLITE3_INTEGER);
-            $snap_ins->bindValue(':tname', $tname,  SQLITE3_TEXT);
-            $snap_ins->bindValue(':rpk',   json_encode($pk_map, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-            $snap_ins->bindValue(':rjson', json_encode($row,    JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
-            $snap_ins->execute();
-            $snap_ins->reset();
-            $snap_total++;
         }
-    }
-
-    $db->exec('COMMIT');
+    );
     echo "  DB ops applied: $db_applied\n";
     echo "  refreshed ancestor snapshot for '$source': $snap_total rows\n";
 } catch (\Throwable $e) {
-    $db->exec('ROLLBACK');
     fwrite(STDERR, "merge: DB phase failed: " . $e->getMessage() . "\n");
     $db->close();
     exit(4);

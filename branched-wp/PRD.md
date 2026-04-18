@@ -53,6 +53,17 @@ The entire site lives in one SQLite file (WAL mode).
 WAL mode guarantees every committed write is durable even on crash — no
 pack/unpack cycle, no temp state.
 
+### SF2a — Concurrent-writer resilience
+Every PHP writer (branchctl, merge.php, checkpoint.php) opens SQLite with
+`busyTimeout(15000)` (15 s), and the long-running critical transactions
+in `merge.php` are wrapped in `sqlite_retry_busy()` — an
+exponential-backoff retry helper (100 / 500 / 2000 ms, 3 retries) from
+`scripts/sqlite_retry.php`. The Rust store does the same via
+`Connection::busy_timeout(15s)` plus a `Store::with_busy_retry()`
+wrapper, so the SFTP / SMB / MySQL write paths behave identically. Under
+concurrent writer load (HTTP + SFTP + MySQL + parallel branchctl) a
+transient `SQLITE_BUSY` no longer surfaces as a 500 / failed command.
+
 ### SF3 — WAL management
 - SQLite is opened with `PRAGMA wal_autocheckpoint = 500` by every writer
   (`init_db.php`, `scripts/branchctl.php` sqlite_open, and

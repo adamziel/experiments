@@ -213,7 +213,7 @@ a checkpoint fires. On crash recovery, the entire WAL is replayed.
 
 ---
 
-## [ ] 6. SQLITE_BUSY under concurrent writes surfaces as 500 [MEDIUM]
+## [x] 6. SQLITE_BUSY under concurrent writes surfaces as 500 [MEDIUM]
 
 **Problem**
 PHP's SQLite3 is configured with `busyTimeout(5000)`. Under concurrent write

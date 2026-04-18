@@ -22,6 +22,10 @@ impl Store {
     pub fn open(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)
             .with_context(|| format!("opening db {:?}", db_path))?;
+        // 15s busy timeout: SQLite polls the write lock for this long
+        // before returning SQLITE_BUSY. Paired with with_busy_retry
+        // below to cover cases where the timeout still exceeds.
+        conn.busy_timeout(std::time::Duration::from_secs(15))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
@@ -33,6 +37,7 @@ impl Store {
     pub fn open_and_init(db_path: &Path) -> Result<Self> {
         let conn = Connection::open(db_path)
             .with_context(|| format!("opening db {:?}", db_path))?;
+        conn.busy_timeout(std::time::Duration::from_secs(15))?;
         conn.execute_batch(
             "PRAGMA journal_mode=WAL;
              PRAGMA foreign_keys=ON;
@@ -49,6 +54,46 @@ impl Store {
         let conn = self.conn.lock().unwrap();
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
+    }
+
+    /// Run `f` once, retrying with exponential backoff on SQLITE_BUSY /
+    /// SQLITE_LOCKED. Non-busy errors are surfaced immediately.
+    ///
+    /// Defaults match the PHP side (100 / 500 / 2000 ms) so both wire
+    /// protocols behave identically under concurrent load. See TODO #6.
+    pub fn with_busy_retry<T, F>(&self, f: F) -> Result<T>
+    where
+        F: Fn(&Connection) -> rusqlite::Result<T>,
+    {
+        let delays_ms = [100_u64, 500, 2000];
+        let max_attempts = delays_ms.len() + 1;
+        let mut last_err: Option<rusqlite::Error> = None;
+        for attempt in 0..max_attempts {
+            let conn = self.conn.lock().unwrap();
+            match f(&conn) {
+                Ok(v) => return Ok(v),
+                Err(e) => {
+                    let is_busy = matches!(
+                        e.sqlite_error_code(),
+                        Some(rusqlite::ErrorCode::DatabaseBusy)
+                            | Some(rusqlite::ErrorCode::DatabaseLocked)
+                    );
+                    if !is_busy || attempt == max_attempts - 1 {
+                        return Err(e.into());
+                    }
+                    drop(conn);
+                    let delay = delays_ms
+                        .get(attempt)
+                        .copied()
+                        .unwrap_or(*delays_ms.last().unwrap());
+                    std::thread::sleep(std::time::Duration::from_millis(delay));
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err
+            .map(|e| anyhow::anyhow!(e))
+            .unwrap_or_else(|| anyhow::anyhow!("with_busy_retry exhausted without error")))
     }
 
     /// Spawn a background thread that runs `PRAGMA wal_checkpoint(TRUNCATE)`
