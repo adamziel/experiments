@@ -101,7 +101,7 @@ Startup banner must print connection strings for all active services.
 | `log <name> [-n <count>]` | Show commit history |
 | `show <name>` | Show branch info |
 | `diff <a> <b>` | File diff between two branches |
-| `merge <from> --into <target>` | 3-way file merge |
+| `merge <from> --into <target>` | 3-way file + DB merge |
 | `reset <name> <hash>` | Reset branch to commit |
 | `rollback <name>` | Reset to previous commit |
 | `delete <name>` | Delete branch + its DB tables |
@@ -145,9 +145,14 @@ Startup banner must print connection strings for all active services.
 ### F6 — Branching with DB isolation
 - `branchctl create my-branch [--from main]` copies:
   - Filesystem: new entry in `branches` table (COW, no file copy needed)
-  - Database: `CREATE TABLE b{new_id}_wp_X AS SELECT * FROM b{parent_id}_wp_X`
-    for every WordPress table in the parent branch
+  - Database: recreates every `b{parent_id}_wp_X` table under `b{new_id}_wp_X`
+    using the original DDL from `sqlite_master` so all constraints (PRIMARY KEY,
+    UNIQUE, NOT NULL, indexes) are preserved, then `INSERT INTO … SELECT *`
+  - Ancestor snapshot: every copied row is stored in `db_snapshots(branch_id,
+    table_name, row_pk, row_json)` to enable 3-way DB merge later
 - All branches see their own isolated database state
+- `router.php` sets `$GLOBALS['_branchfs_table_prefix'] = "b{id}_wp_"` before
+  WordPress boots so HTTP requests use the correct branch's tables
 
 ### F7 — Committing
 - `branchctl commit <branch>` records a snapshot in `fs_commits` + `fs_commit_files`
@@ -158,15 +163,42 @@ Startup banner must print connection strings for all active services.
 - `branchctl reset <branch> <hash>` restores files from a specific commit
 
 ### F9 — Merge
-- `branchctl merge <from> --into <target>` performs 3-way file merge
-- DB merge: not yet implemented (noted as limitation)
+`branchctl merge <from> --into <target> [--strategy=abort|ours|theirs]`
+
+**Phase 1 — File 3-way merge** (existing)
+Uses the fork-time `fs_commits` snapshot as the common ancestor. Per-path:
+- Source changed, target unchanged → apply source
+- Target changed, source unchanged → keep target
+- Both changed identically → no-op
+- Both changed differently → conflict (honour `--strategy`)
+
+**Phase 2 — DB 3-way merge** (implemented)
+Uses `db_snapshots` rows recorded at `branchctl create` time as the common
+ancestor. Per row (keyed by primary key JSON):
+
+| Ancestor | Source now | Target now | Result |
+|----------|------------|------------|--------|
+| absent | present | absent | INSERT into target |
+| absent | present | present, same | no-op |
+| absent | present | present, different | CONFLICT |
+| present | absent | unchanged | DELETE from target |
+| present | absent | changed | CONFLICT |
+| present | changed | unchanged | UPDATE target |
+| present | unchanged | changed | keep target |
+| present | changed same | changed same | no-op |
+| present | changed A | changed B | CONFLICT |
+
+New tables on source (e.g. new plugin) are created on target with DDL-preserving
+`CREATE TABLE` + `INSERT`. All changes are applied atomically in one transaction.
+`--strategy=abort` leaves the target completely unchanged on any conflict.
 
 ---
 
 ## Non-requirements (explicit out of scope for v1)
 
-- Database-level 3-way merge
 - Authentication / access control beyond prototype guest auth
 - TLS / HTTPS
 - Multi-user concurrent editing with conflict resolution
 - Windows binary target
+- Merge of already-merged branches (re-merge with updated ancestor)
+- DB merge for schema changes (column add/drop across branches)
