@@ -605,8 +605,9 @@ case 'delete': {
         foreach ($tables_to_drop as $tname) {
             $db->exec("DROP TABLE IF EXISTS \"$tname\"");
         }
-        $db->exec("DELETE FROM files    WHERE branch_id = $bid");
-        $db->exec("DELETE FROM branches WHERE id        = $bid");
+        $db->exec("DELETE FROM files         WHERE branch_id = $bid");
+        $db->exec("DELETE FROM db_snapshots  WHERE branch_id = $bid");
+        $db->exec("DELETE FROM branches      WHERE id        = $bid");
         echo "branchfs: deleted branch '$name'\n";
     } else {
         echo "branchfs: no branch named '$name'\n";

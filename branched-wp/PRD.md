@@ -104,7 +104,7 @@ Startup banner must print connection strings for all active services.
 | `merge <from> --into <target>` | 3-way file + DB merge |
 | `reset <name> <hash>` | Reset branch to commit |
 | `rollback <name>` | Reset to previous commit |
-| `delete <name>` | Delete branch + its DB tables |
+| `delete <name>` | Delete branch + its DB tables + ancestor snapshot rows |
 | `gc` | Remove unreferenced blobs |
 
 ---

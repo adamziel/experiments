@@ -156,7 +156,7 @@ from branchctl, this needs a way to signal the running PHP server. Options:
 
 ---
 
-## [ ] 4. db_snapshots never cleaned on branch delete [HIGH]
+## [x] 4. db_snapshots never cleaned on branch delete [HIGH]
 
 **Problem**
 `branchctl delete <branch>`:

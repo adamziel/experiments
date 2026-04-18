@@ -664,6 +664,36 @@ class TestBranchDeleteCleansDB:
         r = branchctl(site_fp, "list")
         assert "vanish" not in r.stdout
 
+    def test_delete_removes_db_snapshots_rows(self, site_with_branch):
+        """
+        After `branchctl delete <branch>`, every row in db_snapshots
+        belonging to that branch must be gone. Otherwise per-branch-id
+        snapshot rows accumulate forever on sites with high branch churn
+        (CI previews, per-PR branches).
+        """
+        site_fp = site_with_branch["site_fp"]
+
+        branchctl(site_fp, "create", "snap-leak")
+        rows = sqlite_q(site_fp, "SELECT id FROM branches WHERE name='snap-leak'")
+        assert rows, "snap-leak branch not created"
+        bid = rows[0][0]
+
+        before = sqlite_q(site_fp,
+            "SELECT COUNT(*) FROM db_snapshots WHERE branch_id=?", (bid,))
+        assert before[0][0] > 0, (
+            "branchctl create must record db_snapshots for the new branch — "
+            "this is F6's ancestor snapshot used by later 3-way merge."
+        )
+
+        branchctl(site_fp, "delete", "snap-leak")
+
+        after = sqlite_q(site_fp,
+            "SELECT COUNT(*) FROM db_snapshots WHERE branch_id=?", (bid,))
+        assert after[0][0] == 0, (
+            f"After delete, {after[0][0]} db_snapshots rows remain for "
+            f"branch id={bid}. These leak across branch lifecycles."
+        )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # INVARIANT 6 — Rollback correctness
