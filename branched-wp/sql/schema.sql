@@ -6,9 +6,25 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE IF NOT EXISTS blobs (
     hash        TEXT PRIMARY KEY,
-    data        BLOB NOT NULL,
+    -- data is NULL for blobs whose payload lives in blob_chunks (size > 1 MB).
+    -- Small blobs (<= 1 MB) keep the payload inline for single-query reads
+    -- and backward compatibility with legacy .fp files.
+    data        BLOB,
     size        INTEGER NOT NULL
 );
+
+-- Chunked storage for large blobs. Each chunk is a 1 MB slice of the blob
+-- content, keyed by (blob_hash, chunk_no). chunk_no starts at 0 and is
+-- contiguous. Only present for blobs whose blobs.data IS NULL.
+-- See PRD SF1 (chunked blob storage) and ext/branchfs.c::store_write_file.
+CREATE TABLE IF NOT EXISTS blob_chunks (
+    blob_hash TEXT NOT NULL,
+    chunk_no  INTEGER NOT NULL,
+    data      BLOB NOT NULL,
+    PRIMARY KEY (blob_hash, chunk_no),
+    FOREIGN KEY (blob_hash) REFERENCES blobs(hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_blob_chunks_hash ON blob_chunks(blob_hash);
 
 CREATE TABLE IF NOT EXISTS branches (
     id              INTEGER PRIMARY KEY AUTOINCREMENT,

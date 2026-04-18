@@ -4,6 +4,12 @@ use sha1::{Digest, Sha1};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+/// Chunk size for large-blob storage. Blobs strictly larger than this are
+/// stored across multiple rows in `blob_chunks`; smaller blobs stay inline
+/// in `blobs.data` for single-query reads. Must match the PHP extension's
+/// `BRANCHFS_CHUNK_SIZE` in ext/branchfs.c.
+pub const CHUNK_SIZE: usize = 1024 * 1024;
+
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
 }
@@ -206,13 +212,26 @@ impl Store {
                 .ok();
             match row {
                 Some((Some(hash), _)) => {
-                    // found
-                    let data: Vec<u8> = conn.query_row(
+                    // found — check inline first, fall through to chunks.
+                    let inline: Option<Vec<u8>> = conn.query_row(
                         "SELECT data FROM blobs WHERE hash = ?1",
                         params![hash],
                         |r| r.get(0),
                     )?;
-                    return Ok(data);
+                    if let Some(data) = inline {
+                        return Ok(data);
+                    }
+                    // Chunked blob: concatenate chunks in order.
+                    let mut stmt = conn.prepare(
+                        "SELECT data FROM blob_chunks WHERE blob_hash = ?1 ORDER BY chunk_no ASC",
+                    )?;
+                    let mut out: Vec<u8> = Vec::new();
+                    let rows = stmt.query_map(params![hash], |r| r.get::<_, Vec<u8>>(0))?;
+                    for row in rows {
+                        let chunk = row?;
+                        out.extend_from_slice(&chunk);
+                    }
+                    return Ok(out);
                 }
                 Some((None, Some(parent))) => {
                     // Not on this branch, check parent
@@ -246,10 +265,30 @@ impl Store {
         )
         .with_context(|| format!("branch not found: {}", branch_name))?;
 
-        conn.execute(
-            "INSERT OR IGNORE INTO blobs(hash, data, size) VALUES(?1, ?2, ?3)",
-            params![hash, data, size],
-        )?;
+        if data.len() <= CHUNK_SIZE {
+            // Small blob: keep inline — single-query reads, matches legacy layout.
+            conn.execute(
+                "INSERT OR IGNORE INTO blobs(hash, data, size) VALUES(?1, ?2, ?3)",
+                params![hash, data, size],
+            )?;
+        } else {
+            // Large blob: metadata row with NULL data, content in blob_chunks.
+            // INSERT OR IGNORE so re-writing an already-deduped blob is a no-op.
+            let inserted = conn.execute(
+                "INSERT OR IGNORE INTO blobs(hash, data, size) VALUES(?1, NULL, ?2)",
+                params![hash, size],
+            )?;
+            if inserted > 0 {
+                let mut stmt = conn.prepare(
+                    "INSERT OR IGNORE INTO blob_chunks(blob_hash, chunk_no, data) VALUES(?1, ?2, ?3)",
+                )?;
+                let mut chunk_no: i64 = 0;
+                for chunk in data.chunks(CHUNK_SIZE) {
+                    stmt.execute(params![hash, chunk_no, chunk])?;
+                    chunk_no += 1;
+                }
+            }
+        }
 
         conn.execute(
             "INSERT INTO files(branch_id, path, blob_hash, mode, mtime, is_dir)
@@ -671,6 +710,61 @@ mod tests {
             |r| r.get(0),
         ).unwrap();
         assert!(count > 0, "snap.txt should appear in commit snapshot");
+    }
+
+    #[test]
+    fn test_large_blob_is_chunked() {
+        let store = make_store();
+        // 3 MiB payload — guarantees > 2 chunks at 1 MiB chunk size.
+        let size = 3 * 1024 * 1024 + 7;
+        let data: Vec<u8> = (0..size).map(|i| (i % 251) as u8).collect();
+        store.write_file("main", "big.bin", &data, "test").unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        // blobs.data must be NULL for chunked blobs
+        let inline: Option<Vec<u8>> = conn.query_row(
+            "SELECT data FROM blobs WHERE size = ?1",
+            params![size as i64],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(inline.is_none(), "large blob must have NULL blobs.data");
+
+        let chunk_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM blob_chunks WHERE blob_hash = (SELECT hash FROM blobs WHERE size = ?1)",
+            params![size as i64],
+            |r| r.get(0),
+        ).unwrap();
+        let expected = ((size + CHUNK_SIZE - 1) / CHUNK_SIZE) as i64;
+        assert_eq!(chunk_count, expected, "expected {} chunks, got {}", expected, chunk_count);
+        drop(conn);
+
+        // Round-trip: read_file must reassemble the full payload.
+        let roundtrip = store.read_file("main", "big.bin").unwrap();
+        assert_eq!(roundtrip.len(), data.len());
+        assert_eq!(roundtrip, data);
+    }
+
+    #[test]
+    fn test_small_blob_stays_inline() {
+        let store = make_store();
+        let data = vec![42u8; 1024]; // well under 1 MiB
+        store.write_file("main", "small.bin", &data, "test").unwrap();
+
+        let conn = store.conn.lock().unwrap();
+        let inline: Option<Vec<u8>> = conn.query_row(
+            "SELECT data FROM blobs WHERE size = ?1",
+            params![data.len() as i64],
+            |r| r.get(0),
+        ).unwrap();
+        assert!(inline.is_some(), "small blob must stay inline");
+        assert_eq!(inline.unwrap(), data);
+
+        let chunk_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM blob_chunks",
+            [],
+            |r| r.get(0),
+        ).unwrap();
+        assert_eq!(chunk_count, 0, "small blob must not create chunk rows");
     }
 
     #[test]

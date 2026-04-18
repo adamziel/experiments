@@ -46,12 +46,23 @@ The entire site lives in one SQLite file (WAL mode).
 
 | Table group | Contents |
 |-------------|----------|
-| `blobs`, `branches`, `files`, `fs_commits`, `fs_commit_files` | WordPress filesystem (COW) |
+| `blobs`, `blob_chunks`, `branches`, `files`, `fs_commits`, `fs_commit_files` | WordPress filesystem (COW) |
 | `b{id}_wp_*` tables | WordPress database, one set of tables per branch |
-| `site_config` | Title, root host, PHP ini extras |
+| `site_config`, `users` | Site-wide config and authentication |
 
 WAL mode guarantees every committed write is durable even on crash — no
 pack/unpack cycle, no temp state.
+
+**Chunked blob storage.** Blobs larger than 1 MB are split across rows in
+`blob_chunks(blob_hash, chunk_no, data)`. The `blobs` row keeps
+`(hash, NULL, size)` as a metadata pointer, and the payload is streamed
+into 1 MB slices. Small blobs (≤ 1 MB) stay inline in `blobs.data` so
+reads remain a single query and pre-chunking `.fp` files keep working
+unchanged. The chunk size is a compile-time constant
+(`BRANCHFS_CHUNK_SIZE` in `ext/branchfs.h`, `CHUNK_SIZE` in
+`fileserver/src/store.rs`) and must match across both writer
+implementations. `branchctl gc` cleans orphaned rows in both `blobs`
+*and* `blob_chunks` in one transaction.
 
 ### SF2a — Concurrent-writer resilience
 Every PHP writer (branchctl, merge.php, checkpoint.php) opens SQLite with
@@ -85,6 +96,10 @@ transient `SQLITE_BUSY` no longer surfaces as a 500 / failed command.
 Both the filesystem and the database are branch-isolated.
 
 - **Filesystem**: copy-on-write blobs per branch (existing `files` table overlay).
+  Large-file writes use the chunked layout from SF1 so that uploading a
+  multi-MB media asset never holds the entire payload in a single SQLite
+  row — peak memory stays bounded by the chunk size instead of the file
+  size.
 - **Database**: each branch owns its own set of WordPress tables with prefix
   `b{branch_id}_wp_` (e.g. `b1_wp_posts`, `b2_wp_options`). Creating a branch
   copies the parent's tables into the new prefix.

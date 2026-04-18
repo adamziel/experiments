@@ -75,7 +75,7 @@ client that the existing `test_invariants.py` already uses.
 
 ---
 
-## [ ] 2. Large media uploads load entire file into memory [HIGH]
+## [x] 2. Large media uploads load entire file into memory [HIGH]
 
 **Problem**
 `branchfs://` writes call `file_put_contents` which reads the entire file

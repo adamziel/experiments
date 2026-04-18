@@ -206,7 +206,36 @@ CREATE TABLE IF NOT EXISTS site_config (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS blob_chunks (
+    blob_hash TEXT NOT NULL,
+    chunk_no  INTEGER NOT NULL,
+    data      BLOB NOT NULL,
+    PRIMARY KEY (blob_hash, chunk_no),
+    FOREIGN KEY (blob_hash) REFERENCES blobs(hash) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_blob_chunks_hash ON blob_chunks(blob_hash);
 SQL);
+
+    /* Legacy .fp files created before chunked storage landed may still have
+     * `blobs.data BLOB NOT NULL`. Relax that to allow NULL so future large
+     * writes can store payload in blob_chunks. SQLite cannot drop NOT NULL
+     * in-place, so we rebuild the table only if the constraint is present. */
+    $blobs_sql = (string)$db->querySingle(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='blobs'"
+    );
+    if ($blobs_sql && stripos($blobs_sql, 'data        BLOB NOT NULL') !== false) {
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            $db->exec("CREATE TABLE blobs_new (hash TEXT PRIMARY KEY, data BLOB, size INTEGER NOT NULL)");
+            $db->exec("INSERT INTO blobs_new (hash, data, size) SELECT hash, data, size FROM blobs");
+            $db->exec("DROP TABLE blobs");
+            $db->exec("ALTER TABLE blobs_new RENAME TO blobs");
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            $db->exec('ROLLBACK');
+            /* Non-fatal: legacy-NOT-NULL schema still works for small blobs. */
+        }
+    }
 
     /* Back-compat: sites created BEFORE this change never had site_config,
      * so the very first migration on them must leave auth_enabled=0.
@@ -925,8 +954,14 @@ case 'gc': {
 
     $db->exec('BEGIN IMMEDIATE');
     try {
+        /* Delete chunks first (no FK-cascade guarantee on legacy DBs that
+         * were created before blob_chunks existed and then later migrated). */
+        $del_chunks = $db->prepare("DELETE FROM blob_chunks WHERE blob_hash = :h");
         $del = $db->prepare("DELETE FROM blobs WHERE hash = :h");
         foreach ($to_delete as $h) {
+            $del_chunks->bindValue(':h', $h, SQLITE3_TEXT);
+            $del_chunks->execute();
+            $del_chunks->reset();
             $del->bindValue(':h', $h, SQLITE3_TEXT);
             $del->execute();
             $del->reset();

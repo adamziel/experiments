@@ -112,6 +112,78 @@ int store_create_branch(const char *name, const char *parent) {
     return (rc == SQLITE_DONE) ? store_get_branch_id(name) : -1;
 }
 
+/* Read a blob identified by `hash` into a freshly emalloc'd buffer.
+ * Handles both inline (blobs.data NOT NULL) and chunked (blobs.data NULL,
+ * rows in blob_chunks) layouts transparently. Returns 0 on success.
+ * For chunked blobs, chunks are streamed into a single buffer (PHP stream
+ * wrappers need the full payload eventually) but SQLite row sizes stay
+ * bounded at BRANCHFS_CHUNK_SIZE. Caller owns the returned *out_data. */
+static int load_blob_by_hash(const char *hash, char **out_data, size_t *out_size) {
+    if (!BRANCHFS_G(db) || !hash) return -1;
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+        "SELECT data, size FROM blobs WHERE hash = ?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+    sqlite3_bind_text(stmt, 1, hash, -1, SQLITE_STATIC);
+    if (sqlite3_step(stmt) != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    int data_type = sqlite3_column_type(stmt, 0);
+    size_t total = (size_t)sqlite3_column_int64(stmt, 1);
+
+    if (data_type != SQLITE_NULL) {
+        /* Legacy inline path. */
+        int bsize = sqlite3_column_bytes(stmt, 0);
+        const void *bdata = sqlite3_column_blob(stmt, 0);
+        *out_size = (size_t)bsize;
+        *out_data = emalloc(bsize + 1);
+        if (bdata) memcpy(*out_data, bdata, bsize);
+        (*out_data)[bsize] = '\0';
+        sqlite3_finalize(stmt);
+        return 0;
+    }
+    sqlite3_finalize(stmt);
+
+    /* Chunked path: preallocate `size` and copy chunks in order. */
+    char *buf = emalloc(total + 1);
+    size_t offset = 0;
+
+    sqlite3_stmt *cstmt;
+    rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+        "SELECT data FROM blob_chunks WHERE blob_hash = ? ORDER BY chunk_no ASC",
+        -1, &cstmt, NULL);
+    if (rc != SQLITE_OK) { efree(buf); return -1; }
+    sqlite3_bind_text(cstmt, 1, hash, -1, SQLITE_STATIC);
+
+    while (sqlite3_step(cstmt) == SQLITE_ROW) {
+        int clen = sqlite3_column_bytes(cstmt, 0);
+        const void *cdata = sqlite3_column_blob(cstmt, 0);
+        if (offset + (size_t)clen > total) {
+            /* Corruption guard: don't overrun the allocation. */
+            sqlite3_finalize(cstmt);
+            efree(buf);
+            return -1;
+        }
+        if (cdata) memcpy(buf + offset, cdata, clen);
+        offset += (size_t)clen;
+    }
+    sqlite3_finalize(cstmt);
+
+    if (offset != total) {
+        /* Partial chunks — treat as corruption. */
+        efree(buf);
+        return -1;
+    }
+    buf[total] = '\0';
+    *out_data = buf;
+    *out_size = total;
+    return 0;
+}
+
 /* Walk up branch chain to find a file (COW read) */
 static int resolve_branch_chain(int branch_id, const char *path,
     char **out_data, size_t *out_size, int *out_is_dir, int *out_mode, time_t *out_mtime)
@@ -122,7 +194,7 @@ static int resolve_branch_chain(int branch_id, const char *path,
     while (current_bid > 0) {
         sqlite3_stmt *stmt;
         int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
-            "SELECT f.blob_hash, f.is_dir, f.mode, f.mtime, b.data, b.size "
+            "SELECT f.blob_hash, f.is_dir, f.mode, f.mtime, b.size "
             "FROM files f LEFT JOIN blobs b ON f.blob_hash = b.hash "
             "WHERE f.branch_id = ? AND f.path = ?",
             -1, &stmt, NULL);
@@ -154,13 +226,24 @@ static int resolve_branch_chain(int branch_id, const char *path,
                 return 0;
             }
 
-            if (out_data && out_size) {
-                int bsize = sqlite3_column_int(stmt, 5);
-                const void *bdata = sqlite3_column_blob(stmt, 4);
-                *out_size = bsize;
-                *out_data = emalloc(bsize + 1);
-                if (bdata) memcpy(*out_data, bdata, bsize);
-                (*out_data)[bsize] = '\0';
+            /* Always populate size from blobs.size when caller wants it — this
+             * avoids a second round-trip through load_blob_by_hash for stat.
+             * The LEFT JOIN guarantees column 4 is populated when blob_hash
+             * exists in blobs. */
+            if (out_size) *out_size = (size_t)sqlite3_column_int64(stmt, 4);
+
+            if (out_data) {
+                /* Cache hash before finalize: sqlite3 returns a pointer owned
+                 * by the statement, which becomes invalid after finalize. */
+                char hash_copy[BRANCHFS_HASH_LEN + 64];
+                strncpy(hash_copy, blob_hash, sizeof(hash_copy) - 1);
+                hash_copy[sizeof(hash_copy) - 1] = '\0';
+                size_t loaded_size = 0;
+                sqlite3_finalize(stmt);
+                int rc2 = load_blob_by_hash(hash_copy, out_data, &loaded_size);
+                if (rc2 != 0) return rc2;
+                if (out_size) *out_size = loaded_size;
+                return 0;
             }
             sqlite3_finalize(stmt);
             return 0;
@@ -194,47 +277,104 @@ int store_write_file(int branch_id, const char *path, const char *data, size_t s
 
     char *hash = store_compute_hash(data, size);
 
-    /* Insert blob (ignore if duplicate) */
-    sqlite3_stmt *bstmt;
-    int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
-        "INSERT OR IGNORE INTO blobs (hash, data, size) VALUES (?, ?, ?)",
-        -1, &bstmt, NULL);
-    if (rc != SQLITE_OK) { efree(hash); return -1; }
-    sqlite3_bind_text(bstmt, 1, hash, -1, SQLITE_STATIC);
-    sqlite3_bind_blob(bstmt, 2, data, (int)size, SQLITE_STATIC);
-    sqlite3_bind_int(bstmt, 3, (int)size);
-    sqlite3_step(bstmt);
-    sqlite3_finalize(bstmt);
+    /* Insert blob (ignore if duplicate). For small blobs the payload goes
+     * inline in blobs.data so reads are a single query. For large blobs we
+     * store a metadata row with NULL data and spread the payload across
+     * blob_chunks rows of at most BRANCHFS_CHUNK_SIZE bytes each. Keeping
+     * row sizes bounded avoids SQLite's latency cliff around multi-MB rows
+     * and lets the read path stream chunk-by-chunk. */
+    if (size <= BRANCHFS_CHUNK_SIZE) {
+        sqlite3_stmt *bstmt;
+        int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+            "INSERT OR IGNORE INTO blobs (hash, data, size) VALUES (?, ?, ?)",
+            -1, &bstmt, NULL);
+        if (rc != SQLITE_OK) { efree(hash); return -1; }
+        sqlite3_bind_text(bstmt, 1, hash, -1, SQLITE_STATIC);
+        sqlite3_bind_blob(bstmt, 2, data, (int)size, SQLITE_STATIC);
+        sqlite3_bind_int64(bstmt, 3, (sqlite3_int64)size);
+        sqlite3_step(bstmt);
+        sqlite3_finalize(bstmt);
+    } else {
+        /* First check whether this hash is already persisted (dedup). */
+        sqlite3_stmt *chk;
+        int exists = 0;
+        int rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+            "SELECT 1 FROM blobs WHERE hash = ?", -1, &chk, NULL);
+        if (rc == SQLITE_OK) {
+            sqlite3_bind_text(chk, 1, hash, -1, SQLITE_STATIC);
+            if (sqlite3_step(chk) == SQLITE_ROW) exists = 1;
+            sqlite3_finalize(chk);
+        }
+
+        if (!exists) {
+            /* Metadata row with NULL data + chunks in blob_chunks. Wrap the
+             * whole insert in a transaction so a crash leaves no orphan
+             * metadata pointing at missing chunks. */
+            sqlite3_exec(BRANCHFS_G(db), "BEGIN IMMEDIATE", NULL, NULL, NULL);
+            sqlite3_stmt *bstmt;
+            rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+                "INSERT OR IGNORE INTO blobs (hash, data, size) VALUES (?, NULL, ?)",
+                -1, &bstmt, NULL);
+            if (rc != SQLITE_OK) {
+                sqlite3_exec(BRANCHFS_G(db), "ROLLBACK", NULL, NULL, NULL);
+                efree(hash);
+                return -1;
+            }
+            sqlite3_bind_text(bstmt, 1, hash, -1, SQLITE_STATIC);
+            sqlite3_bind_int64(bstmt, 2, (sqlite3_int64)size);
+            sqlite3_step(bstmt);
+            sqlite3_finalize(bstmt);
+
+            sqlite3_stmt *cstmt;
+            rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+                "INSERT OR IGNORE INTO blob_chunks (blob_hash, chunk_no, data) VALUES (?, ?, ?)",
+                -1, &cstmt, NULL);
+            if (rc != SQLITE_OK) {
+                sqlite3_exec(BRANCHFS_G(db), "ROLLBACK", NULL, NULL, NULL);
+                efree(hash);
+                return -1;
+            }
+            sqlite3_int64 chunk_no = 0;
+            for (size_t off = 0; off < size; off += BRANCHFS_CHUNK_SIZE) {
+                size_t clen = size - off;
+                if (clen > BRANCHFS_CHUNK_SIZE) clen = BRANCHFS_CHUNK_SIZE;
+                sqlite3_reset(cstmt);
+                sqlite3_bind_text(cstmt, 1, hash, -1, SQLITE_STATIC);
+                sqlite3_bind_int64(cstmt, 2, chunk_no);
+                sqlite3_bind_blob(cstmt, 3, data + off, (int)clen, SQLITE_STATIC);
+                if (sqlite3_step(cstmt) != SQLITE_DONE) {
+                    sqlite3_finalize(cstmt);
+                    sqlite3_exec(BRANCHFS_G(db), "ROLLBACK", NULL, NULL, NULL);
+                    efree(hash);
+                    return -1;
+                }
+                chunk_no++;
+            }
+            sqlite3_finalize(cstmt);
+            sqlite3_exec(BRANCHFS_G(db), "COMMIT", NULL, NULL, NULL);
+        }
+    }
 
     /* Upsert file entry */
     sqlite3_stmt *fstmt;
-    rc = sqlite3_prepare_v2(BRANCHFS_G(db),
+    int frc = sqlite3_prepare_v2(BRANCHFS_G(db),
         "INSERT OR REPLACE INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
         "VALUES (?, ?, ?, 33188, strftime('%s','now'), 0)",
         -1, &fstmt, NULL);
-    if (rc != SQLITE_OK) { efree(hash); return -1; }
+    if (frc != SQLITE_OK) { efree(hash); return -1; }
     sqlite3_bind_int(fstmt, 1, branch_id);
     sqlite3_bind_text(fstmt, 2, path, -1, SQLITE_STATIC);
     sqlite3_bind_text(fstmt, 3, hash, -1, SQLITE_STATIC);
-    rc = sqlite3_step(fstmt);
+    frc = sqlite3_step(fstmt);
     sqlite3_finalize(fstmt);
     efree(hash);
-    return (rc == SQLITE_DONE) ? 0 : -1;
+    return (frc == SQLITE_DONE) ? 0 : -1;
 }
 
 int store_stat_file(int branch_id, const char *path, int *is_dir, size_t *size, int *mode, time_t *mtime) {
-    int ret = resolve_branch_chain(branch_id, path, NULL, size, is_dir, mode, mtime);
-    if (ret == 0 && size && !(*is_dir)) {
-        /* We didn't fetch size in stat-only mode; do it now */
-        char *tmp_data = NULL;
-        size_t tmp_size = 0;
-        int r = resolve_branch_chain(branch_id, path, &tmp_data, &tmp_size, NULL, NULL, NULL);
-        if (r == 0) {
-            *size = tmp_size;
-            if (tmp_data) efree(tmp_data);
-        }
-    }
-    return ret;
+    /* resolve_branch_chain now reads b.size directly via the LEFT JOIN, so
+     * stat is a single query whether the blob is inline or chunked. */
+    return resolve_branch_chain(branch_id, path, NULL, size, is_dir, mode, mtime);
 }
 
 int store_file_exists(int branch_id, const char *path) {
