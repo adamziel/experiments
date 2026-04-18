@@ -169,6 +169,25 @@ Startup banner must print connection strings for all active services.
 - `branchctl rollback <branch>` restores files from the previous `fs_commit_files` snapshot
 - `branchctl reset <branch> <hash>` restores files from a specific commit
 
+### F9a — OPcache invalidation for out-of-process writers
+Router serves PHP via `branchfs://<branch>/path.php` URLs so OPcache keys
+bytecode per-branch. Any writer that mutates a `.php` file on disk from a
+*different* PHP process (branchctl merge/reset/rollback) must communicate
+the change to the running PHP server, otherwise stale bytecode keeps
+serving the old code until OPcache TTL expires.
+
+Implementation (`scripts/opcache.php`):
+- Table `opcache_invalidations(id, url, created_at)` is a cross-process
+  queue inside the `.fp` file.
+- Writers (merge.php, branchctl reset/rollback) call
+  `opcache_queue_invalidate($db, $branch, $path)` inside the same
+  transaction as the file change. Non-`.php`/`.phtml` paths are skipped
+  because they never have OPcache entries.
+- Router (`e2e/router.php`) calls `opcache_process_pending($db)` at the
+  start of every request, pops every queued URL, and calls
+  `opcache_invalidate()` for each. Safe when OPcache is not loaded — the
+  queue is still drained, just without the actual invalidation call.
+
 ### F9 — Merge
 `branchctl merge <from> --into <target> [--strategy=abort|ours|theirs]`
 

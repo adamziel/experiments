@@ -49,6 +49,8 @@ if (!extension_loaded('branchfs')) {
     exit(1);
 }
 
+require_once __DIR__ . '/opcache.php';
+
 branchfs_set_db($db_path);
 
 echo "=== BranchFS Merge ===\n";
@@ -336,6 +338,7 @@ if ($conflicts) {
 $db->exec('BEGIN IMMEDIATE');
 try {
     $applied = 0;
+    $opcache_paths = [];
     foreach ($to_apply as $path => $entry) {
         if ($entry === null) {
             // Deletion from source (tombstone or missing): write a tombstone
@@ -348,6 +351,7 @@ try {
             $ins->bindValue(':p', $path, SQLITE3_TEXT);
             $ins->bindValue(':t', time(), SQLITE3_INTEGER);
             $ins->execute();
+            $opcache_paths[] = $path;
             $applied++;
             continue;
         }
@@ -363,7 +367,13 @@ try {
         $ins->bindValue(':mt', (int)($entry['mtime']  ?? 0),   SQLITE3_INTEGER);
         $ins->bindValue(':d',  (int)($entry['is_dir'] ?? 0),   SQLITE3_INTEGER);
         $ins->execute();
+        if (empty($entry['is_dir'])) $opcache_paths[] = $path;
         $applied++;
+    }
+    // Queue OPcache invalidations for every .php path written on target.
+    // Non-.php paths are filtered out inside opcache_queue_invalidate.
+    foreach ($opcache_paths as $p) {
+        opcache_queue_invalidate($db, $target, $p);
     }
     $db->exec('COMMIT');
     echo "  applied: $applied rows\n";

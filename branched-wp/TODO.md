@@ -118,7 +118,7 @@ should mean in each strategy:
 
 ---
 
-## [ ] 3. OPcache: stale bytecode after file merge [HIGH]
+## [x] 3. OPcache: stale bytecode after file merge [HIGH]
 
 **Problem**
 `router.php` serves PHP via `branchfs://<branch>/path.php` URLs so OPcache

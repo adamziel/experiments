@@ -314,6 +314,23 @@ function fs_record_snapshot(SQLite3 $db, int $branch_id, string $message): int {
  * snapshot entry as an explicit row — so the result doesn't depend on
  * parent-branch inheritance. */
 function fs_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
+    require_once __DIR__ . '/opcache.php';
+
+    // Collect current .php paths on this branch so we can invalidate OPcache
+    // entries for any that are about to change. Easier to be broad than to
+    // diff precisely: invalidating a path whose bytecode we still have is
+    // cheap, whereas missing one serves stale code.
+    $branch_name = (string)$db->querySingle(
+        "SELECT name FROM branches WHERE id = " . (int)$branch_id
+    );
+
+    $pre_paths = [];
+    $r = $db->query("SELECT path FROM files WHERE branch_id = $branch_id");
+    while ($row = $r->fetchArray(SQLITE3_NUM)) {
+        $pre_paths[$row[0]] = true;
+    }
+    $r->finalize();
+
     $db->exec('BEGIN IMMEDIATE');
     try {
         $db->exec("DELETE FROM files WHERE branch_id = $branch_id");
@@ -322,6 +339,7 @@ function fs_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
           . "VALUES (:b, :p, :bh, :md, :mt, :d)"
         );
         $count = 0;
+        $post_paths = [];
         $r = $db->query("SELECT path, blob_hash, mode, mtime, is_dir FROM fs_commit_files WHERE commit_id = $commit_id");
         while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
             $ins->bindValue(':b',  $branch_id, SQLITE3_INTEGER);
@@ -333,8 +351,16 @@ function fs_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
             $ins->bindValue(':d',  (int)($row['is_dir'] ?? 0), SQLITE3_INTEGER);
             $ins->execute();
             $ins->reset();
+            if (empty($row['is_dir'])) $post_paths[$row['path']] = true;
             $count++;
         }
+
+        // Invalidate OPcache for every .php path in the symmetric difference
+        // between pre-reset and post-reset overlays — i.e. any path that
+        // was added, removed, or whose content may have changed.
+        foreach ($pre_paths  as $p => $_) opcache_queue_invalidate($db, $branch_name, $p);
+        foreach ($post_paths as $p => $_) opcache_queue_invalidate($db, $branch_name, $p);
+
         $db->exec('COMMIT');
         return $count;
     } catch (Throwable $e) {
