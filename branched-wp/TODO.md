@@ -68,7 +68,7 @@ narrow dialect). Don't try to extend the regex hack — it will never be correct
 
 ---
 
-## [ ] 2. Merge: ancestor drift on re-merge [CRITICAL]
+## [x] 2. Merge: ancestor drift on re-merge [CRITICAL]
 
 **Problem**
 `db_snapshots` is populated once at `branchctl create` time and never updated.

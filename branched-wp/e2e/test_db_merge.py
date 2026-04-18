@@ -570,3 +570,294 @@ class TestDBMergeIntegrity:
         assert "blogname" in snap_json_all
         assert "siteurl" in snap_json_all
         assert "shared_option" in snap_json_all
+
+
+# ── TestDBMergeIterativeReMerge ───────────────────────────────────────────────
+#
+# After the first successful merge, the source branch's db_snapshots must be
+# refreshed to reflect its current state. Without this, any row that merge 1
+# propagated to main will look like "both sides changed vs (stale) ancestor"
+# on merge 2 — a spurious conflict on every previously-merged row. This
+# class exercises the full iterative "merge → tweak → merge" loop.
+
+class TestDBMergeIterativeReMerge:
+
+    def test_remerge_with_no_changes_is_clean_noop(self, branched_db):
+        """
+        Merge once, then merge again with no changes on either side.
+        Must succeed and apply 0 row ops.
+        """
+        site_fp = branched_db["site_fp"]
+        fid = branched_db["feature_id"]
+
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("Feature Site", "blogname"))
+
+        r1 = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r1.returncode == 0, f"first merge failed:\n{r1.stdout}\n{r1.stderr}"
+
+        r2 = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r2.returncode == 0, f"second merge failed:\n{r2.stdout}\n{r2.stderr}"
+
+        # Second merge should touch zero rows: everything source has is now
+        # equal to the refreshed ancestor, and main hasn't diverged.
+        assert "row inserts:       0" in r2.stdout, \
+            f"second merge should insert 0 rows:\n{r2.stdout}"
+        assert "row updates:       0" in r2.stdout, \
+            f"second merge should update 0 rows:\n{r2.stdout}"
+
+    def test_remerge_after_more_changes_only_touches_new_rows(self, branched_db):
+        """
+        Merge once, modify feature further, merge again.
+        The second merge must NOT re-propose previously-merged rows as
+        conflicts — it should only touch the newly-changed row.
+
+        Reproduces the exact scenario described in TODO #2:
+          1. merge feature → main (blogname change propagates)
+          2. modify feature further (siteurl change)
+          3. main also gets an independent change (shared_option)
+          4. merge feature → main again — must be CLEAN, not conflict.
+        """
+        site_fp = branched_db["site_fp"]
+        fid = branched_db["feature_id"]
+
+        # Round 1: feature modifies blogname
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("Feature Site", "blogname"))
+        r1 = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r1.returncode == 0, f"first merge failed:\n{r1.stdout}\n{r1.stderr}"
+
+        # Round 2: feature modifies siteurl; main independently modifies
+        # shared_option (so main is "ahead" of feature, not just equal).
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("http://feature.example.com", "siteurl"))
+        sqlite_exec(site_fp,
+            "UPDATE b1_wp_options SET option_value=? WHERE option_name=?",
+            ("main_changed_after_first_merge", "shared_option"))
+
+        r2 = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r2.returncode == 0, (
+            f"second merge must not spuriously conflict on previously-merged rows.\n"
+            f"stdout:\n{r2.stdout}\nstderr:\n{r2.stderr}"
+        )
+        assert "conflicts:         0" in r2.stdout, \
+            f"expected 0 conflicts on second merge, got:\n{r2.stdout}"
+
+        # Feature's siteurl change must be applied to main
+        rows = sqlite_q(site_fp,
+            "SELECT option_value FROM b1_wp_options WHERE option_name=?",
+            ("siteurl",))
+        assert rows and rows[0][0] == "http://feature.example.com", \
+            f"feature's siteurl change not applied on main: {rows}"
+
+        # Main's independent shared_option change must survive
+        rows = sqlite_q(site_fp,
+            "SELECT option_value FROM b1_wp_options WHERE option_name=?",
+            ("shared_option",))
+        assert rows and rows[0][0] == "main_changed_after_first_merge", \
+            f"main's independent change to shared_option was overwritten: {rows}"
+
+    def test_remerge_without_snapshot_refresh_would_false_conflict(self, branched_db):
+        """
+        The exact pathological scenario the snapshot-refresh fix addresses:
+          1. Feature modifies rows A and B
+          2. Merge feature → main — main now has A_f, B_f.
+          3. Feature further modifies A (A_f2).
+          4. Main further modifies B (B_m) — independent of feature.
+          5. Merge feature → main again.
+
+        With stale ancestor {A=old, B=old}:
+          - A: source A_f2, target A_f. Both != ancestor, both differ → CONFLICT
+          - B: source B_f, target B_m. Both != ancestor, both differ → CONFLICT
+        With refreshed ancestor {A=A_f, B=B_f}:
+          - A: source changed, target unchanged → apply A_f2 ✓
+          - B: source unchanged, target changed → keep B_m ✓
+        """
+        site_fp = branched_db["site_fp"]
+        fid = branched_db["feature_id"]
+
+        # Round 1 setup
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("A_f", "blogname"))
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("B_f", "siteurl"))
+
+        r1 = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r1.returncode == 0, f"first merge failed:\n{r1.stdout}\n{r1.stderr}"
+
+        # Round 2: feature tweaks A, main tweaks B independently
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("A_f2", "blogname"))
+        sqlite_exec(site_fp,
+            "UPDATE b1_wp_options SET option_value=? WHERE option_name=?",
+            ("B_m", "siteurl"))
+
+        r2 = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r2.returncode == 0, (
+            f"CRITICAL: re-merge spuriously conflicted on previously-merged rows.\n"
+            f"This means db_snapshots wasn't refreshed after merge 1.\n"
+            f"stdout:\n{r2.stdout}\nstderr:\n{r2.stderr}"
+        )
+
+        # A: feature's A_f2 applied
+        rows = sqlite_q(site_fp,
+            "SELECT option_value FROM b1_wp_options WHERE option_name='blogname'")
+        assert rows and rows[0][0] == "A_f2"
+
+        # B: main's B_m preserved
+        rows = sqlite_q(site_fp,
+            "SELECT option_value FROM b1_wp_options WHERE option_name='siteurl'")
+        assert rows and rows[0][0] == "B_m"
+
+    def test_snapshot_rows_refreshed_after_merge(self, branched_db):
+        """
+        Direct inspection: after merge, db_snapshots for the source branch
+        must reflect its CURRENT rows, not its fork-time rows.
+        """
+        site_fp = branched_db["site_fp"]
+        fid = branched_db["feature_id"]
+
+        # Add a brand-new row on feature (not present at fork time).
+        sqlite_exec(site_fp,
+            f"INSERT INTO b{fid}_wp_options (option_name, option_value) VALUES (?, ?)",
+            ("new_after_fork", "v1"))
+
+        # Before merge, snapshot should NOT contain new_after_fork.
+        snap_before = sqlite_q(site_fp,
+            "SELECT row_json FROM db_snapshots WHERE branch_id=? AND table_name=?",
+            (fid, f"b{fid}_wp_options"))
+        snap_text = " ".join(r[0] for r in snap_before)
+        assert "new_after_fork" not in snap_text, \
+            "snapshot should be fork-time (pre-merge) and not yet know about new_after_fork"
+
+        # Merge.
+        r = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r.returncode == 0, f"merge failed:\n{r.stdout}\n{r.stderr}"
+
+        # After merge, snapshot MUST reflect the new row.
+        snap_after = sqlite_q(site_fp,
+            "SELECT row_json FROM db_snapshots WHERE branch_id=? AND table_name=?",
+            (fid, f"b{fid}_wp_options"))
+        snap_text = " ".join(r[0] for r in snap_after)
+        assert "new_after_fork" in snap_text, (
+            "After successful merge, source's db_snapshots should be refreshed "
+            "to its current state — including rows added after fork. Without "
+            "this, iterative re-merge sees false conflicts."
+        )
+
+    def test_snapshot_not_refreshed_when_merge_aborts(self, branched_db):
+        """
+        Default --strategy=abort leaves target unchanged on conflict.
+        Since no merge was applied, source's snapshot must NOT be refreshed —
+        otherwise the next attempted merge would lose the original ancestor.
+        """
+        site_fp = branched_db["site_fp"]
+        fid = branched_db["feature_id"]
+
+        # Snapshot before
+        snap_before = sqlite_q(site_fp,
+            "SELECT row_pk, row_json FROM db_snapshots "
+            "WHERE branch_id=? ORDER BY row_pk", (fid,))
+
+        # Set up a conflict that will abort
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("Feature Name", "blogname"))
+        sqlite_exec(site_fp,
+            "UPDATE b1_wp_options SET option_value=? WHERE option_name=?",
+            ("Main Name", "blogname"))
+
+        r = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r.returncode == 2, f"expected conflict abort, got {r.returncode}"
+
+        snap_after = sqlite_q(site_fp,
+            "SELECT row_pk, row_json FROM db_snapshots "
+            "WHERE branch_id=? ORDER BY row_pk", (fid,))
+
+        assert snap_before == snap_after, (
+            "After an aborted merge, source's db_snapshots MUST be unchanged.\n"
+            f"before ({len(snap_before)} rows) != after ({len(snap_after)} rows)"
+        )
+
+    def test_full_iterative_loop_fork_merge_modify_merge(self, branched_db):
+        """
+        Full realistic workflow: create → merge → modify → merge → verify.
+        This is the TODO #2 acceptance criterion for the full loop.
+        """
+        site_fp = branched_db["site_fp"]
+        fid = branched_db["feature_id"]
+
+        # Iteration 1: insert a new option
+        sqlite_exec(site_fp,
+            f"INSERT INTO b{fid}_wp_options (option_name, option_value) VALUES (?, ?)",
+            ("iter1_opt", "v1"))
+        r = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r.returncode == 0, f"merge 1 failed:\n{r.stdout}"
+
+        # Iteration 2: update the option + add another
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("v2", "iter1_opt"))
+        sqlite_exec(site_fp,
+            f"INSERT INTO b{fid}_wp_options (option_name, option_value) VALUES (?, ?)",
+            ("iter2_opt", "v2_only"))
+        r = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r.returncode == 0, f"merge 2 failed:\n{r.stdout}\n{r.stderr}"
+
+        # Iteration 3: no changes on feature, but merge should still be clean
+        r = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r.returncode == 0, f"merge 3 (no changes) failed:\n{r.stdout}\n{r.stderr}"
+
+        # Verify final main state reflects iter2's values
+        rows = sqlite_q(site_fp,
+            "SELECT option_name, option_value FROM b1_wp_options "
+            "WHERE option_name IN ('iter1_opt', 'iter2_opt') ORDER BY option_name")
+        assert rows == [("iter1_opt", "v2"), ("iter2_opt", "v2_only")], \
+            f"final main state wrong: {rows}"
+
+    def test_remerge_with_ours_strategy_preserves_target_decision(self, branched_db):
+        """
+        After a `--strategy=ours` merge that kept target's value on conflict,
+        re-merging without changes must NOT re-propose source's value again.
+        Otherwise the user's decision (target wins) is silently undone on
+        the next merge.
+        """
+        site_fp = branched_db["site_fp"]
+        fid = branched_db["feature_id"]
+
+        # Conflict: both change blogname
+        sqlite_exec(site_fp,
+            f"UPDATE b{fid}_wp_options SET option_value=? WHERE option_name=?",
+            ("Feature Name", "blogname"))
+        sqlite_exec(site_fp,
+            "UPDATE b1_wp_options SET option_value=? WHERE option_name=?",
+            ("Main Name", "blogname"))
+
+        r1 = branchctl(site_fp, "merge", "feature", "--into", "main",
+                       "--strategy", "ours")
+        assert r1.returncode == 0, f"ours merge failed:\n{r1.stdout}"
+
+        # Main kept "Main Name"; feature still has "Feature Name".
+        rows = sqlite_q(site_fp,
+            "SELECT option_value FROM b1_wp_options WHERE option_name='blogname'")
+        assert rows and rows[0][0] == "Main Name"
+
+        # Re-merge: source still has "Feature Name", target still "Main Name".
+        # With snapshot refresh, this should NOT conflict again.
+        r2 = branchctl(site_fp, "merge", "feature", "--into", "main")
+        assert r2.returncode == 0, (
+            f"re-merge after ours-resolved conflict must not re-conflict.\n"
+            f"stdout:\n{r2.stdout}\nstderr:\n{r2.stderr}"
+        )
+
+        # Main's decision stands.
+        rows = sqlite_q(site_fp,
+            "SELECT option_value FROM b1_wp_options WHERE option_name='blogname'")
+        assert rows and rows[0][0] == "Main Name", \
+            f"target's ours-decision was reverted by re-merge: {rows}"

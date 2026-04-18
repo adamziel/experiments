@@ -199,6 +199,17 @@ New tables on source (e.g. new plugin) are created on target with DDL-preserving
 `CREATE TABLE` + `INSERT`. All changes are applied atomically in one transaction.
 `--strategy=abort` leaves the target completely unchanged on any conflict.
 
+**Ancestor snapshot refresh (iterative merges)**
+After a successful merge (i.e. the DB ops transaction committed — strategies
+`theirs` and `ours`, or `abort` with zero conflicts), the source branch's
+`db_snapshots` rows are replaced in the same transaction with a fresh
+snapshot of the source branch's current tables. This keeps iterative
+"merge → tweak → merge" workflows clean: without the refresh, rows the
+first merge propagated to target would show up on the second merge as
+"both sides changed vs (stale) ancestor" and trigger spurious conflicts
+on every previously-merged row. Merges that exit via `--strategy=abort` on
+a real conflict do not touch `db_snapshots`.
+
 ---
 
 ## Non-requirements (explicit out of scope for v1)
@@ -207,5 +218,5 @@ New tables on source (e.g. new plugin) are created on target with DDL-preserving
 - TLS / HTTPS
 - Multi-user concurrent editing with conflict resolution
 - Windows binary target
-- Merge of already-merged branches (re-merge with updated ancestor)
+- (Removed — now implemented via ancestor snapshot refresh in F9)
 - DB merge for schema changes (column add/drop across branches)

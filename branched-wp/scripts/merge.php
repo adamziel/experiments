@@ -572,7 +572,20 @@ if ($strategy === 'theirs') {
     }
 }
 
-// Apply DB ops in a single transaction.
+// Apply DB ops AND refresh the source branch's ancestor snapshot in a
+// single transaction. Refreshing the snapshot is how iterative merges
+// stay clean: without it, rows that the last merge already propagated
+// would look like "both sides changed vs (stale) ancestor" on the next
+// merge, producing spurious conflicts on every previously-merged row.
+//
+// The refresh captures source's current rows as the new common ancestor.
+// Because source branches are never modified by merge itself, this is
+// equivalent to "the state target adopted for rows where it took source,
+// and source's own state for rows where target's value prevailed" —
+// which correctly drives future 3-way diffs for both --strategy=theirs
+// (source adopted) and --strategy=ours (target kept its value;
+// re-merge will see source unchanged vs ancestor, target changed vs
+// ancestor → keep target, no re-conflict).
 $db->exec('BEGIN IMMEDIATE');
 try {
     $db_applied = 0;
@@ -593,8 +606,46 @@ try {
         }
         $db_applied++;
     }
+
+    // Refresh source branch's ancestor snapshot.
+    $db->exec('DELETE FROM db_snapshots WHERE branch_id = ' . (int)$src_id);
+
+    $snap_ins = $db->prepare(
+        "INSERT OR REPLACE INTO db_snapshots (branch_id, table_name, row_pk, row_json) "
+      . "VALUES (:bid, :tname, :rpk, :rjson)"
+    );
+
+    $snap_tables = [];
+    $tr = $db->query("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '"
+        . SQLite3::escapeString($src_prefix) . "%'");
+    while ($row = $tr->fetchArray(SQLITE3_NUM)) {
+        $snap_tables[] = $row[0];
+    }
+
+    $snap_total = 0;
+    foreach ($snap_tables as $tname) {
+        $pk_cols = db_pk_cols($db, $tname);
+        $rows = $db->query('SELECT * FROM "' . SQLite3::escapeString($tname) . '"');
+        while ($row = $rows->fetchArray(SQLITE3_ASSOC)) {
+            if (empty($pk_cols)) {
+                $pk_map = $row;
+            } else {
+                $pk_map = [];
+                foreach ($pk_cols as $col) $pk_map[$col] = $row[$col] ?? null;
+            }
+            $snap_ins->bindValue(':bid',   $src_id, SQLITE3_INTEGER);
+            $snap_ins->bindValue(':tname', $tname,  SQLITE3_TEXT);
+            $snap_ins->bindValue(':rpk',   json_encode($pk_map, JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $snap_ins->bindValue(':rjson', json_encode($row,    JSON_UNESCAPED_UNICODE), SQLITE3_TEXT);
+            $snap_ins->execute();
+            $snap_ins->reset();
+            $snap_total++;
+        }
+    }
+
     $db->exec('COMMIT');
     echo "  DB ops applied: $db_applied\n";
+    echo "  refreshed ancestor snapshot for '$source': $snap_total rows\n";
 } catch (\Throwable $e) {
     $db->exec('ROLLBACK');
     fwrite(STDERR, "merge: DB phase failed: " . $e->getMessage() . "\n");
