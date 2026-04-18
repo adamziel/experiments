@@ -135,6 +135,27 @@ Startup banner must print connection strings for all active services.
 | `delete <name>` | Delete branch + its DB tables + ancestor snapshot rows |
 | `gc` | Remove unreferenced blobs |
 
+### CLI4 — `forkpress backup <source.fp> <dest.fp>`
+Consistent hot-copy of a running site via SQLite's `VACUUM INTO`.
+Takes a brief read lock, emits a defragmented / checkpointed copy,
+releases. Safe to run while the server is up.
+
+### CLI5 — `forkpress export <source.fp> <output-dir>`
+Writes the site to a portable directory tree:
+```
+<output-dir>/
+  manifest.json                     (format_version, branch topology, site_config)
+  branches/<name>/files/…           (resolved file tree per branch)
+  branches/<name>/db.sql            (SQL dump of b{id}_wp_* tables + indexes)
+```
+Suitable for long-term archival and format-version migrations.
+
+### CLI6 — `forkpress import <input-dir> <new.fp>`
+Reverse of export: runs `init`, recreates branches in topological
+order, replays their files through the branchfs stream wrapper, then
+applies each branch's `db.sql`. `b{old_id}_wp_` prefixes are rewritten
+to the re-assigned `b{new_id}_wp_` on the fly.
+
 ---
 
 ## Feature requirements

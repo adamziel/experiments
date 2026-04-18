@@ -33,6 +33,42 @@ enum Commands {
     Branch(BranchPassthrough),
     #[command(alias = "branchctl")]
     Branchctl(BranchPassthrough),
+    /// Consistent hot-copy of a running .fp file via SQLite VACUUM INTO.
+    Backup(BackupArgs),
+    /// Write a .fp file to a portable directory tree (files + SQL + manifest).
+    Export(ExportArgs),
+    /// Rebuild a .fp from a directory tree produced by `forkpress export`.
+    Import(ImportArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+struct BackupArgs {
+    #[command(flatten)]
+    shared: SharedPaths,
+    /// Source .fp file (defaults to the site.fp in --work-dir).
+    source: Option<PathBuf>,
+    /// Destination .fp path (must not exist).
+    dest: PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ExportArgs {
+    #[command(flatten)]
+    shared: SharedPaths,
+    /// Source .fp file (defaults to the site.fp in --work-dir).
+    source: Option<PathBuf>,
+    /// Output directory (created if missing; must be empty).
+    output_dir: PathBuf,
+}
+
+#[derive(Args, Debug, Clone)]
+struct ImportArgs {
+    #[command(flatten)]
+    shared: SharedPaths,
+    /// Directory produced by `forkpress export`.
+    input_dir: PathBuf,
+    /// Destination .fp path (must not exist).
+    dest: PathBuf,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -150,7 +186,67 @@ fn run() -> Result<i32> {
     match cli.command {
         Commands::Start(args) => start_command(args),
         Commands::Branch(args) | Commands::Branchctl(args) => branch_command(args),
+        Commands::Backup(args) => backup_command(args),
+        Commands::Export(args) => export_command(args),
+        Commands::Import(args) => import_command(args),
     }
+}
+
+fn backup_command(args: BackupArgs) -> Result<i32> {
+    let layout = Layout::new(args.shared.work_dir.clone())?;
+    prepare_runtime(&layout)?;
+    let runtime = PortableRuntime::from_layout(&layout);
+    let src = args
+        .source
+        .unwrap_or_else(|| layout.site_fp.clone());
+    if !src.is_file() {
+        bail!("backup: source .fp not found: {}", src.display());
+    }
+    run_php_script(
+        &layout,
+        &runtime,
+        &args.shared,
+        "scripts/backup.php",
+        [src.as_os_str(), args.dest.as_os_str()],
+    )?;
+    Ok(0)
+}
+
+fn export_command(args: ExportArgs) -> Result<i32> {
+    let layout = Layout::new(args.shared.work_dir.clone())?;
+    prepare_runtime(&layout)?;
+    let runtime = PortableRuntime::from_layout(&layout);
+    let src = args
+        .source
+        .unwrap_or_else(|| layout.site_fp.clone());
+    if !src.is_file() {
+        bail!("export: source .fp not found: {}", src.display());
+    }
+    run_php_script(
+        &layout,
+        &runtime,
+        &args.shared,
+        "scripts/export.php",
+        [src.as_os_str(), args.output_dir.as_os_str()],
+    )?;
+    Ok(0)
+}
+
+fn import_command(args: ImportArgs) -> Result<i32> {
+    let layout = Layout::new(args.shared.work_dir.clone())?;
+    prepare_runtime(&layout)?;
+    let runtime = PortableRuntime::from_layout(&layout);
+    if !args.input_dir.is_dir() {
+        bail!("import: source directory not found: {}", args.input_dir.display());
+    }
+    run_php_script(
+        &layout,
+        &runtime,
+        &args.shared,
+        "scripts/import.php",
+        [args.input_dir.as_os_str(), args.dest.as_os_str()],
+    )?;
+    Ok(0)
 }
 
 fn start_command(args: StartArgs) -> Result<i32> {

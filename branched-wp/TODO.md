@@ -242,7 +242,7 @@ requests. Currently these surface as intermittent 500s.
 
 ---
 
-## [ ] 7. No backup / export path [MEDIUM]
+## [x] 7. No backup / export path [MEDIUM]
 
 **Problem**
 The `.fp` file is the one-and-only copy of a site. No way to:
