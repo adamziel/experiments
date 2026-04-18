@@ -1,3 +1,4 @@
+mod mysql_proxy;
 mod smb;
 mod smb_proto;
 mod sftp;
@@ -9,7 +10,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Parser, Debug)]
-#[command(name = "fileserver", about = "SFTP + SMB2 fileserver backed by branched-wp SQLite store")]
+#[command(name = "fileserver", about = "SFTP + SMB2 + MySQL fileserver backed by branched-wp SQLite store")]
 struct Cli {
     /// Path to the branched-wp SQLite database
     #[arg(long)]
@@ -22,6 +23,10 @@ struct Cli {
     /// SMB2 listen address
     #[arg(long, default_value = "0.0.0.0:445")]
     smb_addr: String,
+
+    /// MySQL proxy listen address
+    #[arg(long, default_value = "0.0.0.0:3306")]
+    mysql_addr: String,
 }
 
 #[tokio::main]
@@ -47,9 +52,18 @@ async fn main() -> Result<()> {
         }
     });
 
+    let mysql_store = Arc::clone(&store);
+    let mysql_addr = cli.mysql_addr.clone();
+    let mysql_handle = tokio::spawn(async move {
+        if let Err(e) = mysql_proxy::run_mysql_proxy(&mysql_addr, mysql_store).await {
+            log::error!("MySQL proxy error: {}", e);
+        }
+    });
+
     tokio::select! {
         _ = sftp_handle => {},
         _ = smb_handle => {},
+        _ = mysql_handle => {},
     }
 
     Ok(())

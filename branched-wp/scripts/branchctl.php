@@ -380,6 +380,30 @@ case 'create': {
         echo "branchfs: initial snapshot recorded\n";
     }
 
+    // Copy parent's WordPress database tables to new branch
+    $parent_id = fs_branch_id($db, $from);
+    $new_id    = fs_branch_id($db, $name);
+    if ($parent_id > 0 && $new_id > 0) {
+        $prefix_old = "b{$parent_id}_wp_";
+        $prefix_new = "b{$new_id}_wp_";
+        $tables_stmt = $db->prepare(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :p"
+        );
+        $tables_stmt->bindValue(':p', $prefix_old . '%', SQLITE3_TEXT);
+        $tables_result = $tables_stmt->execute();
+        $copied = 0;
+        while ($row = $tables_result->fetchArray(SQLITE3_ASSOC)) {
+            $old_table = $row['name'];
+            $new_table = $prefix_new . substr($old_table, strlen($prefix_old));
+            // CREATE TABLE new AS SELECT * FROM old (copies structure + data)
+            $db->exec("CREATE TABLE IF NOT EXISTS \"$new_table\" AS SELECT * FROM \"$old_table\"");
+            $copied++;
+        }
+        if ($copied > 0) {
+            echo "branchfs: copied $copied WordPress DB tables (b{$parent_id} -> b{$new_id})\n";
+        }
+    }
+
     echo "\n";
     $root_host = getenv('BRANCHFS_ROOT_HOST') ?: 'localhost';
     $port = getenv('PORT') ?: '80';
@@ -428,6 +452,14 @@ case 'delete': {
     $row = $r->fetchArray(SQLITE3_NUM);
     if ($row) {
         $bid = (int)$row[0];
+        // Drop all WordPress DB tables for this branch
+        $prefix = "b{$bid}_wp_";
+        $ts = $db->prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE :p");
+        $ts->bindValue(':p', $prefix . '%', SQLITE3_TEXT);
+        $tr = $ts->execute();
+        while ($trow = $tr->fetchArray(SQLITE3_ASSOC)) {
+            $db->exec("DROP TABLE IF EXISTS \"" . $trow['name'] . "\"");
+        }
         $db->exec("DELETE FROM files    WHERE branch_id = $bid");
         $db->exec("DELETE FROM branches WHERE id        = $bid");
         echo "branchfs: deleted branch '$name'\n";

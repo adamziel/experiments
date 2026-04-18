@@ -213,6 +213,39 @@ impl Store {
         Ok(())
     }
 
+    /// Execute a raw SQL query and return column names + rows.
+    /// SELECT-like queries return data; DML returns empty result.
+    pub fn query_rows(
+        &self,
+        sql: &str,
+    ) -> Result<(Vec<String>, Vec<Vec<rusqlite::types::Value>>)> {
+        let conn = self.conn.lock().unwrap();
+        let sql_upper = sql.trim_start().to_uppercase();
+        let is_query = sql_upper.starts_with("SELECT")
+            || sql_upper.starts_with("SHOW")
+            || sql_upper.starts_with("EXPLAIN")
+            || sql_upper.starts_with("PRAGMA");
+        if !is_query {
+            conn.execute_batch(sql).ok();
+            return Ok((vec![], vec![]));
+        }
+        let mut stmt = conn.prepare(sql).context("mysql proxy: prepare")?;
+        let columns: Vec<String> =
+            stmt.column_names().into_iter().map(String::from).collect();
+        let col_count = stmt.column_count();
+        let rows: std::result::Result<
+            Vec<Vec<rusqlite::types::Value>>,
+            rusqlite::Error,
+        > = stmt
+            .query_map([], |row| {
+                (0..col_count)
+                    .map(|i| row.get::<_, rusqlite::types::Value>(i))
+                    .collect()
+            })?
+            .collect();
+        Ok((columns, rows?))
+    }
+
     pub fn create_dir(&self, branch_name: &str, path: &str) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let branch_id: i64 = conn.query_row(

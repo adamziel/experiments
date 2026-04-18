@@ -71,6 +71,9 @@ struct StartArgs {
     #[arg(long, default_value_t = 8888)]
     smb_port: u16,
 
+    #[arg(long, default_value_t = 3306)]
+    mysql_port: u16,
+
     #[arg(long, default_value_t = false)]
     no_fileserver: bool,
 
@@ -178,6 +181,10 @@ fn start_command(args: StartArgs) -> Result<i32> {
     if fileserver.is_some() {
         println!("SFTP:       sftp://<branch>@{}:{}/", args.root_host, args.sftp_port);
         println!("SMB:        smb://{}:{}/branch-name/", args.root_host, args.smb_port);
+        println!(
+            "MySQL:      mysql -u root -h {} -P {} <branch-name>",
+            args.root_host, args.mysql_port
+        );
     }
     println!("Logs:       {}", layout.logs_dir.display());
     println!("Press Ctrl+C to stop.");
@@ -393,6 +400,9 @@ fn ensure_ports_available(args: &StartArgs) -> Result<()> {
         if tcp_port_open(&args.host, args.smb_port) {
             bail!("SMB port {} is already in use on {}", args.smb_port, args.host);
         }
+        if tcp_port_open(&args.host, args.mysql_port) {
+            bail!("MySQL port {} is already in use on {}", args.mysql_port, args.host);
+        }
     }
     Ok(())
 }
@@ -523,6 +533,8 @@ fn start_fileserver(
         .arg(format!("{}:{}", args.host, args.sftp_port))
         .arg("--smb-addr")
         .arg(format!("{}:{}", args.host, args.smb_port))
+        .arg("--mysql-addr")
+        .arg(format!("{}:{}", args.host, args.mysql_port))
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
         .spawn()
