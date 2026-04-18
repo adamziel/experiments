@@ -33,23 +33,21 @@ CREATE TABLE IF NOT EXISTS files (
 CREATE INDEX IF NOT EXISTS idx_files_path ON files(path);
 CREATE INDEX IF NOT EXISTS idx_files_branch_dir ON files(branch_id, path);
 
--- File-side commit graph paired with Dolt commits.
--- Each fs_commits row captures a full file-tree snapshot at the moment a
--- branchctl commit happened; the paired Dolt commit hash lets `reset` and
--- `rollback` restore file state alongside the DB rewind.
+-- File-side commit graph. Each fs_commits row captures a full file-tree
+-- snapshot at the moment a branchctl commit happened.
 CREATE TABLE IF NOT EXISTS fs_commits (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     branch_id   INTEGER NOT NULL,
-    dolt_hash   TEXT NOT NULL,
+    commit_hash TEXT NOT NULL DEFAULT (lower(hex(randomblob(16)))),
     parent_id   INTEGER,                        -- previous fs_commit on this branch
     message     TEXT,
     created_at  TEXT DEFAULT (datetime('now')),
-    UNIQUE (branch_id, dolt_hash),
+    UNIQUE (branch_id, commit_hash),
     FOREIGN KEY (branch_id) REFERENCES branches(id),
     FOREIGN KEY (parent_id) REFERENCES fs_commits(id)
 );
 CREATE INDEX IF NOT EXISTS idx_fs_commits_branch ON fs_commits(branch_id);
-CREATE INDEX IF NOT EXISTS idx_fs_commits_dolt ON fs_commits(branch_id, dolt_hash);
+CREATE INDEX IF NOT EXISTS idx_fs_commits_hash ON fs_commits(branch_id, commit_hash);
 
 -- Full snapshot per commit. Blobs are content-addressed so only the
 -- metadata rows duplicate between commits; real file content is shared.

@@ -275,7 +275,7 @@ fn record_snapshot(conn: &Connection, branch_id: i64, message: &str) -> Result<(
         .ok();
 
     conn.execute(
-        "INSERT INTO fs_commits(branch_id, dolt_hash, parent_id, message)
+        "INSERT INTO fs_commits(branch_id, commit_hash, parent_id, message)
          VALUES(?1, lower(hex(randomblob(8))), ?2, ?3)",
         params![branch_id, parent_id, message],
     )?;

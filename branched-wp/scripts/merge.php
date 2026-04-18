@@ -1,6 +1,6 @@
 <?php
 /**
- * BranchFS Merge — coordinated database (Dolt) + files (SQLite) merge.
+ * BranchFS Merge — file-side 3-way merge (SQLite overlay only).
  *
  * File-side does a true 3-way merge at the path level:
  *
@@ -15,18 +15,19 @@
  * --strategy=ours             -- target wins on conflict
  * --strategy=theirs           -- source wins on conflict
  *
- * Usage: php merge.php <source-branch> <target-branch> [db-path] [dolt-db-name] [--strategy=...]
+ * Note: database merge is not implemented (Dolt has been removed).
+ *
+ * Usage: php merge.php {source-branch} {target-branch} [db-path] [--strategy=...]
  */
 
 if ($argc < 3) {
-    fwrite(STDERR, "Usage: php merge.php <source-branch> <target-branch> [db-path] [dolt-db-name] [--strategy=abort|ours|theirs]\n");
+    fwrite(STDERR, "Usage: php merge.php {source-branch} {target-branch} [db-path] [--strategy=abort|ours|theirs]\n");
     exit(1);
 }
 
 $source  = $argv[1];
 $target  = $argv[2];
 $db_path = $argv[3] ?? __DIR__ . '/../branchfs.db';
-$dolt_db = null;
 $strategy = 'abort';
 
 for ($i = 3; $i < $argc; $i++) {
@@ -35,14 +36,7 @@ for ($i = 3; $i < $argc; $i++) {
         $strategy = substr($a, strlen('--strategy='));
     } elseif ($a === '--strategy' && isset($argv[$i + 1])) {
         $strategy = $argv[++$i];
-    } elseif ($a[0] !== '-' && $dolt_db === null && $i > 3) {
-        // Legacy 4th positional: dolt db name.
-        $dolt_db = $a;
     }
-}
-// Positional fallback for dolt_db (backwards compatible with previous callers)
-if ($dolt_db === null && isset($argv[4]) && $argv[4][0] !== '-' && strpos($argv[4], '--') !== 0) {
-    $dolt_db = $argv[4];
 }
 
 if (!in_array($strategy, ['abort', 'ours', 'theirs'], true)) {
@@ -257,44 +251,5 @@ try {
 }
 $db->close();
 
-// --- Phase 2: Dolt database merge ---
-if ($dolt_db) {
-    echo "\nPhase 2: Dolt database merge ('$dolt_db') ...\n";
-
-    $host = getenv('DOLT_HOST') ?: '127.0.0.1';
-    $port = (int)(getenv('DOLT_PORT') ?: '13306');
-    $user = getenv('DOLT_USER') ?: 'root';
-    $pass = getenv('DOLT_PASSWORD') ?: '';
-
-    try {
-        $dolt = @new mysqli($host, $user, $pass, "$dolt_db/$target", $port);
-        if ($dolt->connect_error) {
-            throw new RuntimeException($dolt->connect_error);
-        }
-        $r = $dolt->query("CALL DOLT_MERGE('$source')");
-        if ($r === false) throw new RuntimeException($dolt->error);
-        if ($r instanceof mysqli_result) $r->free();
-        while ($dolt->next_result()) { $r2 = $dolt->store_result(); if ($r2) $r2->free(); }
-        echo "  Dolt merge complete.\n";
-
-        $r = $dolt->query("SELECT \"table\", num_conflicts FROM dolt_conflicts");
-        if ($r instanceof mysqli_result) {
-            $any = false;
-            while ($row = $r->fetch_assoc()) {
-                $any = true;
-                echo "  WARNING: conflict on table '{$row['table']}': {$row['num_conflicts']}\n";
-            }
-            $r->free();
-            if (!$any) echo "  No Dolt conflicts.\n";
-        }
-        while ($dolt->next_result()) { $r2 = $dolt->store_result(); if ($r2) $r2->free(); }
-        $dolt->close();
-    } catch (\Throwable $e) {
-        echo "  Dolt merge error: " . $e->getMessage() . "\n";
-        echo "  (Dolt integration requires a running Dolt SQL server)\n";
-    }
-} else {
-    echo "\nPhase 2: Skipped (no Dolt database specified)\n";
-}
-
+echo "\nNote: database merge is not implemented (Dolt has been removed).\n";
 echo "\nMerge complete.\n";

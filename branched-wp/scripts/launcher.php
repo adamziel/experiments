@@ -78,6 +78,13 @@ if (!extension_loaded('branchfs')) {
 
 $branch = branchfs_resolve_branch();
 
+// Configure Automattic sqlite-database-integration to use site.fp
+// so the WordPress database lives in the same file as the filesystem.
+$wp_db_path = getenv('BRANCHFS_SQLITE_WP_DB') ?: BRANCHFS_DB;
+define('FQDB', $wp_db_path);
+define('DB_DIR', dirname($wp_db_path));
+define('DB_FILE', basename($wp_db_path));
+
 // Initialize the branchfs extension
 branchfs_set_db(BRANCHFS_DB);
 branchfs_set_root(BRANCHFS_WP_ROOT);

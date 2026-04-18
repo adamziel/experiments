@@ -34,7 +34,7 @@ SPC_DIR="$BUILD_DIR/static-php-cli"
 #            mbstring covers the same ground for WordPress.
 #   - opcache: PHP 8.3's JIT has a broken arm64-macos path (missing zend_jit_arm64.c);
 #              opcache is a perf optimization, not functionally required.
-EXTENSIONS="bcmath,ctype,curl,dom,exif,fileinfo,filter,mbstring,mysqli,mysqlnd,openssl,pcntl,pdo,pdo_mysql,pdo_sqlite,phar,posix,session,simplexml,sockets,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+EXTENSIONS="bcmath,ctype,curl,dom,exif,fileinfo,filter,mbstring,openssl,pcntl,pdo,pdo_sqlite,phar,posix,session,simplexml,sockets,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
 
 mkdir -p "$DIST_DIR/bin"
 
