@@ -141,6 +141,13 @@ Startup banner must print connection strings for all active services.
   (table name translation: strip the `b{id}_` prefix in responses)
 - SELECT, INSERT, UPDATE, DELETE supported
 - Writes go directly to SQLite (WAL-safe, no buffering)
+- **Identifier rewriting is tokenizer-aware** (`rewrite_wp_prefix` in
+  `fileserver/src/mysql_proxy.rs`): `wp_<table>` is rewritten to
+  `b{id}_wp_<table>` only when the occurrence is an identifier. String
+  literals (`'…'`, `"…"`, including `''` and `\\'` escapes) and SQL
+  comments (`-- …`, `/* … */`) are left byte-for-byte unchanged, so role
+  slugs, capability keys, and meta-key values (`'wp_capabilities'`,
+  `'wp_user_roles'`, `'wp_user_level'`) round-trip intact.
 
 ### F6 — Branching with DB isolation
 - `branchctl create my-branch [--from main]` copies:

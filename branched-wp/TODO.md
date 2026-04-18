@@ -21,7 +21,7 @@ All existing tests must continue to pass.
 
 ---
 
-## [ ] 1. MySQL proxy: string literals are corrupted by `wp_` rewriting [CRITICAL]
+## [x] 1. MySQL proxy: string literals are corrupted by `wp_` rewriting [CRITICAL]
 
 **Problem**
 `fileserver/src/mysql_proxy.rs` (or the equivalent Rust file doing the
