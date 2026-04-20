@@ -1722,6 +1722,12 @@ case 'merge': {
     if (!$into) die_usage("`merge` needs --into <target>");
     if (!valid_branch_name($from)) die_usage("invalid source: $from");
     if (!valid_branch_name($into) && $into !== 'main') die_usage("invalid target: $into");
+    if ($from === $into) {
+        // Self-merge is always a no-op and almost certainly a user mistake.
+        // Reject explicitly so the CLI surfaces the error instead of silently
+        // succeeding.
+        die_usage("`merge $from --into $into`: cannot merge a branch into itself");
+    }
 
     // Lazy COW migration: if either branch is in the legacy (full-copy)
     // format, migrate it to view+overlay+tombstone IN PLACE before merge

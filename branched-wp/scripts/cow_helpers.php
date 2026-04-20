@@ -598,30 +598,38 @@ function cow_recreate_views_for_table(SQLite3 $db, string $table_suffix): void {
         // Skip branches whose objects don't exist (they may have been deleted).
         if (!cow_is_view($db, $logical_name)) continue;
 
-        // Re-derive PK + columns from the parent, since the schema may have
-        // grown a column.
-        $pk_cols = cow_extract_pk_cols($db, $parent_table);
-        $columns = cow_table_columns($db, $parent_table);
-        if (empty($columns)) continue;
-
-        // Sync the overlay's column set: ALTER TABLE ADD COLUMN for any
-        // column that exists in the parent but not in the overlay.
+        // Re-derive PK + columns. The overlay is the source of truth for
+        // the view's shape: it may have columns the parent doesn't yet
+        // (e.g. when the branch ALTERed its own overlay directly), and
+        // it may be missing columns the parent has grown post-fork. We
+        // merge both so the view exposes the union of both shapes.
+        $pk_cols      = cow_extract_pk_cols($db, $parent_table);
+        $parent_cols  = cow_table_columns($db, $parent_table);
         $overlay_cols = cow_table_columns($db, $overlay_name);
-        $missing = array_diff($columns, $overlay_cols);
+
+        // Sync the overlay with any new parent columns so the view row
+        // shape matches. (This keeps pre-existing behaviour: parent-side
+        // ADD COLUMN propagates into descendants' overlays.)
+        $missing = array_diff($parent_cols, $overlay_cols);
         if (!empty($missing)) {
-            // Pull the parent's DDL and extract the column-definition
-            // fragment for each missing column.
             $parent_ddl = (string)$db->querySingle(
                 "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
                 . SQLite3::escapeString($parent_table) . "'"
             );
-            // For each missing column, extract its definition from parent DDL.
             foreach ($missing as $mcol) {
                 $def = cow_extract_col_def($parent_ddl, $mcol);
                 if ($def === null) continue;
                 @$db->exec('ALTER TABLE "' . $overlay_name . '" ADD COLUMN ' . $def);
             }
+            // Re-read overlay cols after the ADDs so view/triggers reflect reality.
+            $overlay_cols = cow_table_columns($db, $overlay_name);
         }
+
+        // The view's column list is the overlay's column list (the overlay
+        // has been synced to include parent-side additions above, and may
+        // also have branch-side-only columns).
+        $columns = $overlay_cols;
+        if (empty($columns)) continue;
 
         // Drop old view + triggers, recreate.
         $db->exec("DROP TRIGGER IF EXISTS \"{$logical_name}__cow_ins\"");
@@ -629,8 +637,12 @@ function cow_recreate_views_for_table(SQLite3 $db, string $table_suffix): void {
         $db->exec("DROP TRIGGER IF EXISTS \"{$logical_name}__cow_del\"");
         $db->exec("DROP VIEW IF EXISTS \"$logical_name\"");
 
-        $view_sql_body = cow_resolve_view_sql(
-            $overlay_name, $tomb_name, $parent_table, $pk_cols, $columns
+        // Build a view body whose SELECT from the parent projects NULL for
+        // any columns that exist in the overlay but not in the parent
+        // (branch-side-only additions).
+        $view_sql_body = cow_resolve_view_sql_with_projection(
+            $overlay_name, $tomb_name, $parent_table,
+            $pk_cols, $columns, $parent_cols
         );
         $db->exec("CREATE VIEW \"$logical_name\" AS $view_sql_body");
         $defaults = [];
@@ -644,6 +656,44 @@ function cow_recreate_views_for_table(SQLite3 $db, string $table_suffix): void {
             $db->exec($trg);
         }
     }
+}
+
+/** Like cow_resolve_view_sql() but projects NULL for any column the
+ *  overlay has that the parent doesn't. Used when the overlay has grown
+ *  columns beyond what the parent carries (branch-side ALTER ADD COLUMN). */
+function cow_resolve_view_sql_with_projection(
+    string $overlay_name, string $tombstone_name, string $parent_view_name,
+    array $pk_cols, array $overlay_cols, array $parent_cols
+): string {
+    $col_list = implode(', ', array_map(fn($c) => '"' . $c . '"', $overlay_cols));
+    $pset = array_flip($parent_cols);
+    $proj = [];
+    foreach ($overlay_cols as $c) {
+        if (isset($pset[$c])) $proj[] = 'p."' . $c . '"';
+        else                  $proj[] = 'NULL AS "' . $c . '"';
+    }
+    $proj_list = implode(', ', $proj);
+
+    if (empty($pk_cols)) {
+        return "SELECT $col_list FROM \"$overlay_name\" "
+             . "UNION ALL "
+             . "SELECT $proj_list FROM \"$parent_view_name\" p";
+    }
+    if (count($pk_cols) === 1) {
+        $pk = '"' . $pk_cols[0] . '"';
+        return "SELECT $col_list FROM \"$overlay_name\" "
+             . "UNION ALL "
+             . "SELECT $proj_list FROM \"$parent_view_name\" p "
+             . "WHERE p.$pk NOT IN (SELECT $pk FROM \"$overlay_name\") "
+             . "  AND p.$pk NOT IN (SELECT $pk FROM \"$tombstone_name\")";
+    }
+    $pk_tuple_p  = '(' . implode(', ', array_map(fn($c) => 'p."' . $c . '"', $pk_cols)) . ')';
+    $pk_sel      = implode(', ', array_map(fn($c) => '"' . $c . '"', $pk_cols));
+    return "SELECT $col_list FROM \"$overlay_name\" "
+         . "UNION ALL "
+         . "SELECT $proj_list FROM \"$parent_view_name\" p "
+         . "WHERE $pk_tuple_p NOT IN (SELECT $pk_sel FROM \"$overlay_name\") "
+         . "  AND $pk_tuple_p NOT IN (SELECT $pk_sel FROM \"$tombstone_name\")";
 }
 
 /** Conservative column-DDL extraction from a CREATE TABLE statement.
