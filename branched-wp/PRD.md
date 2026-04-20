@@ -671,3 +671,13 @@ on a real conflict do not touch any ancestor table.
 - (Removed — single-process PHP serving replaced by multi-worker mode in F1 / CLI2)
 - (Removed — now implemented via ancestor snapshot refresh in F9)
 - (Removed — DB merge for schema changes is now implemented via Phase 2b in F9)
+- **Autoincrement PK collision when an ancestor mutates after a descendant is created.**
+  `sqlite_sequence` is seeded per-overlay at fork time. If parent `a` inserts a
+  new autoincrement row AFTER child branch `b` has been created, and child `b`
+  independently inserts a row, both can pick the same next-id and `b`'s view
+  then hides the parent's row (its PK is filtered by `WHERE pk NOT IN (SELECT pk
+  FROM overlay)`). Realistic chain-of-previews usage (create, modify, fork child,
+  only then mutate child) avoids this. Sibling branches with independent writes
+  to autoincrement tables, and merges between them, use the existing
+  `--on-id-collision=renumber` path. See
+  `e2e/test_rigorous_scale.py::TestDeepInheritance::test_sibling_ancestor_autoincrement_collision_is_documented`.
