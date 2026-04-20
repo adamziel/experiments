@@ -2041,9 +2041,18 @@ case 'alter-add-column': {
         exit(5);
     }
     $db->exec('BEGIN IMMEDIATE');
+    // SQLite3::exec() returns false on error and sets lastErrorMsg() but
+    // doesn't throw unless PDO-style exception-mode is enabled. Check the
+    // return value to surface failures (like "duplicate column name").
+    $ok = $db->exec('ALTER TABLE "' . SQLite3::escapeString($physical) . '" '
+            . 'ADD COLUMN "' . $col_name . '" ' . $col_type);
+    if ($ok === false) {
+        $err = $db->lastErrorMsg();
+        $db->exec('ROLLBACK');
+        fwrite(STDERR, "branchctl: alter-add-column failed: $err\n");
+        exit(5);
+    }
     try {
-        $db->exec('ALTER TABLE "' . SQLite3::escapeString($physical) . '" '
-                . 'ADD COLUMN "' . $col_name . '" ' . $col_type);
         // Invalidate descendant branches' views — SELECT * was resolved at
         // the original CREATE VIEW time, so the new column would otherwise
         // be invisible.
