@@ -28,11 +28,41 @@
 // is touched. For ~22 typical WP tables, branch create is milliseconds
 // regardless of row count.
 
-/** Return ordered PRIMARY KEY column names for a table.
+/** Return ordered PRIMARY KEY column names for a table or view.
+ *
+ *  `PRAGMA table_info()` on a VIEW returns rows with pk=0 for every column —
+ *  SQLite doesn't propagate the underlying PK through the view metadata.
+ *  When the target is a COW branch view we recurse into its __overlay (which
+ *  carries the same shape and the original PK) to recover the true PK set.
+ *  Fallback all the way up to the parent table if no __overlay exists yet.
+ *
  *  Empty array if the table has no explicit PK. */
 function cow_extract_pk_cols(SQLite3 $db, string $real_table_name): array {
+    $target = $real_table_name;
+    // If the target is a view, try to find an underlying __overlay table to
+    // get PK metadata from. Walk up through the COW marker chain.
+    $guard = 0;
+    while (cow_is_view($db, $target) && $guard++ < 32) {
+        $overlay = $target . '__overlay';
+        if (cow_is_table($db, $overlay)) {
+            $target = $overlay;
+            break;
+        }
+        // Otherwise walk up to the parent's logical table via the COW marker.
+        // e.g. target = "b3_wp_options": find branch id 3, its parent, then
+        // parent's logical "b{parent_id}_wp_options".
+        if (!preg_match('/^b(\d+)_wp_(.+)$/', $target, $m)) break;
+        $bid = (int)$m[1];
+        $suffix = $m[2];
+        $pid = (int)$db->querySingle(
+            "SELECT parent_branch_id FROM db_cow_branches "
+          . "WHERE branch_id=$bid AND table_suffix='" . SQLite3::escapeString($suffix) . "'"
+        );
+        if ($pid <= 0) break;
+        $target = "b{$pid}_wp_{$suffix}";
+    }
     $pk = [];
-    $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($real_table_name) . '")');
+    $r = $db->query('PRAGMA table_info("' . SQLite3::escapeString($target) . '")');
     while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
         if ((int)$row['pk'] > 0) $pk[(int)$row['pk']] = $row['name'];
     }
