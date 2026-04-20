@@ -49,6 +49,7 @@ The entire site lives in one SQLite file (WAL mode).
 | `blobs`, `blob_chunks`, `branches`, `files`, `fs_commits`, `fs_commit_files` | WordPress filesystem (COW) |
 | `b{id}_wp_*` (main): real tables. `b{id}_wp_*` (non-main branches): VIEWS backed by `b{id}_wp_*__overlay` (changed/added rows) and `b{id}_wp_*__tombstones` (deleted PKs). | WordPress database, COW per branch |
 | `db_cow_branches`, `db_ancestor_overlay`, `db_post_fork_inserts`, `db_snapshots_schema` | COW branch metadata + lazy fork-time ancestor for 3-way DB merge |
+| `db_commits`, `db_commit_overlays`, `db_commit_tombstones`, `db_commit_schema` | Per-commit DB snapshot paired 1:1 with `fs_commits` (rows + tombstones + schema). branchctl commit/rollback/reset operate atomically on both sides. |
 | `db_snapshots` | Legacy per-row ancestor (still consulted for branches in pre-COW format; lazy-migrated to COW on first merge) |
 | `site_config`, `users` | Site-wide config and authentication |
 
@@ -355,6 +356,42 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   any tooling that goes through the COW helpers) changes a parent table's
   shape, every descendant branch's view is dropped and recreated so
   `SELECT *` resolves the new column set.
+- **Transparent DDL routing through COW views**
+  (`scripts/branched_pdo.php`): user PHP code that runs raw SQL via
+  `BranchedPDO::connect($site_fp, $branch)` instead of `new PDO(...)`
+  gets transparent DDL re-targeting. SQLite forbids `ALTER TABLE` /
+  `CREATE INDEX` / `DROP INDEX` on a view, so a DDL whose target is
+  `b{id}_wp_X` (a view on a non-main branch) is intercepted, rewritten
+  to operate on the underlying `b{id}_wp_X__overlay`, and the view +
+  INSTEAD OF triggers are rebuilt so the new column set is reflected.
+  Supported DDL forms:
+  - `ALTER TABLE … ADD COLUMN <name> <type> [DEFAULT …]`
+  - `ALTER TABLE … DROP COLUMN <name>` (SQLite ≥3.35; native)
+  - `ALTER TABLE … RENAME COLUMN <old> TO <new>`
+  - `ALTER TABLE … RENAME TO …` is rejected with a clear error
+    (renaming a logical WP table would orphan the COW marker)
+  - `CREATE [UNIQUE] INDEX <name> ON <branch_view>(…)` →
+    re-targeted at the overlay
+  - `DROP INDEX <name>` — overlay-owned indexes drop cleanly; the
+    wrapper rejects an attempt to drop an index owned by another
+    branch with a descriptive error
+  Non-DDL (SELECT/INSERT/UPDATE/DELETE/transactions/prepared
+  statements) flows through unchanged. `BranchedPDO extends PDO`, so
+  every typed dependency that expects a `\PDO` (including
+  `WP_SQLite_Connection`'s `pdo` constructor option) accepts a
+  BranchedPDO without modification. The single one-line shim —
+  replacing `new PDO('sqlite:'.$path)` with
+  `BranchedPDO::connect($path, $branch)` — is the only change required
+  in user code. To use BranchedPDO with the WordPress
+  sqlite-database-integration plugin, instantiate via:
+  ```php
+  $bpdo = BranchedPDO::connect($site_fp, $branch);
+  $conn = new WP_SQLite_Connection(['pdo' => $bpdo]);
+  ```
+  The plugin's query translator emits `ALTER TABLE wp_*` against
+  branch-prefixed names (after WordPress's wp_ prefix gets rewritten
+  to b{id}_wp_), and BranchedPDO transparently routes those to the
+  overlay.
 
 ### F6a — Lazy migration of legacy (pre-COW) branches
 Branches in older `.fp` files use the original row-copy format
@@ -374,13 +411,48 @@ After migration, the branch is indistinguishable from a brand-new COW
 branch and benefits from the same storage / fork-time guarantees on
 future operations.
 
-### F7 — Committing
-- `branchctl commit <branch>` records a snapshot in `fs_commits` + `fs_commit_files`
-- `commit_hash` auto-generated (SQLite `DEFAULT (lower(hex(randomblob(16))))`)
+### F7 — Committing (files + DB, atomic)
+- `branchctl commit <branch>` records a snapshot of BOTH:
+  - **Files**: `fs_commits` + `fs_commit_files` (resolved tree at HEAD).
+  - **DB**: `db_commits` + `db_commit_overlays` + `db_commit_tombstones`
+    + `db_commit_schema`. For each `b{bid}_wp_X__overlay` table the
+    snapshot stores every row (as JSON), every PK in the matching
+    `__tombstones` table, the overlay's `CREATE TABLE` DDL, and every
+    `CREATE INDEX` that points at the overlay. Cost is O(divergent rows
+    the branch overlays), NOT O(total branch rows): inherited rows are
+    reconstructable from the parent at the same commit_hash.
+- Both sides are written in a single `BEGIN IMMEDIATE … COMMIT` — a
+  failure on either rolls back the other. The two commits share the
+  same `commit_hash` and are linked via `db_commits.fs_commit_id`.
+- `commit_hash` is a 32-hex-char random ID generated in PHP.
+- A "no-op commit" is detected on BOTH sides: if neither file tree nor
+  DB state diverges from the last paired snapshot, the command exits
+  silently rather than padding the commit graph.
 
-### F8 — Rollback / Reset
-- `branchctl rollback <branch>` restores files from the previous `fs_commit_files` snapshot
-- `branchctl reset <branch> <hash>` restores files from a specific commit
+### F8 — Rollback / Reset (files + DB, atomic)
+- `branchctl rollback <branch>` and `branchctl reset <branch> <hash>`
+  restore BOTH:
+  - **Files**: replay `fs_commit_files` into the branch's `files` table
+    (existing behaviour).
+  - **DB**: drop and recreate every overlay listed in
+    `db_commit_schema` from its snapshotted DDL, recreate dependent
+    indexes from `indexes_json`, drop and recreate the matching
+    `__tombstones` table from the overlay's PK, replay overlay rows
+    from `db_commit_overlays`, replay tombstone PKs from
+    `db_commit_tombstones`, then rebuild the view + INSTEAD OF
+    triggers via `db_rebuild_view_for()` so SELECT through the view
+    matches the snapshotted shape.
+- Each side runs in its own atomic transaction (the file restore
+  reuses the existing `fs_restore_snapshot` BEGIN/COMMIT, then the DB
+  restore takes its own BEGIN/COMMIT).
+- `--force` controls BOTH guards: without it, the command refuses if
+  either the file tree OR the DB state has uncommitted changes since
+  the last paired commit. The DB-uncommitted check hashes the current
+  overlay+tombstone+schema state (`db_state_digest`) and compares to
+  the digest of the last `db_commit` for the branch.
+- DB-side restore on a `fs_commit` that pre-dates `db_commits` (legacy
+  sites upgraded in place) is a no-op — only the file side rolls back,
+  matching the pre-versioning behaviour.
 
 ### F9a — OPcache invalidation for out-of-process writers
 Router serves PHP via `branchfs://<branch>/path.php` URLs so OPcache keys

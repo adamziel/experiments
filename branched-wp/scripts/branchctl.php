@@ -195,6 +195,54 @@ CREATE TABLE IF NOT EXISTS db_snapshots (
     row_json   TEXT NOT NULL,
     PRIMARY KEY (branch_id, table_name, row_pk)
 );
+/* ----------------------------------------------------------------
+ * Per-commit DB snapshot (rows + tombstones + per-table schema).
+ *
+ * Storage cost is O(divergent rows the branch overlays) per commit,
+ * not O(total branch rows): we snapshot only what's in the branch's
+ * own overlays/tombstones, since inherited rows are reconstructable
+ * from the parent's state at the same commit hash.
+ *
+ * db_commits is paired 1:1 with fs_commits via fs_commit_id +
+ * commit_hash. branchctl commit/rollback/reset operate on both
+ * tables atomically inside one transaction.
+ * ---------------------------------------------------------------- */
+CREATE TABLE IF NOT EXISTS db_commits (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    branch_id    INTEGER NOT NULL,
+    fs_commit_id INTEGER,                              -- 1:1 link to fs_commits.id
+    commit_hash  TEXT NOT NULL,                        -- mirrors fs_commits.commit_hash
+    created_at   TEXT DEFAULT (datetime('now')),
+    UNIQUE (branch_id, commit_hash),
+    FOREIGN KEY (branch_id)    REFERENCES branches(id),
+    FOREIGN KEY (fs_commit_id) REFERENCES fs_commits(id)
+);
+CREATE INDEX IF NOT EXISTS idx_db_commits_branch ON db_commits(branch_id);
+CREATE INDEX IF NOT EXISTS idx_db_commits_hash   ON db_commits(branch_id, commit_hash);
+CREATE INDEX IF NOT EXISTS idx_db_commits_fs     ON db_commits(fs_commit_id);
+CREATE TABLE IF NOT EXISTS db_commit_overlays (
+    commit_id    INTEGER NOT NULL,
+    table_suffix TEXT NOT NULL,                  -- e.g. 'wp_posts'
+    row_pk       TEXT NOT NULL,                  -- JSON-encoded PK map
+    row_json     TEXT NOT NULL,                  -- JSON-encoded full row
+    PRIMARY KEY (commit_id, table_suffix, row_pk),
+    FOREIGN KEY (commit_id) REFERENCES db_commits(id)
+);
+CREATE TABLE IF NOT EXISTS db_commit_tombstones (
+    commit_id    INTEGER NOT NULL,
+    table_suffix TEXT NOT NULL,
+    row_pk       TEXT NOT NULL,
+    PRIMARY KEY (commit_id, table_suffix, row_pk),
+    FOREIGN KEY (commit_id) REFERENCES db_commits(id)
+);
+CREATE TABLE IF NOT EXISTS db_commit_schema (
+    commit_id    INTEGER NOT NULL,
+    table_suffix TEXT NOT NULL,
+    overlay_ddl  TEXT NOT NULL,                   -- CREATE TABLE for the overlay
+    indexes_json TEXT NOT NULL DEFAULT '[]',      -- JSON array of CREATE INDEX statements
+    PRIMARY KEY (commit_id, table_suffix),
+    FOREIGN KEY (commit_id) REFERENCES db_commits(id)
+);
 /* COW (copy-on-write) branch fork markers. One row per (branch, table)
  * recorded at branch-create time. The marker captures the parent's
  * physical table name + a fork token (we use parent rowid max as a
@@ -595,6 +643,586 @@ function fs_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
     }
 }
 
+/* ================================================================
+ * DB-side commit graph (db_commits + db_commit_overlays +
+ *                        db_commit_tombstones + db_commit_schema)
+ *
+ * branchctl commit/rollback/reset extend the file-side fs_commits
+ * machinery with a parallel DB snapshot:
+ *
+ *   - For each b{bid}_wp_X__overlay  → snapshot its rows
+ *   - For each b{bid}_wp_X__tombstones → snapshot its PKs
+ *   - For each overlay table → snapshot the CREATE TABLE DDL +
+ *     all CREATE INDEX statements that reference it
+ *
+ * Storage is O(divergent rows) per commit, NOT O(total branch rows)
+ * — inherited rows are reconstructable from the parent's state at
+ * the same fs_commit. The COW model makes this naturally efficient.
+ *
+ * For MAIN (id=1) the same machinery snapshots the real b1_wp_*
+ * tables (no overlay/tombstone split — main IS the canonical
+ * state). main snapshots are O(rows on main); for sites that don't
+ * commit on main this never fires.
+ * ================================================================ */
+
+/** All COW-overlay table suffixes for the given branch_id. The suffix
+ *  is the part after the "b{bid}_wp_" prefix.
+ *
+ *  For non-main branches we read db_cow_branches (single source of
+ *  truth for the COW set). For main we enumerate b1_wp_* real tables
+ *  directly so we can snapshot main too if the user commits on main. */
+function db_branch_table_suffixes(SQLite3 $db, int $branch_id): array {
+    $suffixes = [];
+    if ($branch_id === 1) {
+        // main: enumerate real tables.
+        $r = $db->query(
+            "SELECT name FROM sqlite_master "
+          . "WHERE type='table' "
+          . "  AND name LIKE 'b1_wp_%' "
+          . "  AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+          . "  AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'"
+        );
+        while ($row = $r->fetchArray(SQLITE3_NUM)) {
+            $suffixes[] = substr((string)$row[0], strlen('b1_wp_'));
+        }
+        return $suffixes;
+    }
+    $st = $db->prepare(
+        "SELECT table_suffix FROM db_cow_branches WHERE branch_id = :b "
+      . "ORDER BY table_suffix"
+    );
+    $st->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $r = $st->execute();
+    while ($row = $r->fetchArray(SQLITE3_NUM)) $suffixes[] = (string)$row[0];
+    return $suffixes;
+}
+
+/** Resolve the physical table name to read for a (branch_id, suffix)
+ *  pair: overlay for non-main, real table for main. */
+function db_overlay_or_real(int $branch_id, string $suffix): string {
+    if ($branch_id === 1) return "b1_wp_{$suffix}";
+    return "b{$branch_id}_wp_{$suffix}__overlay";
+}
+
+/** Resolve the tombstone table name (or empty for main, which has none). */
+function db_tombstone_name(int $branch_id, string $suffix): string {
+    if ($branch_id === 1) return '';
+    return "b{$branch_id}_wp_{$suffix}__tombstones";
+}
+
+/** PK columns for a logical (suffix) on a branch. Reads PRAGMA on the
+ *  underlying overlay (or real table for main). */
+function db_pk_cols_for(SQLite3 $db, int $branch_id, string $suffix): array {
+    return cow_extract_pk_cols($db, db_overlay_or_real($branch_id, $suffix));
+}
+
+/** Capture row-by-row state of the branch's overlays + tombstones.
+ *  Returns ['overlays' => [[suffix, pk_json, row_json], ...],
+ *          'tombstones' => [[suffix, pk_json], ...],
+ *          'schema'     => [[suffix, ddl, indexes_json], ...]].
+ *
+ *  Designed so a digest of this structure cheaply detects "uncommitted
+ *  DB changes" without writing to db_commits. */
+function db_collect_state(SQLite3 $db, int $branch_id): array {
+    $overlays   = [];
+    $tombstones = [];
+    $schema     = [];
+    foreach (db_branch_table_suffixes($db, $branch_id) as $suffix) {
+        $physical = db_overlay_or_real($branch_id, $suffix);
+        $pk_cols  = cow_extract_pk_cols($db, $physical);
+        $columns  = cow_table_columns($db, $physical);
+        if (empty($columns)) continue;
+        // Collect rows.
+        $r = $db->query("SELECT * FROM \"" . SQLite3::escapeString($physical) . "\"");
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $pk_map = [];
+            if (empty($pk_cols)) {
+                // No PK: use whole row as the key.
+                $pk_map = $row;
+            } else {
+                foreach ($pk_cols as $c) $pk_map[$c] = $row[$c] ?? null;
+            }
+            $overlays[] = [
+                $suffix,
+                json_encode($pk_map, JSON_UNESCAPED_UNICODE),
+                json_encode($row,    JSON_UNESCAPED_UNICODE),
+            ];
+        }
+        $r->finalize();
+        // Tombstones (only non-main).
+        if ($branch_id !== 1) {
+            $tomb = db_tombstone_name($branch_id, $suffix);
+            if (cow_is_table($db, $tomb)) {
+                $r2 = $db->query("SELECT * FROM \"" . SQLite3::escapeString($tomb) . "\"");
+                while ($row = $r2->fetchArray(SQLITE3_ASSOC)) {
+                    if (empty($pk_cols)) {
+                        $pk_map = $row;
+                    } else {
+                        $pk_map = [];
+                        foreach ($pk_cols as $c) $pk_map[$c] = $row[$c] ?? null;
+                    }
+                    $tombstones[] = [
+                        $suffix,
+                        json_encode($pk_map, JSON_UNESCAPED_UNICODE),
+                    ];
+                }
+                $r2->finalize();
+            }
+        }
+        // Schema: overlay's CREATE TABLE + dependent indexes.
+        $ddl = (string)$db->querySingle(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+            . SQLite3::escapeString($physical) . "'"
+        );
+        $idxs = [];
+        $r3 = $db->query(
+            "SELECT sql FROM sqlite_master WHERE type='index' "
+          . "  AND tbl_name='" . SQLite3::escapeString($physical) . "' "
+          . "  AND sql IS NOT NULL ORDER BY name"
+        );
+        while ($row = $r3->fetchArray(SQLITE3_NUM)) $idxs[] = (string)$row[0];
+        $r3->finalize();
+        $schema[] = [
+            $suffix,
+            (string)$ddl,
+            json_encode($idxs, JSON_UNESCAPED_UNICODE),
+        ];
+    }
+    return ['overlays' => $overlays, 'tombstones' => $tombstones, 'schema' => $schema];
+}
+
+/** Deterministic digest of the branch's DB state — used to detect
+ *  "uncommitted DB changes" against the last db_commit. */
+function db_state_digest(array $state): string {
+    $h = hash_init('sha256');
+    foreach ($state['schema'] as $row) {
+        hash_update($h, "S\0" . $row[0] . "\0" . $row[1] . "\0" . $row[2] . "\n");
+    }
+    // Sort overlays/tombstones by (suffix, pk) for determinism.
+    $ov = $state['overlays'];
+    usort($ov, fn($a, $b) => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
+    foreach ($ov as $row) {
+        hash_update($h, "O\0" . $row[0] . "\0" . $row[1] . "\0" . $row[2] . "\n");
+    }
+    $tb = $state['tombstones'];
+    usort($tb, fn($a, $b) => [$a[0], $a[1]] <=> [$b[0], $b[1]]);
+    foreach ($tb as $row) {
+        hash_update($h, "T\0" . $row[0] . "\0" . $row[1] . "\n");
+    }
+    return hash_final($h);
+}
+
+/** Materialize a previously-recorded db_commit's state into a digest.
+ *  Used by branchctl rollback/reset --no-force checks. */
+function db_digest_of_commit(SQLite3 $db, int $commit_id): string {
+    $state = ['overlays' => [], 'tombstones' => [], 'schema' => []];
+    $r = $db->query("SELECT table_suffix, overlay_ddl, indexes_json "
+        . "FROM db_commit_schema WHERE commit_id = $commit_id ORDER BY table_suffix");
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $state['schema'][] = [$row['table_suffix'], $row['overlay_ddl'], $row['indexes_json']];
+    }
+    $r->finalize();
+    $r = $db->query("SELECT table_suffix, row_pk, row_json "
+        . "FROM db_commit_overlays WHERE commit_id = $commit_id");
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $state['overlays'][] = [$row['table_suffix'], $row['row_pk'], $row['row_json']];
+    }
+    $r->finalize();
+    $r = $db->query("SELECT table_suffix, row_pk "
+        . "FROM db_commit_tombstones WHERE commit_id = $commit_id");
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $state['tombstones'][] = [$row['table_suffix'], $row['row_pk']];
+    }
+    $r->finalize();
+    return db_state_digest($state);
+}
+
+/** Latest db_commit row for the branch (NULL if none). */
+function db_last_commit(SQLite3 $db, int $branch_id): ?array {
+    $s = $db->prepare(
+        "SELECT id, fs_commit_id, commit_hash, created_at FROM db_commits "
+      . "WHERE branch_id = :b ORDER BY id DESC LIMIT 1"
+    );
+    $s->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $r = $s->execute();
+    $row = $r->fetchArray(SQLITE3_ASSOC);
+    return $row ?: null;
+}
+
+/** Look up a db_commit by its hash. */
+function db_find_commit_by_hash(SQLite3 $db, int $branch_id, string $hash): ?array {
+    $s = $db->prepare(
+        "SELECT id, fs_commit_id, commit_hash, created_at FROM db_commits "
+      . "WHERE branch_id = :b AND commit_hash = :h LIMIT 1"
+    );
+    $s->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $s->bindValue(':h', $hash, SQLITE3_TEXT);
+    $r = $s->execute();
+    $row = $r->fetchArray(SQLITE3_ASSOC);
+    return $row ?: null;
+}
+
+/** Persist the branch's current DB state under a new db_commit. Returns
+ *  the new db_commit id. Caller must wrap in a transaction. */
+function db_record_snapshot(SQLite3 $db, int $branch_id, int $fs_commit_id,
+                            string $commit_hash): int {
+    $state = db_collect_state($db, $branch_id);
+
+    $s = $db->prepare(
+        "INSERT INTO db_commits (branch_id, fs_commit_id, commit_hash) "
+      . "VALUES (:b, :f, :h)"
+    );
+    $s->bindValue(':b', $branch_id,    SQLITE3_INTEGER);
+    $s->bindValue(':f', $fs_commit_id, SQLITE3_INTEGER);
+    $s->bindValue(':h', $commit_hash,  SQLITE3_TEXT);
+    $s->execute();
+    $cid = (int)$db->lastInsertRowID();
+
+    if (!empty($state['overlays'])) {
+        $ins = $db->prepare(
+            "INSERT INTO db_commit_overlays (commit_id, table_suffix, row_pk, row_json) "
+          . "VALUES (:c, :s, :pk, :rj)"
+        );
+        foreach ($state['overlays'] as $row) {
+            $ins->bindValue(':c',  $cid,    SQLITE3_INTEGER);
+            $ins->bindValue(':s',  $row[0], SQLITE3_TEXT);
+            $ins->bindValue(':pk', $row[1], SQLITE3_TEXT);
+            $ins->bindValue(':rj', $row[2], SQLITE3_TEXT);
+            $ins->execute();
+            $ins->reset();
+        }
+    }
+    if (!empty($state['tombstones'])) {
+        $ins = $db->prepare(
+            "INSERT INTO db_commit_tombstones (commit_id, table_suffix, row_pk) "
+          . "VALUES (:c, :s, :pk)"
+        );
+        foreach ($state['tombstones'] as $row) {
+            $ins->bindValue(':c',  $cid,    SQLITE3_INTEGER);
+            $ins->bindValue(':s',  $row[0], SQLITE3_TEXT);
+            $ins->bindValue(':pk', $row[1], SQLITE3_TEXT);
+            $ins->execute();
+            $ins->reset();
+        }
+    }
+    if (!empty($state['schema'])) {
+        $ins = $db->prepare(
+            "INSERT INTO db_commit_schema (commit_id, table_suffix, overlay_ddl, indexes_json) "
+          . "VALUES (:c, :s, :d, :i)"
+        );
+        foreach ($state['schema'] as $row) {
+            $ins->bindValue(':c', $cid,    SQLITE3_INTEGER);
+            $ins->bindValue(':s', $row[0], SQLITE3_TEXT);
+            $ins->bindValue(':d', $row[1], SQLITE3_TEXT);
+            $ins->bindValue(':i', $row[2], SQLITE3_TEXT);
+            $ins->execute();
+            $ins->reset();
+        }
+    }
+    return $cid;
+}
+
+/** Decode JSON-encoded value to its appropriate SQLite3 bind type. */
+function db_bind_json_value($stmt, int $i, $v): void {
+    if ($v === null) {
+        $stmt->bindValue($i, null, SQLITE3_NULL);
+    } elseif (is_int($v)) {
+        $stmt->bindValue($i, $v, SQLITE3_INTEGER);
+    } elseif (is_float($v)) {
+        $stmt->bindValue($i, $v, SQLITE3_FLOAT);
+    } elseif (is_bool($v)) {
+        $stmt->bindValue($i, (int)$v, SQLITE3_INTEGER);
+    } else {
+        // String / array / object — coerce to string.
+        $stmt->bindValue($i, is_array($v) || is_object($v) ? json_encode($v) : (string)$v, SQLITE3_TEXT);
+    }
+}
+
+/** Rebuild branch's overlay+tombstone tables from a previously-recorded
+ *  db_commit. Drops existing overlay rows / tombstone rows / overlay
+ *  indexes and replays from the snapshot. Caller must wrap in a
+ *  transaction. */
+function db_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
+    $touched = 0;
+
+    // Step 1: collect schema rows for the snapshot.
+    $schema_by_suffix = [];
+    $r = $db->query(
+        "SELECT table_suffix, overlay_ddl, indexes_json "
+      . "FROM db_commit_schema WHERE commit_id = $commit_id"
+    );
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $schema_by_suffix[$row['table_suffix']] = $row;
+    }
+    $r->finalize();
+
+    // Step 2: for each overlay tracked at commit time, drop the current
+    // (view+overlay+tombstone) trio and recreate from the snapshotted DDL.
+    foreach ($schema_by_suffix as $suffix => $row) {
+        $logical = ($branch_id === 1)
+            ? "b1_wp_{$suffix}"
+            : "b{$branch_id}_wp_{$suffix}";
+        $overlay = ($branch_id === 1) ? $logical : ($logical . '__overlay');
+        $tomb    = ($branch_id === 1) ? null     : ($logical . '__tombstones');
+
+        // Drop INSTEAD OF triggers + view + overlay (rebuild fresh from DDL).
+        if ($branch_id !== 1) {
+            $db->exec("DROP TRIGGER IF EXISTS \"{$logical}__cow_ins\"");
+            $db->exec("DROP TRIGGER IF EXISTS \"{$logical}__cow_upd\"");
+            $db->exec("DROP TRIGGER IF EXISTS \"{$logical}__cow_del\"");
+            $db->exec("DROP VIEW IF EXISTS \"$logical\"");
+        }
+        // Drop indexes that point at this overlay first (so DROP TABLE
+        // doesn't fail if the index DDL references columns we're about
+        // to recreate).
+        //
+        // We collect the index names UPFRONT (and finalize the cursor)
+        // before issuing any DROP — DDL modifies sqlite_master, and an
+        // open SELECT cursor on sqlite_master keeps a read lock that
+        // makes any subsequent DROP fail with "database table is locked".
+        $idx_to_drop = [];
+        $rix = $db->query(
+            "SELECT name FROM sqlite_master WHERE type='index' "
+          . "  AND tbl_name='" . SQLite3::escapeString($overlay) . "' "
+          . "  AND sql IS NOT NULL"
+        );
+        while ($irow = $rix->fetchArray(SQLITE3_NUM)) {
+            $idx_to_drop[] = (string)$irow[0];
+        }
+        $rix->finalize();
+        foreach ($idx_to_drop as $iname) {
+            $db->exec("DROP INDEX IF EXISTS \"" . SQLite3::escapeString($iname) . "\"");
+        }
+
+        // Drop and recreate the overlay (or main's real table).
+        $db->exec("DROP TABLE IF EXISTS \"$overlay\"");
+        $ddl = (string)$row['overlay_ddl'];
+        if ($ddl !== '') $db->exec($ddl);
+
+        // Recreate the indexes.
+        $idxs = json_decode((string)$row['indexes_json'], true) ?: [];
+        foreach ($idxs as $isql) {
+            if (is_string($isql) && $isql !== '') @$db->exec($isql);
+        }
+
+        // Recreate the tombstone table (PK-only schema, derived from PK
+        // columns of the overlay we just made).
+        if ($tomb !== null) {
+            $db->exec("DROP TABLE IF EXISTS \"$tomb\"");
+            $pk_cols  = cow_extract_pk_cols($db, $overlay);
+            $columns  = cow_table_columns($db, $overlay);
+            if (!empty($pk_cols)) {
+                $pk_types = [];
+                $pi = $db->query('PRAGMA table_info("' . SQLite3::escapeString($overlay) . '")');
+                while ($prow = $pi->fetchArray(SQLITE3_ASSOC)) {
+                    if (in_array($prow['name'], $pk_cols, true)) {
+                        $pk_types[$prow['name']] = $prow['type'] ?: 'TEXT';
+                    }
+                }
+                $tomb_cols_ddl = [];
+                foreach ($pk_cols as $c) {
+                    $t = $pk_types[$c] ?? 'TEXT';
+                    $tomb_cols_ddl[] = '"' . $c . '" ' . $t;
+                }
+                $tomb_pk = implode(', ', array_map(fn($c) => '"' . $c . '"', $pk_cols));
+                $db->exec(
+                    "CREATE TABLE \"$tomb\" ("
+                  . implode(', ', $tomb_cols_ddl)
+                  . ", PRIMARY KEY ($tomb_pk))"
+                );
+            } else {
+                $cols_ddl = [];
+                foreach ($columns as $c) $cols_ddl[] = '"' . $c . '" BLOB';
+                $db->exec("CREATE TABLE \"$tomb\" (" . implode(', ', $cols_ddl) . ")");
+            }
+        }
+    }
+
+    // Step 3: replay overlay rows.
+    $rows_by_suffix = [];
+    $r = $db->query(
+        "SELECT table_suffix, row_pk, row_json FROM db_commit_overlays "
+      . "WHERE commit_id = $commit_id"
+    );
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        $rows_by_suffix[$row['table_suffix']][] = $row;
+    }
+    $r->finalize();
+    foreach ($rows_by_suffix as $suffix => $rows) {
+        $physical = db_overlay_or_real($branch_id, $suffix);
+        if (!cow_is_table($db, $physical)) continue;
+        $cols = cow_table_columns($db, $physical);
+        if (empty($cols)) continue;
+        $col_list = implode(', ', array_map(fn($c) => '"' . $c . '"', $cols));
+        $placeholders = implode(', ', array_fill(0, count($cols), '?'));
+        $ins = $db->prepare(
+            "INSERT INTO \"$physical\" ($col_list) VALUES ($placeholders)"
+        );
+        foreach ($rows as $r2) {
+            $row_obj = json_decode((string)$r2['row_json'], true);
+            if (!is_array($row_obj)) continue;
+            $i = 1;
+            foreach ($cols as $c) {
+                db_bind_json_value($ins, $i++, $row_obj[$c] ?? null);
+            }
+            $ins->execute();
+            $ins->reset();
+            $touched++;
+        }
+    }
+
+    // Step 4: replay tombstones (non-main only).
+    if ($branch_id !== 1) {
+        $tomb_by_suffix = [];
+        $r = $db->query(
+            "SELECT table_suffix, row_pk FROM db_commit_tombstones "
+          . "WHERE commit_id = $commit_id"
+        );
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $tomb_by_suffix[$row['table_suffix']][] = (string)$row['row_pk'];
+        }
+        $r->finalize();
+        foreach ($tomb_by_suffix as $suffix => $pks) {
+            $tomb = db_tombstone_name($branch_id, $suffix);
+            if (!cow_is_table($db, $tomb)) continue;
+            $pk_cols = cow_extract_pk_cols($db, $tomb);
+            if (empty($pk_cols)) continue;
+            $col_list = implode(', ', array_map(fn($c) => '"' . $c . '"', $pk_cols));
+            $placeholders = implode(', ', array_fill(0, count($pk_cols), '?'));
+            $ins = $db->prepare(
+                "INSERT INTO \"$tomb\" ($col_list) VALUES ($placeholders)"
+            );
+            foreach ($pks as $pk_json) {
+                $pk_obj = json_decode($pk_json, true);
+                if (!is_array($pk_obj)) continue;
+                $i = 1;
+                foreach ($pk_cols as $c) db_bind_json_value($ins, $i++, $pk_obj[$c] ?? null);
+                $ins->execute();
+                $ins->reset();
+                $touched++;
+            }
+        }
+    }
+
+    // Step 5: rebuild views + INSTEAD OF triggers from the (now-restored)
+    // overlay schemas. For each suffix that had a snapshot AND we're a
+    // non-main branch, we need a view.
+    if ($branch_id !== 1) {
+        foreach ($schema_by_suffix as $suffix => $_) {
+            db_rebuild_view_for(
+                $db, $branch_id, $suffix
+            );
+        }
+    }
+
+    // Step 6: refresh the COW marker for each restored suffix so future
+    // db_cow_branches lookups see the post-restore parent_table_name.
+    if ($branch_id !== 1) {
+        $parent_id = cow_parent_branch_id($db, $branch_id);
+        $upd = $db->prepare(
+            "UPDATE db_cow_branches SET parent_table_name = :pt "
+          . "WHERE branch_id = :b AND table_suffix = :s"
+        );
+        foreach ($schema_by_suffix as $suffix => $_) {
+            $pt = "b{$parent_id}_wp_{$suffix}";
+            $upd->bindValue(':pt', $pt,        SQLITE3_TEXT);
+            $upd->bindValue(':b',  $branch_id, SQLITE3_INTEGER);
+            $upd->bindValue(':s',  $suffix,    SQLITE3_TEXT);
+            $upd->execute();
+            $upd->reset();
+        }
+    }
+    return $touched;
+}
+
+/** Rebuild a single view + its INSTEAD OF triggers using the overlay's
+ *  current column set. Mirrors BranchedPDO::rebuild_view_and_triggers
+ *  but uses the SQLite3 connection used by branchctl. */
+function db_rebuild_view_for(SQLite3 $db, int $branch_id, string $suffix): void {
+    $logical = "b{$branch_id}_wp_{$suffix}";
+    $overlay = $logical . '__overlay';
+    $tomb    = $logical . '__tombstones';
+
+    // Look up parent's logical table name from the COW marker; fall back
+    // to deriving from the parent branch id if the marker isn't there.
+    $parent_table = (string)$db->querySingle(
+        "SELECT parent_table_name FROM db_cow_branches "
+      . "WHERE branch_id = " . (int)$branch_id . " AND table_suffix = '"
+      . SQLite3::escapeString($suffix) . "'"
+    );
+    if ($parent_table === '') {
+        $pid = cow_parent_branch_id($db, $branch_id);
+        $parent_table = "b{$pid}_wp_{$suffix}";
+    }
+    if (!cow_is_table($db, $overlay)) return;
+    if (!cow_is_table($db, $parent_table) && !cow_is_view($db, $parent_table)) {
+        // Parent's table is gone — leave the view non-existent.
+        return;
+    }
+
+    $columns = cow_table_columns($db, $overlay);
+    $pk_cols = cow_extract_pk_cols($db, $overlay);
+    if (empty($columns)) return;
+
+    $parent_cols = cow_table_columns($db, $parent_table);
+
+    $db->exec("DROP TRIGGER IF EXISTS \"{$logical}__cow_ins\"");
+    $db->exec("DROP TRIGGER IF EXISTS \"{$logical}__cow_upd\"");
+    $db->exec("DROP TRIGGER IF EXISTS \"{$logical}__cow_del\"");
+    $db->exec("DROP VIEW IF EXISTS \"$logical\"");
+
+    // Build view body — project parent rows to overlay's column shape so
+    // schema-divergent overlay (e.g. with a branch-only column) still
+    // works in the UNION ALL. Same logic as BranchedPDO uses.
+    $col_list = implode(', ', array_map(fn($c) => '"' . $c . '"', $columns));
+    $proj = [];
+    $pset = array_flip($parent_cols);
+    foreach ($columns as $c) {
+        if (isset($pset[$c])) $proj[] = 'p."' . $c . '"';
+        else                   $proj[] = 'NULL AS "' . $c . '"';
+    }
+    $proj_list = implode(', ', $proj);
+    if (empty($pk_cols)) {
+        $body = "SELECT $col_list FROM \"$overlay\" UNION ALL SELECT $proj_list FROM \"$parent_table\" p";
+    } elseif (count($pk_cols) === 1) {
+        $pk = '"' . $pk_cols[0] . '"';
+        $body = "SELECT $col_list FROM \"$overlay\" "
+              . "UNION ALL SELECT $proj_list FROM \"$parent_table\" p "
+              . "WHERE p.$pk NOT IN (SELECT $pk FROM \"$overlay\") "
+              . "  AND p.$pk NOT IN (SELECT $pk FROM \"$tomb\")";
+    } else {
+        $tup_p   = '(' . implode(', ', array_map(fn($c) => 'p."' . $c . '"', $pk_cols)) . ')';
+        $pk_sel  = implode(', ', array_map(fn($c) => '"' . $c . '"', $pk_cols));
+        $body = "SELECT $col_list FROM \"$overlay\" "
+              . "UNION ALL SELECT $proj_list FROM \"$parent_table\" p "
+              . "WHERE $tup_p NOT IN (SELECT $pk_sel FROM \"$overlay\") "
+              . "  AND $tup_p NOT IN (SELECT $pk_sel FROM \"$tomb\")";
+    }
+    $db->exec("CREATE VIEW \"$logical\" AS $body");
+
+    $defaults = [];
+    $pi = $db->query('PRAGMA table_info("' . SQLite3::escapeString($overlay) . '")');
+    while ($prow = $pi->fetchArray(SQLITE3_ASSOC)) {
+        if ($prow['dflt_value'] !== null) {
+            $defaults[$prow['name']] = (string)$prow['dflt_value'];
+        }
+    }
+    foreach (cow_trigger_sql($logical, $overlay, $tomb, $pk_cols, $columns, $defaults) as $trg) {
+        $db->exec($trg);
+    }
+}
+
+/** Return TRUE if the branch's current DB state diverges from the last
+ *  recorded db_commit. Used to gate rollback/reset --no-force against
+ *  uncommitted DB changes. */
+function db_has_uncommitted_changes(SQLite3 $db, int $branch_id): bool {
+    $last = db_last_commit($db, $branch_id);
+    if (!$last) return false;  // no anchor → "clean"
+    $now = db_state_digest(db_collect_state($db, $branch_id));
+    $ref = db_digest_of_commit($db, (int)$last['id']);
+    return $now !== $ref;
+}
+
 switch ($cmd) {
 
 case 'list': {
@@ -631,7 +1259,10 @@ case 'create': {
     echo "branchfs: forked '$from' -> '$name'\n";
 
     /* Record an initial snapshot so reset has a landing point even before
-     * the user makes any commits. */
+     * the user makes any commits. The fs side is recorded NOW; the db side
+     * is recorded BELOW, after the COW table machinery has built the
+     * overlays — so the initial db_commit captures an empty-but-correct
+     * state baseline. */
     $db = sqlite_open($DB_PATH);
     $bid = fs_branch_id($db, $name);
     if ($bid > 0) {
@@ -690,6 +1321,22 @@ case 'create': {
         }
     }
 
+    // Pair the just-created fs_commit with an initial db_commit so the
+    // unified rollback graph has a landing point on day 0. We thread the
+    // same commit_hash so log/log-show can pair them visually.
+    $first_fs = fs_last_commit($db, $bid);
+    if ($first_fs && $bid > 0) {
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            db_record_snapshot($db, $bid, (int)$first_fs['id'], (string)$first_fs['commit_hash']);
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            $db->exec('ROLLBACK');
+            // Non-fatal: future commits will still create db_commits rows.
+            fwrite(STDERR, "warning: initial db snapshot failed: " . $e->getMessage() . "\n");
+        }
+    }
+
     echo "\n";
     $root_host = getenv('BRANCHFS_ROOT_HOST') ?: 'localhost';
     $port = getenv('PORT') ?: '80';
@@ -709,19 +1356,77 @@ case 'commit': {
         exit(4);
     }
 
-    $current_snap   = fs_last_commit($db, $bid);
-    $current_digest = fs_tree_digest(fs_resolve_tree($db, $bid));
-    $anchor_digest  = $current_snap ? fs_digest_of_commit($db, (int)$current_snap['id']) : '';
+    // Detect "no-op commit" against EITHER side. If neither files nor DB
+    // diverged from the last anchored snapshot, skip — re-snapshotting an
+    // unchanged tree fills the commit graph with empty markers.
+    $current_fs_snap = fs_last_commit($db, $bid);
+    $current_fs_dig  = fs_tree_digest(fs_resolve_tree($db, $bid));
+    $anchor_fs_dig   = $current_fs_snap ? fs_digest_of_commit($db, (int)$current_fs_snap['id']) : '';
 
-    if ($current_snap && $current_digest === $anchor_digest) {
-        echo "branchfs: no file-side changes (skipped snapshot).\n";
+    $current_db_snap = db_last_commit($db, $bid);
+    $current_db_dig  = db_state_digest(db_collect_state($db, $bid));
+    $anchor_db_dig   = $current_db_snap ? db_digest_of_commit($db, (int)$current_db_snap['id']) : '';
+
+    $fs_clean = $current_fs_snap && $current_fs_dig === $anchor_fs_dig;
+    $db_clean = $current_db_snap && $current_db_dig === $anchor_db_dig;
+
+    if ($fs_clean && $db_clean) {
+        echo "branchfs: no changes on '$name' (files OR db); skipped snapshot.\n";
         break;
     }
 
-    $cid = fs_record_snapshot($db, $bid, $msg);
-    $last = fs_last_commit($db, $bid);
-    echo "branchfs: snapshot #$cid committed on '$name': $msg\n";
-    echo "branchfs: commit " . substr($last['commit_hash'] ?? '', 0, 12) . "\n";
+    // Atomic commit: fs_record_snapshot has its own BEGIN/COMMIT; we
+    // rendez-vous with it by adding the db_commit row on the same hash
+    // INSIDE its transaction. To keep the change small, we open a wrapping
+    // BEGIN here and have fs_record_snapshot detect we're already in a tx
+    // (done via SQLite3::exec returning false rather than throwing) ...
+    // simpler: just take the BEGIN ourselves, replicate fs_record_snapshot
+    // logic inline.
+    $commit_hash = bin2hex(random_bytes(16));
+    $tree = fs_resolve_tree($db, $bid);
+    $parent = $current_fs_snap;
+    $parent_id = $parent['id'] ?? null;
+
+    $db->exec('BEGIN IMMEDIATE');
+    try {
+        // ---- fs side ----
+        $s = $db->prepare("INSERT INTO fs_commits (branch_id, commit_hash, parent_id, message) VALUES (:b, :h, :p, :m)");
+        $s->bindValue(':b', $bid,         SQLITE3_INTEGER);
+        $s->bindValue(':h', $commit_hash, SQLITE3_TEXT);
+        $parent_id === null
+            ? $s->bindValue(':p', null,       SQLITE3_NULL)
+            : $s->bindValue(':p', $parent_id, SQLITE3_INTEGER);
+        $s->bindValue(':m', $msg, SQLITE3_TEXT);
+        $s->execute();
+        $fs_cid = (int)$db->lastInsertRowID();
+
+        $ins = $db->prepare(
+            "INSERT INTO fs_commit_files (commit_id, path, blob_hash, mode, mtime, is_dir) "
+          . "VALUES (:c, :p, :bh, :md, :mt, :d)"
+        );
+        foreach ($tree as $path => $e) {
+            $ins->bindValue(':c',  $fs_cid, SQLITE3_INTEGER);
+            $ins->bindValue(':p',  $path,   SQLITE3_TEXT);
+            $ins->bindValue(':bh', $e['blob_hash'] ?? null,
+                $e['blob_hash'] ? SQLITE3_TEXT : SQLITE3_NULL);
+            $ins->bindValue(':md', (int)($e['mode']   ?? 0), SQLITE3_INTEGER);
+            $ins->bindValue(':mt', (int)($e['mtime']  ?? 0), SQLITE3_INTEGER);
+            $ins->bindValue(':d',  (int)($e['is_dir'] ?? 0), SQLITE3_INTEGER);
+            $ins->execute();
+            $ins->reset();
+        }
+
+        // ---- db side ----
+        $db_cid = db_record_snapshot($db, $bid, $fs_cid, $commit_hash);
+        $db->exec('COMMIT');
+        echo "branchfs: snapshot #$fs_cid committed on '$name': $msg\n";
+        echo "branchfs: commit " . substr($commit_hash, 0, 12) . "\n";
+        echo "branchfs: db_commit #$db_cid recorded for branch '$name'\n";
+    } catch (\Throwable $e) {
+        $db->exec('ROLLBACK');
+        fwrite(STDERR, "branchctl: commit failed: " . $e->getMessage() . "\n");
+        exit(5);
+    }
     break;
 }
 
@@ -824,6 +1529,20 @@ case 'delete': {
           . "WHERE commit_id IN (SELECT id FROM fs_commits WHERE branch_id = $bid)"
         );
         $db->exec("DELETE FROM fs_commits  WHERE branch_id = $bid");
+        // db_commit_* are keyed by db_commits.id; clean them too.
+        $db->exec(
+            "DELETE FROM db_commit_overlays WHERE commit_id IN "
+          . "(SELECT id FROM db_commits WHERE branch_id = $bid)"
+        );
+        $db->exec(
+            "DELETE FROM db_commit_tombstones WHERE commit_id IN "
+          . "(SELECT id FROM db_commits WHERE branch_id = $bid)"
+        );
+        $db->exec(
+            "DELETE FROM db_commit_schema WHERE commit_id IN "
+          . "(SELECT id FROM db_commits WHERE branch_id = $bid)"
+        );
+        $db->exec("DELETE FROM db_commits   WHERE branch_id = $bid");
         $db->exec("DELETE FROM files        WHERE branch_id = $bid");
         $db->exec("DELETE FROM db_snapshots WHERE branch_id = $bid");
         $db->exec("DELETE FROM branches     WHERE id        = $bid");
@@ -888,9 +1607,17 @@ case 'log': {
         break;
     }
 
+    // Unified log: every fs_commit on this branch joined with the matching
+    // db_commit (LEFT JOIN so legacy fs_commits without a paired db_commit
+    // still show up). The "DB" column flags whether DB state was snapshotted
+    // alongside the file state.
     $s = $db->prepare(
-        "SELECT id, commit_hash, message, created_at FROM fs_commits "
-      . "WHERE branch_id = :b ORDER BY id DESC LIMIT :lim"
+        "SELECT fc.id, fc.commit_hash, fc.message, fc.created_at, "
+      . "       (CASE WHEN dc.id IS NULL THEN '-' ELSE 'db' END) AS db_flag "
+      . "FROM fs_commits fc "
+      . "LEFT JOIN db_commits dc "
+      . "  ON dc.fs_commit_id = fc.id AND dc.branch_id = fc.branch_id "
+      . "WHERE fc.branch_id = :b ORDER BY fc.id DESC LIMIT :lim"
     );
     $s->bindValue(':b', $bid, SQLITE3_INTEGER);
     $s->bindValue(':lim', $limit, SQLITE3_INTEGER);
@@ -900,11 +1627,12 @@ case 'log': {
         $rows[] = $row;
     }
 
-    printf("%-34s  %-19s  %s\n", "COMMIT", "WHEN", "MESSAGE");
-    printf("%s\n", str_repeat('-', 80));
+    printf("%-34s  %-3s  %-19s  %s\n", "COMMIT", "DB", "WHEN", "MESSAGE");
+    printf("%s\n", str_repeat('-', 84));
     foreach ($rows as $row) {
-        printf("%-34s  %-19s  %s\n",
+        printf("%-34s  %-3s  %-19s  %s\n",
             $row['commit_hash'] ?? '',
+            $row['db_flag']     ?? '-',
             substr($row['created_at'] ?? '', 0, 19),
             trim($row['message'] ?? '')
         );
@@ -1066,6 +1794,7 @@ case 'reset': {
     }
 
     if (!$force) {
+        // Check BOTH file-side and DB-side for uncommitted changes.
         $current_snap = fs_current_commit($db, $bid);
         if ($current_snap) {
             $tree_now    = fs_tree_digest(fs_resolve_tree($db, $bid));
@@ -1078,6 +1807,13 @@ case 'reset': {
                 exit(6);
             }
         }
+        if (db_has_uncommitted_changes($db, $bid)) {
+            fwrite(STDERR,
+                "branchctl: '$name' has DB changes since the last db_commit.\n"
+              . "           Reset would discard them. Run `branchctl commit $name` first,\n"
+              . "           or pass --force to discard.\n");
+            exit(6);
+        }
     }
 
     $fs = fs_find_commit_by_hash($db, $bid, $commit);
@@ -1086,9 +1822,30 @@ case 'reset': {
         fwrite(STDERR, "           Use `branchctl log $name` to see available commits.\n");
         exit(7);
     }
+    $db_commit = db_find_commit_by_hash($db, $bid, $commit);
+
     $n = fs_restore_snapshot($db, $bid, (int)$fs['id']);
+
+    // DB-side restore: paired with the same commit_hash. If we have one,
+    // wrap the restore in a transaction so partial-restore can't leak.
+    $db_rows = 0;
+    if ($db_commit) {
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            $db_rows = db_restore_snapshot($db, $bid, (int)$db_commit['id']);
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            $db->exec('ROLLBACK');
+            fwrite(STDERR, "branchctl: db restore failed: " . $e->getMessage() . "\n");
+            exit(5);
+        }
+    }
+
     echo "branchfs: '$name' reset to commit " . substr($commit, 0, 12) . "\n";
     echo "branchfs: restored $n files from snapshot #{$fs['id']} ({$fs['message']})\n";
+    if ($db_commit) {
+        echo "branchfs: restored $db_rows db row(s)/tombstone(s) from db_commit #{$db_commit['id']}\n";
+    }
     break;
 }
 
@@ -1105,6 +1862,7 @@ case 'rollback': {
     }
 
     if (!$force) {
+        // Check BOTH file-side and DB-side for uncommitted changes.
         $current_snap = fs_current_commit($db, $bid);
         if ($current_snap) {
             $tree_now    = fs_tree_digest(fs_resolve_tree($db, $bid));
@@ -1117,6 +1875,13 @@ case 'rollback': {
                 exit(6);
             }
         }
+        if (db_has_uncommitted_changes($db, $bid)) {
+            fwrite(STDERR,
+                "branchctl: '$name' has DB changes since the last db_commit.\n"
+              . "           Rollback would discard them. Run `branchctl commit $name`\n"
+              . "           first, or pass --force to discard.\n");
+            exit(6);
+        }
     }
 
     $s = $db->prepare(
@@ -1127,13 +1892,39 @@ case 'rollback': {
     $r = $s->execute();
     $r->fetchArray(SQLITE3_ASSOC); // skip current (HEAD)
     $prev = $r->fetchArray(SQLITE3_ASSOC);
+    // Finalize before any subsequent DDL — open SELECT cursors on
+    // fs_commits keep a read lock that blocks DROP TABLE later.
+    $r->finalize();
+    $s->close();
     if (!$prev) {
         fwrite(STDERR, "branchctl: no previous commit to roll back to on '$name'.\n");
         exit(7);
     }
     $n = fs_restore_snapshot($db, $bid, (int)$prev['id']);
+
+    // DB-side restore: paired by commit_hash with the fs commit we just
+    // rolled back to. May be NULL on legacy commits made before db_commits
+    // was introduced (in which case we leave DB state untouched, matching
+    // the pre-versioning behaviour).
+    $db_rows = 0;
+    $db_prev = db_find_commit_by_hash($db, $bid, (string)$prev['commit_hash']);
+    if ($db_prev) {
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            $db_rows = db_restore_snapshot($db, $bid, (int)$db_prev['id']);
+            $db->exec('COMMIT');
+        } catch (\Throwable $e) {
+            $db->exec('ROLLBACK');
+            fwrite(STDERR, "branchctl: db rollback failed: " . $e->getMessage() . "\n");
+            exit(5);
+        }
+    }
+
     echo "branchfs: '$name' rolled back to " . substr($prev['commit_hash'] ?? '', 0, 12) . "\n";
     echo "branchfs: restored $n files from snapshot #{$prev['id']} ({$prev['message']})\n";
+    if ($db_prev) {
+        echo "branchfs: restored $db_rows db row(s)/tombstone(s) from db_commit #{$db_prev['id']}\n";
+    }
     break;
 }
 
