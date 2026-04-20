@@ -3,6 +3,7 @@ use async_trait::async_trait;
 use opensrv_mysql::*;
 use sha1::{Digest, Sha1};
 use std::io;
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use tokio::io::AsyncWrite;
 
@@ -172,6 +173,209 @@ fn is_ident_cont(b: Option<u8>) -> bool {
     }
 }
 
+/// DDL-on-view detection for the MySQL proxy.
+///
+/// The BranchedPDO class (scripts/branched_pdo.php) already re-routes
+/// ALTER TABLE / CREATE INDEX / DROP INDEX whose target is a COW branch
+/// VIEW to the underlying overlay. WordPress code that uses BranchedPDO
+/// gets this for free. Out-of-band SQL clients (`mysql`, `wp-cli db query`,
+/// phpMyAdmin) hit this proxy directly, and SQLite will refuse DDL on a
+/// view with a raw error.
+///
+/// So the proxy performs the same detection — it classifies the DDL, pulls
+/// the target identifier, and if `sqlite_master.type = 'view'` for that
+/// name the SQL is handed off to the PHP helper (which reuses the single
+/// source-of-truth routing logic in BranchedPDO).
+///
+/// Returns the target table name iff this is DDL that the proxy should
+/// delegate to the PHP helper. Returns None for non-DDL or DDL whose
+/// target isn't a view (let SQLite handle it directly).
+pub fn detect_view_ddl_target(sql: &str) -> Option<String> {
+    let trimmed = sql.trim_start();
+    let u4_upper: String = trimmed.chars().take(4).collect::<String>().to_ascii_uppercase();
+    match u4_upper.as_str() {
+        "ALTE" | "CREA" | "DROP" => {}
+        _ => return None,
+    }
+    let bytes = trimmed.as_bytes();
+    let upper = trimmed.to_ascii_uppercase();
+
+    // Helper: starting from byte index `pos` (inside `bytes`), skip spaces
+    // then parse one identifier (quoted with "..", backticked with `..`,
+    // bracketed with [..], or bare). Returns (name, next_pos).
+    fn skip_ws(b: &[u8], mut i: usize) -> usize {
+        while i < b.len() && b[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    }
+    fn parse_ident(b: &[u8], mut i: usize) -> Option<(String, usize)> {
+        i = skip_ws(b, i);
+        if i >= b.len() {
+            return None;
+        }
+        match b[i] {
+            b'"' => {
+                i += 1;
+                let start = i;
+                while i < b.len() && b[i] != b'"' {
+                    i += 1;
+                }
+                if i >= b.len() {
+                    return None;
+                }
+                let name = std::str::from_utf8(&b[start..i]).ok()?.to_string();
+                Some((name, i + 1))
+            }
+            b'`' => {
+                i += 1;
+                let start = i;
+                while i < b.len() && b[i] != b'`' {
+                    i += 1;
+                }
+                if i >= b.len() {
+                    return None;
+                }
+                let name = std::str::from_utf8(&b[start..i]).ok()?.to_string();
+                Some((name, i + 1))
+            }
+            b'[' => {
+                i += 1;
+                let start = i;
+                while i < b.len() && b[i] != b']' {
+                    i += 1;
+                }
+                if i >= b.len() {
+                    return None;
+                }
+                let name = std::str::from_utf8(&b[start..i]).ok()?.to_string();
+                Some((name, i + 1))
+            }
+            c if c == b'_' || c.is_ascii_alphabetic() => {
+                let start = i;
+                while i < b.len()
+                    && (b[i] == b'_' || b[i].is_ascii_alphanumeric())
+                {
+                    i += 1;
+                }
+                let name = std::str::from_utf8(&b[start..i]).ok()?.to_string();
+                Some((name, i))
+            }
+            _ => None,
+        }
+    }
+
+    // ALTER TABLE <name> ...
+    if upper.starts_with("ALTER") {
+        let rest_after_alter = skip_ws(bytes, 5);
+        if !upper[rest_after_alter..].starts_with("TABLE") {
+            return None;
+        }
+        let after_table = skip_ws(bytes, rest_after_alter + 5);
+        let (name, _) = parse_ident(bytes, after_table)?;
+        return Some(name);
+    }
+    // CREATE [UNIQUE] INDEX [IF NOT EXISTS] <idx> ON <table>(...)
+    if upper.starts_with("CREATE") {
+        let mut i = skip_ws(bytes, 6);
+        if upper[i..].starts_with("UNIQUE") {
+            i = skip_ws(bytes, i + 6);
+        }
+        if !upper[i..].starts_with("INDEX") {
+            return None;
+        }
+        i = skip_ws(bytes, i + 5);
+        if upper[i..].starts_with("IF") {
+            i = skip_ws(bytes, i + 2);
+            if upper[i..].starts_with("NOT") {
+                i = skip_ws(bytes, i + 3);
+                if upper[i..].starts_with("EXISTS") {
+                    i = skip_ws(bytes, i + 6);
+                }
+            }
+        }
+        let (_idx, after_idx) = parse_ident(bytes, i)?;
+        let after_on = skip_ws(bytes, after_idx);
+        if !upper[after_on..].starts_with("ON") {
+            return None;
+        }
+        let after_on_kw = skip_ws(bytes, after_on + 2);
+        let (tbl, _) = parse_ident(bytes, after_on_kw)?;
+        return Some(tbl);
+    }
+    // DROP INDEX [IF EXISTS] <idx> — the "target table" doesn't appear in
+    // the SQL. The proxy still has to route the statement to BranchedPDO
+    // whenever the referenced index belongs to a branch view; we return a
+    // sentinel "DROP_INDEX" marker and let the caller look up sqlite_master.
+    if upper.starts_with("DROP") {
+        let mut i = skip_ws(bytes, 4);
+        if !upper[i..].starts_with("INDEX") {
+            return None;
+        }
+        i = skip_ws(bytes, i + 5);
+        if upper[i..].starts_with("IF") {
+            i = skip_ws(bytes, i + 2);
+            if upper[i..].starts_with("EXISTS") {
+                i = skip_ws(bytes, i + 6);
+            }
+        }
+        let (idx_name, _) = parse_ident(bytes, i)?;
+        // Caller sees a name that always fails the "is_view" check, so it
+        // needs a distinct code path: we signal via the "__drop_index__:"
+        // prefix which the handler unpacks.
+        return Some(format!("__drop_index__:{}", idx_name));
+    }
+    None
+}
+
+/// Path to the PHP branchctl helper. Configured via env var
+/// `FORKPRESS_BRANCHCTL_BIN`; falls back to `branchctl` on $PATH which
+/// matches the bin/branchctl wrapper script shipped in the repo.
+fn branchctl_bin() -> String {
+    std::env::var("FORKPRESS_BRANCHCTL_BIN").unwrap_or_else(|_| "branchctl".to_string())
+}
+
+/// Run `branchctl _ddl --db <path> --branch <name>` with the SQL on stdin.
+/// Returns () on success; on failure returns the stderr message so the
+/// proxy can forward it to the client.
+pub fn exec_ddl_via_branchctl(
+    db_path: &std::path::Path,
+    branch: &str,
+    sql: &str,
+) -> std::result::Result<(), String> {
+    let bin = branchctl_bin();
+    let mut child = std::process::Command::new(&bin)
+        .arg("_ddl")
+        .arg("--db")
+        .arg(db_path.as_os_str())
+        .arg("--branch")
+        .arg(branch)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("failed to spawn '{}': {}", bin, e))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin
+            .write_all(sql.as_bytes())
+            .map_err(|e| format!("write sql to branchctl: {}", e))?;
+        // Drop stdin so child sees EOF.
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|e| format!("wait branchctl: {}", e))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if err.is_empty() {
+            Err(format!("branchctl _ddl exited with status {:?}", output.status.code()))
+        } else {
+            Err(err)
+        }
+    }
+}
+
 #[async_trait]
 impl<W: AsyncWrite + Unpin + Send> AsyncMysqlShim<W> for MysqlHandler {
     type Error = io::Error;
@@ -270,6 +474,76 @@ impl<W: AsyncWrite + Unpin + Send> AsyncMysqlShim<W> for MysqlHandler {
         }
         let prefix = format!("b{}_wp_", self.branch_id);
         let rewritten = rewrite_wp_prefix(sql, &prefix);
+
+        // Intercept DDL whose target is a branch VIEW. SQLite refuses
+        // ALTER / CREATE INDEX / DROP INDEX on a view; for
+        // BranchedPDO-wrapped PHP callers this is handled transparently,
+        // and we do the same here for out-of-band clients (wp-cli db
+        // query, mysql, phpMyAdmin). See TODO3 #1.
+        if let Some(target) = detect_view_ddl_target(&rewritten) {
+            let should_intercept = if let Some(idx) = target.strip_prefix("__drop_index__:") {
+                // For DROP INDEX we look up the index's owning table and
+                // route through BranchedPDO when that table is a branch
+                // view or overlay (BranchedPDO also refuses cross-branch
+                // DROPs).
+                let owner: Option<String> = {
+                    let r = self
+                        .store
+                        .query_rows(&format!(
+                            "SELECT tbl_name FROM sqlite_master \
+                             WHERE type='index' AND name='{}'",
+                            idx.replace('\'', "''")
+                        ))
+                        .ok();
+                    r.and_then(|(_, rows)| {
+                        rows.into_iter().next().and_then(|mut row| {
+                            row.pop().and_then(|v| match v {
+                                rusqlite::types::Value::Text(s) => Some(s),
+                                _ => None,
+                            })
+                        })
+                    })
+                };
+                match owner {
+                    Some(t) => t.ends_with("__overlay") || self.store.is_view(&t),
+                    None => false,
+                }
+            } else {
+                self.store.is_view(&target)
+            };
+
+            if should_intercept {
+                let branch = self
+                    .store
+                    .branch_name(self.branch_id)
+                    .unwrap_or_else(|| format!("b{}", self.branch_id));
+                let db_path = self.store.db_path().to_path_buf();
+                let sql_owned = rewritten.clone();
+                // Run the blocking subprocess on a tokio blocking thread so
+                // we don't stall the async runtime.
+                let join = tokio::task::spawn_blocking(move || {
+                    exec_ddl_via_branchctl(&db_path, &branch, &sql_owned)
+                })
+                .await;
+                match join {
+                    Ok(Ok(())) => {
+                        return results.completed(OkResponse::default()).await;
+                    }
+                    Ok(Err(msg)) => {
+                        return results
+                            .error(ErrorKind::ER_UNKNOWN_ERROR, msg.as_bytes())
+                            .await;
+                    }
+                    Err(e) => {
+                        let msg = format!("spawn_blocking: {}", e);
+                        return results
+                            .error(ErrorKind::ER_UNKNOWN_ERROR, msg.as_bytes())
+                            .await;
+                    }
+                }
+            }
+        }
+
         match self.store.query_rows(&rewritten) {
             Err(e) => {
                 let msg = e.to_string();
@@ -450,5 +724,130 @@ mod tests {
         // from the opening quote to end of input.
         let out = rewrite_wp_prefix("SELECT 'oops wp_capabilities", "b1_wp_");
         assert!(out.contains("'oops wp_capabilities"));
+    }
+
+    // ---------- DDL detection tests (TODO3 #1) ----------------------
+
+    #[test]
+    fn ddl_alter_add_column_extracts_target() {
+        let t = detect_view_ddl_target(
+            "ALTER TABLE b3_wp_posts ADD COLUMN seo_title TEXT",
+        );
+        assert_eq!(t.as_deref(), Some("b3_wp_posts"));
+    }
+
+    #[test]
+    fn ddl_alter_drop_column_extracts_target() {
+        let t = detect_view_ddl_target(
+            "ALTER TABLE b7_wp_options DROP COLUMN legacy",
+        );
+        assert_eq!(t.as_deref(), Some("b7_wp_options"));
+    }
+
+    #[test]
+    fn ddl_alter_rename_column_extracts_target() {
+        let t = detect_view_ddl_target(
+            "ALTER TABLE b2_wp_users RENAME COLUMN display_name TO display",
+        );
+        assert_eq!(t.as_deref(), Some("b2_wp_users"));
+    }
+
+    #[test]
+    fn ddl_create_index_extracts_target_table() {
+        let t = detect_view_ddl_target(
+            "CREATE INDEX idx_x ON b1_wp_posts(post_type)",
+        );
+        assert_eq!(t.as_deref(), Some("b1_wp_posts"));
+    }
+
+    #[test]
+    fn ddl_create_unique_index_if_not_exists_extracts_target() {
+        let t = detect_view_ddl_target(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_y ON b1_wp_options(option_name)",
+        );
+        assert_eq!(t.as_deref(), Some("b1_wp_options"));
+    }
+
+    #[test]
+    fn ddl_quoted_identifier_unquoted() {
+        // The detector must strip surrounding quotes so the caller can do
+        // sqlite_master lookups with the bare name.
+        let t = detect_view_ddl_target(
+            r#"ALTER TABLE "b3_wp_posts" ADD COLUMN x TEXT"#,
+        );
+        assert_eq!(t.as_deref(), Some("b3_wp_posts"));
+    }
+
+    #[test]
+    fn ddl_backticked_identifier_unquoted() {
+        let t = detect_view_ddl_target(
+            "ALTER TABLE `b3_wp_posts` ADD COLUMN x TEXT",
+        );
+        assert_eq!(t.as_deref(), Some("b3_wp_posts"));
+    }
+
+    #[test]
+    fn ddl_bracketed_identifier_unquoted() {
+        let t = detect_view_ddl_target(
+            "ALTER TABLE [b3_wp_posts] ADD COLUMN x TEXT",
+        );
+        assert_eq!(t.as_deref(), Some("b3_wp_posts"));
+    }
+
+    #[test]
+    fn ddl_drop_index_signals_with_prefix() {
+        let t = detect_view_ddl_target("DROP INDEX idx_foo");
+        assert_eq!(t.as_deref(), Some("__drop_index__:idx_foo"));
+    }
+
+    #[test]
+    fn ddl_drop_index_if_exists() {
+        let t = detect_view_ddl_target("DROP INDEX IF EXISTS idx_foo");
+        assert_eq!(t.as_deref(), Some("__drop_index__:idx_foo"));
+    }
+
+    #[test]
+    fn non_ddl_returns_none() {
+        assert!(detect_view_ddl_target("SELECT * FROM b1_wp_posts").is_none());
+        assert!(detect_view_ddl_target("UPDATE b1_wp_posts SET title='x'").is_none());
+        assert!(detect_view_ddl_target("INSERT INTO b1_wp_posts VALUES (1)").is_none());
+        assert!(detect_view_ddl_target("DELETE FROM b1_wp_posts").is_none());
+    }
+
+    #[test]
+    fn drop_table_is_not_intercepted() {
+        // DROP TABLE on a view fails the way SQLite would fail directly —
+        // the proxy doesn't need to intercept it.
+        assert!(detect_view_ddl_target("DROP TABLE b1_wp_posts").is_none());
+    }
+
+    #[test]
+    fn create_table_is_not_intercepted() {
+        // CREATE TABLE creates a new table; no existing view involved.
+        assert!(detect_view_ddl_target("CREATE TABLE foo(x INT)").is_none());
+    }
+
+    #[test]
+    fn detection_is_case_insensitive() {
+        let t = detect_view_ddl_target(
+            "alter table b1_wp_posts add column foo text",
+        );
+        assert_eq!(t.as_deref(), Some("b1_wp_posts"));
+    }
+
+    #[test]
+    fn detection_tolerates_leading_whitespace() {
+        let t = detect_view_ddl_target(
+            "   \n ALTER TABLE b1_wp_posts ADD COLUMN x INT",
+        );
+        assert_eq!(t.as_deref(), Some("b1_wp_posts"));
+    }
+
+    #[test]
+    fn malformed_ddl_returns_none() {
+        assert!(detect_view_ddl_target("ALTER").is_none());
+        assert!(detect_view_ddl_target("ALTER TABLE").is_none());
+        assert!(detect_view_ddl_target("CREATE INDEX").is_none());
+        assert!(detect_view_ddl_target("DROP INDEX").is_none());
     }
 }

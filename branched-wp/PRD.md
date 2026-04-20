@@ -393,6 +393,19 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   to b{id}_wp_), and BranchedPDO transparently routes those to the
   overlay.
 
+- **Transparent DDL routing over the MySQL wire protocol**
+  (`fileserver/src/mysql_proxy.rs`): out-of-band SQL clients (wp-cli
+  `db query`, the `mysql` command-line client, phpMyAdmin, any JDBC/
+  MySQL Connector driver pointed at the proxy) get the same DDL
+  re-targeting BranchedPDO gives in-process PHP callers. The proxy
+  classifies every incoming statement with `detect_view_ddl_target`;
+  when the target is a COW branch view, the SQL is passed on stdin to
+  `branchctl _ddl --branch <name>` (a thin wrapper that uses
+  `BranchedPDO::connect`). That keeps ONE source-of-truth for DDL
+  handling: the Rust side only answers "is this DDL and what's the
+  target?", while the overlay re-targeting + view/trigger rebuild
+  lives exclusively in `branched_pdo.php` / `cow_helpers.php`.
+
 ### F6a — Lazy migration of legacy (pre-COW) branches
 Branches in older `.fp` files use the original row-copy format
 (real tables under `b{id}_wp_X`, with row data captured into

@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, anyhow};
 use rusqlite::{Connection, params};
 use sha1::{Digest, Sha1};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 /// Chunk size for large-blob storage. Blobs strictly larger than this are
@@ -12,6 +12,7 @@ pub const CHUNK_SIZE: usize = 1024 * 1024;
 
 pub struct Store {
     conn: Arc<Mutex<Connection>>,
+    db_path: PathBuf,
 }
 
 #[derive(Debug, Clone)]
@@ -37,7 +38,7 @@ impl Store {
              PRAGMA foreign_keys=ON;
              PRAGMA wal_autocheckpoint=500;",
         )?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self { conn: Arc::new(Mutex::new(conn)), db_path: db_path.to_path_buf() })
     }
 
     pub fn open_and_init(db_path: &Path) -> Result<Self> {
@@ -50,7 +51,43 @@ impl Store {
              PRAGMA wal_autocheckpoint=500;",
         )?;
         conn.execute_batch(include_str!("../../sql/schema.sql"))?;
-        Ok(Self { conn: Arc::new(Mutex::new(conn)) })
+        Ok(Self { conn: Arc::new(Mutex::new(conn)), db_path: db_path.to_path_buf() })
+    }
+
+    /// Path to the underlying SQLite database file. Needed by the MySQL proxy
+    /// to shell out to BranchedPDO's DDL handler (which opens its own PDO
+    /// connection against the same file).
+    pub fn db_path(&self) -> &Path {
+        &self.db_path
+    }
+
+    /// True iff `name` exists in sqlite_master as a view.
+    ///
+    /// Used by the MySQL proxy to detect DDL whose target is a branch view;
+    /// such DDL must go through BranchedPDO (not raw SQLite) since SQLite
+    /// refuses ALTER / CREATE INDEX / DROP INDEX on a view.
+    pub fn is_view(&self, name: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT type FROM sqlite_master WHERE name = ?1",
+            params![name],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .as_deref()
+            == Some("view")
+    }
+
+    /// Resolve a branch id back to its name. Returns None if the id isn't
+    /// in the branches table.
+    pub fn branch_name(&self, id: i64) -> Option<String> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT name FROM branches WHERE id = ?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .ok()
     }
 
     /// Run `PRAGMA wal_checkpoint(TRUNCATE)` to flush WAL frames back
@@ -576,7 +613,7 @@ mod tests {
         std::mem::forget(f);
         let conn = Connection::open(&path).unwrap();
         conn.execute_batch(include_str!("../../sql/schema.sql")).unwrap();
-        Store { conn: Arc::new(Mutex::new(conn)) }
+        Store { conn: Arc::new(Mutex::new(conn)), db_path: path }
     }
 
     #[test]

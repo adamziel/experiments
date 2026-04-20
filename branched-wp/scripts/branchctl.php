@@ -2013,6 +2013,40 @@ case 'gc': {
     break;
 }
 
+case '_ddl': {
+    // Hidden subcommand: run DDL on a branch through BranchedPDO.
+    //
+    // The MySQL proxy (fileserver/src/mysql_proxy.rs) shells out to this
+    // command whenever a client runs ALTER TABLE / CREATE INDEX / DROP INDEX
+    // against a table that SQLite considers a VIEW on the branch. Routing
+    // through BranchedPDO reuses the exact same view-rebuild / overlay
+    // re-targeting logic that in-process PHP callers already get.
+    //
+    // Usage: branchctl _ddl --branch <name> [--db <path>]   (SQL on stdin)
+    //
+    // Exits 0 on success; prints the SQLite error (if any) to STDERR and
+    // exits 5 on failure.
+    $branch = (string)($flags['branch'] ?? '');
+    if ($branch === '') die_usage("`_ddl` needs --branch <name>", 2);
+    if ($branch !== 'main' && !valid_branch_name($branch)) {
+        die_usage("invalid branch: $branch", 2);
+    }
+    $sql = stream_get_contents(STDIN);
+    if ($sql === false || trim((string)$sql) === '') {
+        fwrite(STDERR, "branchctl: _ddl: no SQL on stdin\n");
+        exit(2);
+    }
+    require_once __DIR__ . '/branched_pdo.php';
+    try {
+        $pdo = BranchedPDO::connect($DB_PATH, $branch);
+        $pdo->exec((string)$sql);
+    } catch (\Throwable $e) {
+        fwrite(STDERR, "branchctl: _ddl: " . $e->getMessage() . "\n");
+        exit(5);
+    }
+    break;
+}
+
 case 'alter-add-column': {
     // alter-add-column <branch> <table_suffix> <col_name> <col_type>
     //

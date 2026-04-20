@@ -26,7 +26,7 @@ documentation.
 
 ---
 
-## [ ] 1. MySQL proxy bypasses `BranchedPDO` — DDL silently fails [CRITICAL]
+## [x] 1. MySQL proxy bypasses `BranchedPDO` — DDL silently fails [CRITICAL]
 
 **Problem**
 `BranchedPDO` (PHP) intercepts `ALTER TABLE`/`CREATE INDEX`/`DROP INDEX`
