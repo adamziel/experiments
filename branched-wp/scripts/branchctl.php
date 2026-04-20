@@ -1254,6 +1254,36 @@ case 'create': {
             . implode(', ', reserved_branch_names()));
     }
 
+    // Validate the parent exists BEFORE asking the extension to create the
+    // branch. `branchfs_create_branch()` silently no-ops for a missing parent
+    // (the extension has no way to report error), which used to leave the
+    // CLI claiming success while the `branches` row never appeared.
+    {
+        $precheck = new SQLite3($DB_PATH, SQLITE3_OPEN_READONLY);
+        $st = $precheck->prepare("SELECT 1 FROM branches WHERE name = :n LIMIT 1");
+        $st->bindValue(':n', $from, SQLITE3_TEXT);
+        $res = $st->execute();
+        $has_parent = (bool)$res->fetchArray(SQLITE3_NUM);
+        $res->finalize();
+        $st->close();
+        // Also reject creating a branch whose name already exists.
+        $st2 = $precheck->prepare("SELECT 1 FROM branches WHERE name = :n LIMIT 1");
+        $st2->bindValue(':n', $name, SQLITE3_TEXT);
+        $res2 = $st2->execute();
+        $exists = (bool)$res2->fetchArray(SQLITE3_NUM);
+        $res2->finalize();
+        $st2->close();
+        $precheck->close();
+        if (!$has_parent) {
+            fwrite(STDERR, "branchctl: no parent branch named '$from'\n");
+            exit(4);
+        }
+        if ($exists) {
+            fwrite(STDERR, "branchctl: branch '$name' already exists\n");
+            exit(4);
+        }
+    }
+
     branchfs_set_db($DB_PATH);
     branchfs_create_branch($name, $from);
     echo "branchfs: forked '$from' -> '$name'\n";
