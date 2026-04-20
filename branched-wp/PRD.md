@@ -671,6 +671,17 @@ on a real conflict do not touch any ancestor table.
 - (Removed — single-process PHP serving replaced by multi-worker mode in F1 / CLI2)
 - (Removed — now implemented via ancestor snapshot refresh in F9)
 - (Removed — DB merge for schema changes is now implemented via Phase 2b in F9)
+- **Cross-layer UNIQUE constraints.** The branch overlay's UNIQUE constraint
+  catches duplicates among OTHER overlay rows, but does not know about
+  rows inherited from the parent. Inserting a value that already exists in
+  the parent (via inheritance) through the branch view will succeed, then
+  the branch view will return both rows (the parent's and the overlay's).
+  Enforcing this would require an INSTEAD OF INSERT pre-check querying the
+  parent view per-insert. WordPress core relies on option_name UNIQUE; in
+  practice an UPDATE-then-check pattern is used (update_option() which does
+  a SELECT first). See
+  `e2e/test_rigorous_ddl.py::TestUniqueViolation::test_cross_layer_unique_violation_rejected`
+  (xfail).
 - **Tables without an explicit PRIMARY KEY have limited DELETE semantics.**
   For a no-PK `b1_wp_X` table, the branch view is built without a tombstone
   filter (the full-row-identity filter across UNION ALL produces ambiguity
