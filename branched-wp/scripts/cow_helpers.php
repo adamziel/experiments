@@ -268,12 +268,15 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
     // upsert/delete using OLD/NEW.
     if (empty($pk_cols)) {
         // Fallback: identity-by-rowid is unsafe across UNION ALL. Match by
-        // every column of OLD. Triggers without a PK aren't ideal but are
-        // rare for WP tables.
+        // every column. Triggers without a PK aren't ideal but are rare
+        // for WP tables — we still need OLD-vs-NEW separation so the
+        // INSTEAD OF INSERT trigger uses NEW (OLD doesn't exist on INSERT).
         $pk_match_old = implode(' AND ', array_map(
             fn($c) => '"' . $c . '" IS OLD."' . $c . '"', $columns
         ));
-        $pk_match_new = $pk_match_old;
+        $pk_match_new = implode(' AND ', array_map(
+            fn($c) => '"' . $c . '" IS NEW."' . $c . '"', $columns
+        ));
         $pk_cols_for_tomb = $columns;
         $tomb_old_vals = implode(', ', array_map(fn($c) => 'OLD."' . $c . '"', $columns));
     } else {
