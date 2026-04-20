@@ -434,13 +434,21 @@ future operations.
 ### F7 — Committing (files + DB, atomic)
 - `branchctl commit <branch>` records a snapshot of BOTH:
   - **Files**: `fs_commits` + `fs_commit_files` (resolved tree at HEAD).
-  - **DB**: `db_commits` + `db_commit_overlays` + `db_commit_tombstones`
-    + `db_commit_schema`. For each `b{bid}_wp_X__overlay` table the
-    snapshot stores every row (as JSON), every PK in the matching
-    `__tombstones` table, the overlay's `CREATE TABLE` DDL, and every
-    `CREATE INDEX` that points at the overlay. Cost is O(divergent rows
-    the branch overlays), NOT O(total branch rows): inherited rows are
-    reconstructable from the parent at the same commit_hash.
+  - **DB** (TODO3 #2, delta-encoded): `db_commits` + `db_commit_overlays`
+    + `db_commit_tombstones` + `db_commit_schema`. Each `db_commits` row
+    is marked `kind='FULL'` (complete snapshot of the branch's overlay
+    rows, tombstones, and DDL) or `kind='DELTA'` (only rows that changed
+    since the previous commit on this branch; `op='UPSERT'` encodes
+    added/changed rows, `op='DELETE'` encodes rows removed). The first
+    commit on a branch is always FULL; every subsequent commit is DELTA.
+    Cost per commit is O(rows changed since prev commit), not
+    O(total divergent rows) — 100 commits modifying the same 50 rows
+    costs ~50 (FULL base) + 100×per-commit-delta stored rows instead
+    of 100×50.
+  - Restore / rollback / reset walk the commit chain: find the FULL
+    base ≤ target, apply each subsequent DELTA up to the target commit,
+    then replay the materialized state into the branch's overlay /
+    tombstones / schema.
 - Both sides are written in a single `BEGIN IMMEDIATE … COMMIT` — a
   failure on either rolls back the other. The two commits share the
   same `commit_hash` and are linked via `db_commits.fs_commit_id`.

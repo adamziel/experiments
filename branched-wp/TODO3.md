@@ -98,7 +98,7 @@ parent-side triggers from old branches.
 
 ---
 
-## [ ] 2. `db_commit_overlays` is per-commit full snapshot, not delta [HIGH]
+## [x] 2. `db_commit_overlays` is per-commit full snapshot, not delta [HIGH]
 
 **Problem**
 Every `branchctl commit` writes JSON for every divergent row. After

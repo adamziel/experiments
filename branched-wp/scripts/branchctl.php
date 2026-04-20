@@ -213,6 +213,7 @@ CREATE TABLE IF NOT EXISTS db_commits (
     fs_commit_id INTEGER,                              -- 1:1 link to fs_commits.id
     commit_hash  TEXT NOT NULL,                        -- mirrors fs_commits.commit_hash
     created_at   TEXT DEFAULT (datetime('now')),
+    kind         TEXT NOT NULL DEFAULT 'FULL',         -- 'FULL' | 'DELTA' (TODO3 #2)
     UNIQUE (branch_id, commit_hash),
     FOREIGN KEY (branch_id)    REFERENCES branches(id),
     FOREIGN KEY (fs_commit_id) REFERENCES fs_commits(id)
@@ -220,11 +221,19 @@ CREATE TABLE IF NOT EXISTS db_commits (
 CREATE INDEX IF NOT EXISTS idx_db_commits_branch ON db_commits(branch_id);
 CREATE INDEX IF NOT EXISTS idx_db_commits_hash   ON db_commits(branch_id, commit_hash);
 CREATE INDEX IF NOT EXISTS idx_db_commits_fs     ON db_commits(fs_commit_id);
+/* TODO3 #2: op column encodes delta semantics.
+ *   'UPSERT' — row exists in this commit with the given row_json
+ *   'DELETE' — row was present in a prior commit but removed in this one
+ * FULL commits contain only UPSERT rows (full snapshot of branch state).
+ * DELTA commits contain UPSERT (added/changed) + DELETE (removed) since
+ * the previous commit on this branch. Default 'UPSERT' keeps pre-TODO3
+ * rows interpretable as full-snapshot. */
 CREATE TABLE IF NOT EXISTS db_commit_overlays (
     commit_id    INTEGER NOT NULL,
     table_suffix TEXT NOT NULL,                  -- e.g. 'wp_posts'
     row_pk       TEXT NOT NULL,                  -- JSON-encoded PK map
     row_json     TEXT NOT NULL,                  -- JSON-encoded full row
+    op           TEXT NOT NULL DEFAULT 'UPSERT', -- UPSERT | DELETE
     PRIMARY KEY (commit_id, table_suffix, row_pk),
     FOREIGN KEY (commit_id) REFERENCES db_commits(id)
 );
@@ -232,6 +241,7 @@ CREATE TABLE IF NOT EXISTS db_commit_tombstones (
     commit_id    INTEGER NOT NULL,
     table_suffix TEXT NOT NULL,
     row_pk       TEXT NOT NULL,
+    op           TEXT NOT NULL DEFAULT 'UPSERT', -- UPSERT | DELETE
     PRIMARY KEY (commit_id, table_suffix, row_pk),
     FOREIGN KEY (commit_id) REFERENCES db_commits(id)
 );
@@ -376,6 +386,35 @@ SQL);
     $has_any = (int)$db->querySingle("SELECT COUNT(*) FROM site_config");
     if ($has_any === 0) {
         $db->exec("INSERT OR IGNORE INTO site_config (key, value) VALUES ('auth_enabled', '0')");
+    }
+
+    /* TODO3 #2 migration: add kind / op columns for delta-encoded commits.
+     * ALTER TABLE ADD COLUMN is O(1) in SQLite — no table rewrite. New
+     * columns land with their DEFAULT so existing rows are interpreted as
+     * 'UPSERT' (legacy full-snapshot rows) under the new reader path. */
+    $cols_overlays = [];
+    $ri = $db->query('PRAGMA table_info("db_commit_overlays")');
+    while ($row = $ri->fetchArray(SQLITE3_ASSOC)) $cols_overlays[] = (string)$row['name'];
+    if (!in_array('op', $cols_overlays, true)) {
+        @$db->exec(
+            "ALTER TABLE db_commit_overlays ADD COLUMN op TEXT NOT NULL DEFAULT 'UPSERT'"
+        );
+    }
+    $cols_tombs = [];
+    $ri = $db->query('PRAGMA table_info("db_commit_tombstones")');
+    while ($row = $ri->fetchArray(SQLITE3_ASSOC)) $cols_tombs[] = (string)$row['name'];
+    if (!in_array('op', $cols_tombs, true)) {
+        @$db->exec(
+            "ALTER TABLE db_commit_tombstones ADD COLUMN op TEXT NOT NULL DEFAULT 'UPSERT'"
+        );
+    }
+    $cols_commits = [];
+    $ri = $db->query('PRAGMA table_info("db_commits")');
+    while ($row = $ri->fetchArray(SQLITE3_ASSOC)) $cols_commits[] = (string)$row['name'];
+    if (!in_array('kind', $cols_commits, true)) {
+        @$db->exec(
+            "ALTER TABLE db_commits ADD COLUMN kind TEXT NOT NULL DEFAULT 'FULL'"
+        );
     }
 
     /* TODO3 #3 migration: reinstall parent-side ancestor-capture triggers
@@ -864,29 +903,110 @@ function db_state_digest(array $state): string {
     return hash_final($h);
 }
 
+/** TODO3 #2: materialize the full state of a db_commit by walking the
+ *  commit chain for its branch.
+ *
+ *  Starts from the latest 'FULL' commit whose id ≤ $commit_id (or from
+ *  the first commit if none is marked FULL — defensive; every branch's
+ *  first commit is always FULL) and applies each subsequent DELTA
+ *  commit's UPSERT / DELETE ops in order up to and including $commit_id.
+ *
+ *  Returns the same structure as `db_collect_state`:
+ *    ['overlays'   => [[suffix, pk_json, row_json], ...],
+ *     'tombstones' => [[suffix, pk_json],           ...],
+ *     'schema'     => [[suffix, overlay_ddl, indexes_json], ...]]
+ */
+function db_materialize_commit_state(SQLite3 $db, int $commit_id): array {
+    // Branch for this commit; then every commit id on that branch ≤ $commit_id.
+    $branch_id = (int)$db->querySingle(
+        "SELECT branch_id FROM db_commits WHERE id = $commit_id"
+    );
+    if ($branch_id <= 0) {
+        return ['overlays' => [], 'tombstones' => [], 'schema' => []];
+    }
+    $commits = [];
+    $r = $db->query(
+        "SELECT id, COALESCE(kind,'FULL') AS kind FROM db_commits "
+      . "WHERE branch_id = $branch_id AND id <= $commit_id ORDER BY id"
+    );
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $commits[] = $row;
+    $r->finalize();
+
+    // Find the last FULL commit — that's the replay base.
+    $base_idx = 0;
+    for ($i = count($commits) - 1; $i >= 0; $i--) {
+        if ($commits[$i]['kind'] === 'FULL') { $base_idx = $i; break; }
+    }
+
+    $ov_map     = [];   // "<suffix>\0<pk_json>" => [suffix, pk_json, row_json]
+    $tb_map     = [];   // "<suffix>\0<pk_json>" => [suffix, pk_json]
+    $schema_map = [];   // suffix => [overlay_ddl, indexes_json]
+
+    for ($i = $base_idx; $i < count($commits); $i++) {
+        $cid  = (int)$commits[$i]['id'];
+        $kind = $commits[$i]['kind'];
+
+        // Schema: a FULL commit resets the schema map; a DELTA commit
+        // merges its (small) set of schema rows on top.
+        if ($kind === 'FULL') $schema_map = [];
+        $rs = $db->query(
+            "SELECT table_suffix, overlay_ddl, indexes_json "
+          . "FROM db_commit_schema WHERE commit_id = $cid"
+        );
+        while ($row = $rs->fetchArray(SQLITE3_ASSOC)) {
+            $schema_map[$row['table_suffix']] = [
+                $row['overlay_ddl'], $row['indexes_json'],
+            ];
+        }
+        $rs->finalize();
+
+        // Overlays: FULL resets; DELTA merges UPSERT/DELETE.
+        if ($kind === 'FULL') { $ov_map = []; $tb_map = []; }
+        $ro = $db->query(
+            "SELECT table_suffix, row_pk, row_json, op "
+          . "FROM db_commit_overlays WHERE commit_id = $cid"
+        );
+        while ($row = $ro->fetchArray(SQLITE3_ASSOC)) {
+            $key = $row['table_suffix'] . "\0" . $row['row_pk'];
+            if (($row['op'] ?? 'UPSERT') === 'DELETE') {
+                unset($ov_map[$key]);
+            } else {
+                $ov_map[$key] = [
+                    $row['table_suffix'], $row['row_pk'], $row['row_json'],
+                ];
+            }
+        }
+        $ro->finalize();
+        $rt = $db->query(
+            "SELECT table_suffix, row_pk, op "
+          . "FROM db_commit_tombstones WHERE commit_id = $cid"
+        );
+        while ($row = $rt->fetchArray(SQLITE3_ASSOC)) {
+            $key = $row['table_suffix'] . "\0" . $row['row_pk'];
+            if (($row['op'] ?? 'UPSERT') === 'DELETE') {
+                unset($tb_map[$key]);
+            } else {
+                $tb_map[$key] = [$row['table_suffix'], $row['row_pk']];
+            }
+        }
+        $rt->finalize();
+    }
+
+    $schema = [];
+    foreach ($schema_map as $suffix => $sv) {
+        $schema[] = [$suffix, $sv[0], $sv[1]];
+    }
+    return [
+        'overlays'   => array_values($ov_map),
+        'tombstones' => array_values($tb_map),
+        'schema'     => $schema,
+    ];
+}
+
 /** Materialize a previously-recorded db_commit's state into a digest.
  *  Used by branchctl rollback/reset --no-force checks. */
 function db_digest_of_commit(SQLite3 $db, int $commit_id): string {
-    $state = ['overlays' => [], 'tombstones' => [], 'schema' => []];
-    $r = $db->query("SELECT table_suffix, overlay_ddl, indexes_json "
-        . "FROM db_commit_schema WHERE commit_id = $commit_id ORDER BY table_suffix");
-    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-        $state['schema'][] = [$row['table_suffix'], $row['overlay_ddl'], $row['indexes_json']];
-    }
-    $r->finalize();
-    $r = $db->query("SELECT table_suffix, row_pk, row_json "
-        . "FROM db_commit_overlays WHERE commit_id = $commit_id");
-    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-        $state['overlays'][] = [$row['table_suffix'], $row['row_pk'], $row['row_json']];
-    }
-    $r->finalize();
-    $r = $db->query("SELECT table_suffix, row_pk "
-        . "FROM db_commit_tombstones WHERE commit_id = $commit_id");
-    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-        $state['tombstones'][] = [$row['table_suffix'], $row['row_pk']];
-    }
-    $r->finalize();
-    return db_state_digest($state);
+    return db_state_digest(db_materialize_commit_state($db, $commit_id));
 }
 
 /** Latest db_commit row for the branch (NULL if none). */
@@ -915,48 +1035,124 @@ function db_find_commit_by_hash(SQLite3 $db, int $branch_id, string $hash): ?arr
 }
 
 /** Persist the branch's current DB state under a new db_commit. Returns
- *  the new db_commit id. Caller must wrap in a transaction. */
+ *  the new db_commit id. Caller must wrap in a transaction.
+ *
+ *  TODO3 #2 delta encoding:
+ *    - FIRST commit on a branch → kind='FULL', stores the entire current
+ *      state as UPSERT rows / UPSERT tombstones.
+ *    - SUBSEQUENT commits → kind='DELTA'. Only rows that differ from the
+ *      previous commit are stored:
+ *        * UPSERT when a row is new OR its row_json changed
+ *        * DELETE when a row was present in the previous commit and is
+ *          no longer in the branch's overlay/tombstone
+ *      Storage per commit scales with what actually changed, not with
+ *      total divergent-row count. A 50-row overlay committed 100 times
+ *      with 5 rows changed per commit used to cost 100×50 stored rows
+ *      and now costs ~50 (first FULL) + 100×5 (deltas).
+ */
 function db_record_snapshot(SQLite3 $db, int $branch_id, int $fs_commit_id,
                             string $commit_hash): int {
     $state = db_collect_state($db, $branch_id);
 
+    // Determine kind based on whether this branch already has any commit.
+    $prev = db_last_commit($db, $branch_id);
+    $kind = $prev ? 'DELTA' : 'FULL';
+
+    // Materialize the prev state to diff against, but only for DELTA.
+    $prev_ov_map = [];
+    $prev_tb_map = [];
+    if ($kind === 'DELTA') {
+        $prev_state = db_materialize_commit_state($db, (int)$prev['id']);
+        foreach ($prev_state['overlays'] as $row) {
+            $prev_ov_map[$row[0] . "\0" . $row[1]] = $row[2];
+        }
+        foreach ($prev_state['tombstones'] as $row) {
+            $prev_tb_map[$row[0] . "\0" . $row[1]] = true;
+        }
+    }
+
     $s = $db->prepare(
-        "INSERT INTO db_commits (branch_id, fs_commit_id, commit_hash) "
-      . "VALUES (:b, :f, :h)"
+        "INSERT INTO db_commits (branch_id, fs_commit_id, commit_hash, kind) "
+      . "VALUES (:b, :f, :h, :k)"
     );
     $s->bindValue(':b', $branch_id,    SQLITE3_INTEGER);
     $s->bindValue(':f', $fs_commit_id, SQLITE3_INTEGER);
     $s->bindValue(':h', $commit_hash,  SQLITE3_TEXT);
+    $s->bindValue(':k', $kind,         SQLITE3_TEXT);
     $s->execute();
     $cid = (int)$db->lastInsertRowID();
 
-    if (!empty($state['overlays'])) {
-        $ins = $db->prepare(
-            "INSERT INTO db_commit_overlays (commit_id, table_suffix, row_pk, row_json) "
-          . "VALUES (:c, :s, :pk, :rj)"
-        );
-        foreach ($state['overlays'] as $row) {
-            $ins->bindValue(':c',  $cid,    SQLITE3_INTEGER);
-            $ins->bindValue(':s',  $row[0], SQLITE3_TEXT);
-            $ins->bindValue(':pk', $row[1], SQLITE3_TEXT);
-            $ins->bindValue(':rj', $row[2], SQLITE3_TEXT);
-            $ins->execute();
-            $ins->reset();
+    // Write overlay deltas (or the full snapshot for FULL commits).
+    $cur_ov_keys = [];
+    $ins_ov = $db->prepare(
+        "INSERT INTO db_commit_overlays "
+      . "(commit_id, table_suffix, row_pk, row_json, op) "
+      . "VALUES (:c, :s, :pk, :rj, :op)"
+    );
+    foreach ($state['overlays'] as $row) {
+        $key = $row[0] . "\0" . $row[1];
+        $cur_ov_keys[$key] = true;
+        $changed = ($kind === 'FULL')
+            || !isset($prev_ov_map[$key])
+            || ($prev_ov_map[$key] !== $row[2]);
+        if (!$changed) continue;
+        $ins_ov->bindValue(':c',  $cid,    SQLITE3_INTEGER);
+        $ins_ov->bindValue(':s',  $row[0], SQLITE3_TEXT);
+        $ins_ov->bindValue(':pk', $row[1], SQLITE3_TEXT);
+        $ins_ov->bindValue(':rj', $row[2], SQLITE3_TEXT);
+        $ins_ov->bindValue(':op', 'UPSERT', SQLITE3_TEXT);
+        $ins_ov->execute();
+        $ins_ov->reset();
+    }
+    // DELETE rows: present in prev commit but absent in current state.
+    if ($kind === 'DELTA') {
+        foreach ($prev_ov_map as $key => $_) {
+            if (isset($cur_ov_keys[$key])) continue;
+            [$suffix, $pk_json] = explode("\0", $key, 2);
+            $ins_ov->bindValue(':c',  $cid,     SQLITE3_INTEGER);
+            $ins_ov->bindValue(':s',  $suffix,  SQLITE3_TEXT);
+            $ins_ov->bindValue(':pk', $pk_json, SQLITE3_TEXT);
+            $ins_ov->bindValue(':rj', '',       SQLITE3_TEXT);
+            $ins_ov->bindValue(':op', 'DELETE', SQLITE3_TEXT);
+            $ins_ov->execute();
+            $ins_ov->reset();
         }
     }
-    if (!empty($state['tombstones'])) {
-        $ins = $db->prepare(
-            "INSERT INTO db_commit_tombstones (commit_id, table_suffix, row_pk) "
-          . "VALUES (:c, :s, :pk)"
-        );
-        foreach ($state['tombstones'] as $row) {
-            $ins->bindValue(':c',  $cid,    SQLITE3_INTEGER);
-            $ins->bindValue(':s',  $row[0], SQLITE3_TEXT);
-            $ins->bindValue(':pk', $row[1], SQLITE3_TEXT);
-            $ins->execute();
-            $ins->reset();
+
+    // Tombstones — same delta logic.
+    $cur_tb_keys = [];
+    $ins_tb = $db->prepare(
+        "INSERT INTO db_commit_tombstones "
+      . "(commit_id, table_suffix, row_pk, op) "
+      . "VALUES (:c, :s, :pk, :op)"
+    );
+    foreach ($state['tombstones'] as $row) {
+        $key = $row[0] . "\0" . $row[1];
+        $cur_tb_keys[$key] = true;
+        $changed = ($kind === 'FULL') || !isset($prev_tb_map[$key]);
+        if (!$changed) continue;
+        $ins_tb->bindValue(':c',  $cid,    SQLITE3_INTEGER);
+        $ins_tb->bindValue(':s',  $row[0], SQLITE3_TEXT);
+        $ins_tb->bindValue(':pk', $row[1], SQLITE3_TEXT);
+        $ins_tb->bindValue(':op', 'UPSERT', SQLITE3_TEXT);
+        $ins_tb->execute();
+        $ins_tb->reset();
+    }
+    if ($kind === 'DELTA') {
+        foreach ($prev_tb_map as $key => $_) {
+            if (isset($cur_tb_keys[$key])) continue;
+            [$suffix, $pk_json] = explode("\0", $key, 2);
+            $ins_tb->bindValue(':c',  $cid,     SQLITE3_INTEGER);
+            $ins_tb->bindValue(':s',  $suffix,  SQLITE3_TEXT);
+            $ins_tb->bindValue(':pk', $pk_json, SQLITE3_TEXT);
+            $ins_tb->bindValue(':op', 'DELETE', SQLITE3_TEXT);
+            $ins_tb->execute();
+            $ins_tb->reset();
         }
     }
+
+    // Schema rows are small and per-table — always write them fully.
+    // The materializer merges them across commits anyway.
     if (!empty($state['schema'])) {
         $ins = $db->prepare(
             "INSERT INTO db_commit_schema (commit_id, table_suffix, overlay_ddl, indexes_json) "
@@ -997,16 +1193,19 @@ function db_bind_json_value($stmt, int $i, $v): void {
 function db_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
     $touched = 0;
 
-    // Step 1: collect schema rows for the snapshot.
+    // TODO3 #2: materialize the target state by walking the commit chain
+    // (base FULL snapshot + subsequent DELTA commits up to $commit_id).
+    $materialized = db_materialize_commit_state($db, $commit_id);
+
+    // Step 1: collect schema rows from the materialized view.
     $schema_by_suffix = [];
-    $r = $db->query(
-        "SELECT table_suffix, overlay_ddl, indexes_json "
-      . "FROM db_commit_schema WHERE commit_id = $commit_id"
-    );
-    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-        $schema_by_suffix[$row['table_suffix']] = $row;
+    foreach ($materialized['schema'] as $row) {
+        $schema_by_suffix[$row[0]] = [
+            'table_suffix' => $row[0],
+            'overlay_ddl'  => $row[1],
+            'indexes_json' => $row[2],
+        ];
     }
-    $r->finalize();
 
     // Step 2: for each overlay tracked at commit time, drop the current
     // (view+overlay+tombstone) trio and recreate from the snapshotted DDL.
@@ -1090,16 +1289,15 @@ function db_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
         }
     }
 
-    // Step 3: replay overlay rows.
+    // Step 3: replay overlay rows from the materialized state.
     $rows_by_suffix = [];
-    $r = $db->query(
-        "SELECT table_suffix, row_pk, row_json FROM db_commit_overlays "
-      . "WHERE commit_id = $commit_id"
-    );
-    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-        $rows_by_suffix[$row['table_suffix']][] = $row;
+    foreach ($materialized['overlays'] as $row) {
+        $rows_by_suffix[$row[0]][] = [
+            'table_suffix' => $row[0],
+            'row_pk'       => $row[1],
+            'row_json'     => $row[2],
+        ];
     }
-    $r->finalize();
     foreach ($rows_by_suffix as $suffix => $rows) {
         $physical = db_overlay_or_real($branch_id, $suffix);
         if (!cow_is_table($db, $physical)) continue;
@@ -1123,17 +1321,12 @@ function db_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
         }
     }
 
-    // Step 4: replay tombstones (non-main only).
+    // Step 4: replay tombstones (non-main only) from materialized state.
     if ($branch_id !== 1) {
         $tomb_by_suffix = [];
-        $r = $db->query(
-            "SELECT table_suffix, row_pk FROM db_commit_tombstones "
-          . "WHERE commit_id = $commit_id"
-        );
-        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-            $tomb_by_suffix[$row['table_suffix']][] = (string)$row['row_pk'];
+        foreach ($materialized['tombstones'] as $row) {
+            $tomb_by_suffix[$row[0]][] = (string)$row[1];
         }
-        $r->finalize();
         foreach ($tomb_by_suffix as $suffix => $pks) {
             $tomb = db_tombstone_name($branch_id, $suffix);
             if (!cow_is_table($db, $tomb)) continue;
