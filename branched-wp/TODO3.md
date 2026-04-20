@@ -131,7 +131,7 @@ fast restore — a hybrid like git's pack files.
 
 ---
 
-## [ ] 4. Lazy migration only triggers on first merge [MEDIUM]
+## [x] 4. Lazy migration only triggers on first merge [MEDIUM]
 
 **Problem**
 Pre-COW branches (full-copy format) are migrated to COW only when they

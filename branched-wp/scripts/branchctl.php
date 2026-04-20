@@ -43,6 +43,8 @@ Usage:
   branchctl merge   <from>  --into <target>
   branchctl reset   <name>  <commit-hash>  [--force]
   branchctl rollback <name>  [--force]
+  branchctl migrate <name>   — migrate a legacy (pre-COW) branch in place
+  branchctl migrate --all    — migrate every legacy branch
   branchctl gc              [--dry-run]
 
 Flags:
@@ -1633,6 +1635,34 @@ case 'commit': {
         exit(4);
     }
 
+    // TODO3 #4: auto-migrate legacy (full-copy) branches to COW format
+    // when they first commit. Commit already touches every overlay on
+    // the branch, so folding the one-shot migration in costs nothing
+    // extra on the steady-state path — and it guarantees branches used
+    // but never merged still get the efficient format eventually.
+    $has_legacy = (int)$db->querySingle(
+        "SELECT COUNT(*) FROM sqlite_master "
+      . "WHERE type='table' "
+      . "  AND name LIKE 'b{$bid}_wp_%' "
+      . "  AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+      . "  AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'"
+    );
+    if ($has_legacy > 0) {
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            $n = cow_migrate_legacy_branch($db, $bid);
+            $db->exec('COMMIT');
+            if ($n > 0) {
+                echo "branchctl: auto-migrated $n legacy table(s) on '$name' to COW format\n";
+            }
+        } catch (\Throwable $e) {
+            $db->exec('ROLLBACK');
+            fwrite(STDERR, "branchctl: commit-time COW migration on '$name' failed: "
+                         . $e->getMessage() . "\n");
+            exit(5);
+        }
+    }
+
     // Detect "no-op commit" against EITHER side. If neither files nor DB
     // diverged from the last anchored snapshot, skip — re-snapshotting an
     // unchanged tree fills the commit graph with empty markers.
@@ -2257,6 +2287,86 @@ case 'gc': {
 
     printf("branchctl gc: deleted %d blobs, reclaimed %d bytes (before: %d blobs / %d bytes)\n",
         $n, $bytes_free, $total_before, $bytes_before);
+    break;
+}
+
+case 'migrate': {
+    // TODO3 #4 — migrate legacy (full-copy) branches to COW format on demand.
+    //
+    // Pre-TODO3, legacy branches migrated lazily only on first merge.
+    // A branch that was used but never merged stayed in the inefficient
+    // full-copy format indefinitely. This subcommand exposes the same
+    // migration directly.
+    //
+    // Usage:
+    //   branchctl migrate <branch>   — migrate one branch
+    //   branchctl migrate --all      — migrate every legacy branch
+    //
+    // Cost is O(rows diffed vs parent) per table — same as the merge-
+    // time migration. Idempotent: already-COW branches are a no-op.
+    $all = !empty($flags['all']);
+    $target = $pos[1] ?? null;
+    if (!$all && ($target === null || $target === '')) {
+        die_usage("`migrate` needs a branch name (or --all)");
+    }
+    if ($target !== null && $target !== 'main' && !valid_branch_name($target)) {
+        die_usage("invalid branch: $target");
+    }
+
+    $db = sqlite_open($DB_PATH);
+
+    // Collect branch ids to consider. 'main' is never legacy.
+    $branches = [];
+    if ($all) {
+        $r = $db->query("SELECT id, name FROM branches WHERE name != 'main'");
+        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+            $branches[] = [(int)$row['id'], (string)$row['name']];
+        }
+    } else {
+        if ($target === 'main') {
+            fwrite(STDERR, "branchctl: main does not need COW migration\n");
+            exit(0);
+        }
+        $bid = fs_branch_id($db, $target);
+        if ($bid <= 0) {
+            fwrite(STDERR, "branchctl: no branch named '$target'\n");
+            exit(4);
+        }
+        $branches[] = [$bid, $target];
+    }
+
+    $total_migrated = 0;
+    $branches_migrated = 0;
+    foreach ($branches as [$bid, $bname]) {
+        $has_legacy = (int)$db->querySingle(
+            "SELECT COUNT(*) FROM sqlite_master "
+          . "WHERE type='table' "
+          . "  AND name LIKE 'b{$bid}_wp_%' "
+          . "  AND name NOT LIKE '%\\_\\_overlay' ESCAPE '\\' "
+          . "  AND name NOT LIKE '%\\_\\_tombstones' ESCAPE '\\'"
+        );
+        if ($has_legacy === 0) {
+            if (!$all) echo "branchctl: '$bname' is already in COW format (no-op)\n";
+            continue;
+        }
+        $db->exec('BEGIN IMMEDIATE');
+        try {
+            $n = cow_migrate_legacy_branch($db, $bid);
+            $db->exec('COMMIT');
+            $total_migrated += $n;
+            $branches_migrated++;
+            echo "branchctl: migrated $n legacy table(s) on '$bname' to COW format\n";
+        } catch (\Throwable $e) {
+            $db->exec('ROLLBACK');
+            fwrite(STDERR, "branchctl: migrate '$bname' failed: "
+                         . $e->getMessage() . "\n");
+            exit(5);
+        }
+    }
+    if ($all) {
+        echo "branchctl: migrate --all done — "
+           . "$branches_migrated branch(es), $total_migrated table(s) migrated\n";
+    }
     break;
 }
 

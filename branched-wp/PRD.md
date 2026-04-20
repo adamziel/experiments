@@ -431,6 +431,17 @@ After migration, the branch is indistinguishable from a brand-new COW
 branch and benefits from the same storage / fork-time guarantees on
 future operations.
 
+**On-demand migration** (TODO3 #4):
+- `branchctl migrate <name>` — migrate one legacy branch in place.
+- `branchctl migrate --all`  — scan every branch and migrate any that
+  are still in legacy format.
+- `branchctl commit <name>` — auto-migrates before writing the
+  snapshot so branches that commit but never merge still upgrade
+  eventually, with no extra step from the operator.
+
+All three paths share `cow_migrate_legacy_branch`, so correctness is
+inherited from the original merge-time code.
+
 ### F7 — Committing (files + DB, atomic)
 - `branchctl commit <branch>` records a snapshot of BOTH:
   - **Files**: `fs_commits` + `fs_commit_files` (resolved tree at HEAD).
