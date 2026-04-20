@@ -293,6 +293,33 @@ CREATE TABLE IF NOT EXISTS db_post_fork_inserts (
     row_pk     TEXT NOT NULL,             -- JSON-encoded PK
     PRIMARY KEY (branch_id, table_name, row_pk)
 );
+/* TODO3 #3: shared ancestor snapshot, keyed by parent table (NOT branch_id).
+ *
+ * Parent-side BEFORE UPDATE/DELETE triggers insert ONCE into this table per
+ * parent write, regardless of how many descendant branches exist. Merge.php
+ * fans the row out across descendants at merge time (only for branches
+ * that actually diverge).
+ *
+ * Cost of a parent UPDATE is now O(1), independent of descendant count.
+ * Pre-TODO3 the per-descendant fanout trigger cost O(num descendants) per
+ * parent write, degrading parent throughput linearly with branch count.
+ */
+CREATE TABLE IF NOT EXISTS db_parent_ancestor (
+    parent_table_name TEXT NOT NULL,
+    row_pk            TEXT NOT NULL,
+    row_json          TEXT NOT NULL,
+    captured_at       TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (parent_table_name, row_pk)
+);
+/* Also shared across descendants: PKs the parent INSERTED after the fork.
+ * Equivalent to db_post_fork_inserts but keyed by parent_table_name so
+ * ONE trigger insertion covers every descendant. */
+CREATE TABLE IF NOT EXISTS db_parent_post_fork_inserts (
+    parent_table_name TEXT NOT NULL,
+    row_pk            TEXT NOT NULL,
+    captured_at       TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (parent_table_name, row_pk)
+);
 CREATE TABLE IF NOT EXISTS db_snapshots_schema (
     branch_id    INTEGER NOT NULL,
     table_name   TEXT NOT NULL,
@@ -349,6 +376,31 @@ SQL);
     $has_any = (int)$db->querySingle("SELECT COUNT(*) FROM site_config");
     if ($has_any === 0) {
         $db->exec("INSERT OR IGNORE INTO site_config (key, value) VALUES ('auth_enabled', '0')");
+    }
+
+    /* TODO3 #3 migration: reinstall parent-side ancestor-capture triggers
+     * under the O(1) shared-snapshot scheme. Pre-TODO3 triggers fanned
+     * out via a JOIN against db_cow_branches, inserting one row per
+     * descendant per parent write; the rewritten triggers insert exactly
+     * once into db_parent_ancestor.
+     *
+     * The actual reinstall is idempotent and cheap — we just walk the
+     * distinct parent_table_name values in db_cow_branches and hand each
+     * one to cow_install_parent_triggers(). Safe no-op on fresh stores
+     * with no COW branches.
+     */
+    if (function_exists('cow_install_parent_triggers')) {
+        $parents = [];
+        $pr = $db->query("SELECT DISTINCT parent_table_name FROM db_cow_branches");
+        if ($pr) {
+            while ($row = $pr->fetchArray(SQLITE3_NUM)) {
+                $p = (string)$row[0];
+                if ($p !== '') $parents[] = $p;
+            }
+        }
+        foreach ($parents as $p) {
+            cow_install_parent_triggers($db, $p);
+        }
     }
 }
 
@@ -1207,7 +1259,9 @@ function db_rebuild_view_for(SQLite3 $db, int $branch_id, string $suffix): void 
             $defaults[$prow['name']] = (string)$prow['dflt_value'];
         }
     }
-    foreach (cow_trigger_sql($logical, $overlay, $tomb, $pk_cols, $columns, $defaults) as $trg) {
+    foreach (cow_trigger_sql($logical, $overlay, $tomb,
+                             $pk_cols, $columns, $defaults,
+                             $branch_id, $parent_table, $parent_cols) as $trg) {
         $db->exec($trg);
     }
 }

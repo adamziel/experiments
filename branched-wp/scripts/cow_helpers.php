@@ -154,94 +154,100 @@ function cow_json_obj_expr(string $src_alias, array $columns): string {
     return 'json_object(' . implode(', ', $pairs) . ')';
 }
 
-/** Install (or reinstall) the parent-side BEFORE UPDATE/DELETE triggers
- *  that capture the old row into db_ancestor_overlay for every COW
- *  descendant of $parent_table.
+/** Install (or reinstall) the parent-side ancestor-capture trigger for
+ *  $parent_table.
  *
- *  Uses a single trigger per parent table that reads db_cow_branches at
- *  fire time, so adding more descendants doesn't require redoing the
- *  trigger. Trigger names are derived from the parent table name.
+ *  Pre-TODO3 design: one trigger per parent whose body fanned out via
+ *  `INSERT … SELECT FROM db_cow_branches WHERE parent_table_name = …`,
+ *  producing ONE row per descendant branch per parent write. Cost was
+ *  O(num descendants) — a site with 100 child branches paid 100
+ *  trigger inserts per parent UPDATE. That degraded parent throughput
+ *  linearly with descendant count, exactly the workload pattern cheap
+ *  branching was meant to encourage.
  *
- *  Only installs on REAL tables (BEFORE/AFTER triggers on tables); views
- *  use INSTEAD OF triggers which conflict with our overlay-routing
- *  triggers. For nested-branch parents, ancestor capture falls back to
- *  the parent-current approximation in db_ancestor_rows_cow(). */
+ *  Post-TODO3: ONE trigger per parent table whose body inserts ONCE
+ *  into the shared `db_parent_ancestor` table keyed by (parent_table,
+ *  row_pk). Cost is O(1) per parent write, independent of descendant
+ *  count. Merge.php fans the row back out across descendants at merge
+ *  time (only for branches that actually diverge — ancestors for rows
+ *  a branch never touches stay untouched).
+ *
+ *  Only installs on REAL tables (BEFORE/AFTER triggers require tables);
+ *  for nested-branch parents the parent is itself a view, and ancestor
+ *  capture for its descendants flows through the (recursive) shared
+ *  table of the ultimate parent table. */
 function cow_install_parent_triggers(SQLite3 $db, string $parent_table): void {
     if (!cow_is_table($db, $parent_table)) return;
 
-    // Discover the parent's PK + columns (used to build OLD/NEW projections).
     $pk_cols = cow_extract_pk_cols($db, $parent_table);
     $columns = cow_table_columns($db, $parent_table);
     if (empty($columns)) return;
+    $pk_for_obj = empty($pk_cols) ? $columns : $pk_cols;
 
-    // Use only PK cols for the row_pk JSON; full columns for row_json.
-    if (empty($pk_cols)) {
-        $pk_for_obj = $columns; // degenerate; we don't really support PK-less tables in COW
-    } else {
-        $pk_for_obj = $pk_cols;
-    }
+    $pk_obj_old     = cow_json_obj_expr('OLD', $pk_for_obj);
+    $row_obj_old    = cow_json_obj_expr('OLD', $columns);
+    $pk_obj_new     = cow_json_obj_expr('NEW', $pk_for_obj);
 
-    $pk_obj_expr  = cow_json_obj_expr('OLD', $pk_for_obj);
-    $row_obj_expr = cow_json_obj_expr('OLD', $columns);
-    $pk_obj_expr_new = cow_json_obj_expr('NEW', $pk_for_obj);
+    $base = preg_replace('/[^a-zA-Z0-9_]/', '_', $parent_table);
+    $trg_upd = "cow_anc__{$base}__upd";
+    $trg_del = "cow_anc__{$base}__del";
+    $trg_ins = "cow_anc__{$base}__ins";
+    $parent_q = str_replace("'", "''", $parent_table);
 
-    $trg_upd = "cow_anc__" . preg_replace('/[^a-zA-Z0-9_]/', '_', $parent_table) . "__upd";
-    $trg_del = "cow_anc__" . preg_replace('/[^a-zA-Z0-9_]/', '_', $parent_table) . "__del";
-    $trg_ins = "cow_anc__" . preg_replace('/[^a-zA-Z0-9_]/', '_', $parent_table) . "__ins";
-
+    // Drop any legacy (pre-TODO3 fanout) or previously-installed trigger
+    // and reinstall the O(1) version. INSERT OR IGNORE preserves the
+    // FIRST pre-divergence value as the true fork-time ancestor.
     $db->exec("DROP TRIGGER IF EXISTS \"$trg_upd\"");
     $db->exec("DROP TRIGGER IF EXISTS \"$trg_del\"");
     $db->exec("DROP TRIGGER IF EXISTS \"$trg_ins\"");
 
-    // We use BEFORE so OLD reflects the row about to change.
-    // INSERT OR IGNORE preserves the FIRST pre-divergence value as the
-    // true fork-time ancestor for the branch (subsequent parent edits
-    // don't overwrite it).
-    //
-    // We restrict the inner SELECT to the descendant branches whose
-    // db_cow_branches.parent_table_name matches THIS parent table, so a
-    // shared trigger can serve multiple descendants without growing the
-    // table-name list inside the trigger SQL.
-    $upd_trigger_sql = "CREATE TRIGGER \"$trg_upd\" BEFORE UPDATE ON \"$parent_table\"\n"
-                     . "BEGIN\n"
-                     . "    INSERT OR IGNORE INTO db_ancestor_overlay\n"
-                     . "        (branch_id, table_name, row_pk, row_json)\n"
-                     . "    SELECT cb.branch_id,\n"
-                     . "           'b' || cb.branch_id || '_wp_' || cb.table_suffix,\n"
-                     . "           $pk_obj_expr,\n"
-                     . "           $row_obj_expr\n"
-                     . "    FROM db_cow_branches cb\n"
-                     . "    WHERE cb.parent_table_name = '" . SQLite3::escapeString($parent_table) . "';\n"
-                     . "END";
-    $db->exec($upd_trigger_sql);
+    $db->exec(
+        "CREATE TRIGGER \"$trg_upd\" BEFORE UPDATE ON \"$parent_table\"\n"
+      . "BEGIN\n"
+      . "    INSERT OR IGNORE INTO db_parent_ancestor\n"
+      . "        (parent_table_name, row_pk, row_json)\n"
+      . "    VALUES ('$parent_q', $pk_obj_old, $row_obj_old);\n"
+      . "END"
+    );
+    $db->exec(
+        "CREATE TRIGGER \"$trg_del\" BEFORE DELETE ON \"$parent_table\"\n"
+      . "BEGIN\n"
+      . "    INSERT OR IGNORE INTO db_parent_ancestor\n"
+      . "        (parent_table_name, row_pk, row_json)\n"
+      . "    VALUES ('$parent_q', $pk_obj_old, $row_obj_old);\n"
+      . "END"
+    );
+    // AFTER INSERT tracks PKs created on parent after any descendant's
+    // fork — lets merge distinguish "ancestor was absent" (this case)
+    // from "ancestor was the same as target's current row".
+    $db->exec(
+        "CREATE TRIGGER \"$trg_ins\" AFTER INSERT ON \"$parent_table\"\n"
+      . "BEGIN\n"
+      . "    INSERT OR IGNORE INTO db_parent_post_fork_inserts\n"
+      . "        (parent_table_name, row_pk)\n"
+      . "    VALUES ('$parent_q', $pk_obj_new);\n"
+      . "END"
+    );
+}
 
-    $del_trigger_sql = "CREATE TRIGGER \"$trg_del\" BEFORE DELETE ON \"$parent_table\"\n"
-                     . "BEGIN\n"
-                     . "    INSERT OR IGNORE INTO db_ancestor_overlay\n"
-                     . "        (branch_id, table_name, row_pk, row_json)\n"
-                     . "    SELECT cb.branch_id,\n"
-                     . "           'b' || cb.branch_id || '_wp_' || cb.table_suffix,\n"
-                     . "           $pk_obj_expr,\n"
-                     . "           $row_obj_expr\n"
-                     . "    FROM db_cow_branches cb\n"
-                     . "    WHERE cb.parent_table_name = '" . SQLite3::escapeString($parent_table) . "';\n"
-                     . "END";
-    $db->exec($del_trigger_sql);
-
-    // AFTER INSERT: track the PK as "post-fork inserted on parent" so the
-    // merge can distinguish "ancestor was absent" (this case) from
-    // "ancestor was the same as target's current row".
-    $ins_trigger_sql = "CREATE TRIGGER \"$trg_ins\" AFTER INSERT ON \"$parent_table\"\n"
-                     . "BEGIN\n"
-                     . "    INSERT OR IGNORE INTO db_post_fork_inserts\n"
-                     . "        (branch_id, table_name, row_pk)\n"
-                     . "    SELECT cb.branch_id,\n"
-                     . "           'b' || cb.branch_id || '_wp_' || cb.table_suffix,\n"
-                     . "           $pk_obj_expr_new\n"
-                     . "    FROM db_cow_branches cb\n"
-                     . "    WHERE cb.parent_table_name = '" . SQLite3::escapeString($parent_table) . "';\n"
-                     . "END";
-    $db->exec($ins_trigger_sql);
+/** Drop any legacy parent-side ancestor-capture triggers for $parent_table.
+ *  Used by tests and by callers that explicitly want the O(1) trigger to
+ *  go away. Safe no-op if triggers aren't present. */
+function cow_drop_parent_triggers(SQLite3 $db, string $parent_table): int {
+    $base = preg_replace('/[^a-zA-Z0-9_]/', '_', $parent_table);
+    $names = ["cow_anc__{$base}__upd", "cow_anc__{$base}__del", "cow_anc__{$base}__ins"];
+    $dropped = 0;
+    foreach ($names as $n) {
+        $exists = (int)$db->querySingle(
+            "SELECT COUNT(*) FROM sqlite_master "
+          . "WHERE type='trigger' AND name='" . SQLite3::escapeString($n) . "'"
+        );
+        if ($exists > 0) {
+            $db->exec('DROP TRIGGER IF EXISTS "' . $n . '"');
+            $dropped++;
+        }
+    }
+    return $dropped;
 }
 
 /** Generate the INSTEAD OF triggers for the view that route writes to
@@ -253,7 +259,16 @@ function cow_install_parent_triggers(SQLite3 $db, string $parent_table): void {
  *  the column gets the same default the underlying table would. */
 function cow_trigger_sql(string $view_name, string $overlay_name,
                         string $tombstone_name, array $pk_cols,
-                        array $columns, array $defaults = []): array {
+                        array $columns, array $defaults = [],
+                        int $branch_id = 0, string $parent_table = '',
+                        array $parent_columns = []): array {
+    // branch_id / parent_table / parent_columns are accepted for forward
+    // compatibility (callers that wire up lazy branch-side capture) but
+    // the TODO3 #3 fix achieves O(1)-per-parent-write ancestor capture via
+    // the shared-parent-table approach in cow_install_parent_triggers,
+    // so this function no longer emits a per-row ancestor preamble.
+    unset($branch_id, $parent_table, $parent_columns);
+
     $col_list   = implode(', ', array_map(fn($c) => '"' . $c . '"', $columns));
     $new_vals_with_default = function (string $c) use ($defaults): string {
         if (isset($defaults[$c]) && $defaults[$c] !== null && $defaults[$c] !== '') {
@@ -267,10 +282,6 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
     // PK match condition for tombstone delete (after re-insert) and overlay
     // upsert/delete using OLD/NEW.
     if (empty($pk_cols)) {
-        // Fallback: identity-by-rowid is unsafe across UNION ALL. Match by
-        // every column. Triggers without a PK aren't ideal but are rare
-        // for WP tables — we still need OLD-vs-NEW separation so the
-        // INSTEAD OF INSERT trigger uses NEW (OLD doesn't exist on INSERT).
         $pk_match_old = implode(' AND ', array_map(
             fn($c) => '"' . $c . '" IS OLD."' . $c . '"', $columns
         ));
@@ -293,10 +304,7 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
 
     $ins_trg = "CREATE TRIGGER \"{$view_name}__cow_ins\" INSTEAD OF INSERT ON \"$view_name\"\n"
              . "BEGIN\n"
-             // Clear any tombstone for this PK (re-insert after delete).
              . "    DELETE FROM \"$tombstone_name\" WHERE $pk_match_new;\n"
-             // Plain INSERT so UNIQUE / PK violations propagate up to the
-             // caller (matches the behaviour of inserting into a real table).
              . "    INSERT INTO \"$overlay_name\" ($col_list) VALUES ($new_vals);\n"
              . "END";
 
@@ -306,9 +314,6 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
              . "    INSERT OR REPLACE INTO \"$overlay_name\" ($col_list) VALUES ($new_vals);\n"
              . "END";
 
-    // DELETE: if row is in overlay, remove from overlay; ALSO mark as
-    // tombstone so any inherited row is hidden. (If the row was branch-only
-    // and not inherited, the tombstone is harmless — it just shadows nothing.)
     $del_trg = "CREATE TRIGGER \"{$view_name}__cow_del\" INSTEAD OF DELETE ON \"$view_name\"\n"
              . "BEGIN\n"
              . "    DELETE FROM \"$overlay_name\" WHERE $pk_match_old;\n"
@@ -495,7 +500,11 @@ function cow_create_branch_table(SQLite3 $db, int $branch_id, int $parent_id,
             $defaults[$prow['name']] = (string)$prow['dflt_value'];
         }
     }
-    foreach (cow_trigger_sql($logical_name, $overlay_name, $tomb_name, $pk_cols, $columns, $defaults) as $trg) {
+    // Parent columns for the lazy-ancestor row snapshot (TODO3 #3).
+    $parent_cols = cow_table_columns($db, $parent_table);
+    foreach (cow_trigger_sql($logical_name, $overlay_name, $tomb_name,
+                             $pk_cols, $columns, $defaults,
+                             $branch_id, $parent_table, $parent_cols) as $trg) {
         $db->exec($trg);
     }
 
@@ -515,9 +524,10 @@ function cow_create_branch_table(SQLite3 $db, int $branch_id, int $parent_id,
     $st->bindValue(':t',  (string)$tok,  SQLITE3_TEXT);
     $st->execute();
 
-    // Install (idempotent) parent-side ancestor capture triggers, so a
-    // future parent-side UPDATE/DELETE preserves the fork-time row value
-    // for this descendant branch BEFORE the parent overwrites it.
+    // Install the O(1) parent-side ancestor-capture trigger (idempotent —
+    // one per parent table, shared across all descendants). This replaces
+    // the pre-TODO3 per-descendant fanout trigger whose cost scaled
+    // linearly with branch count.
     cow_install_parent_triggers($db, $parent_table);
 
     // Snapshot the fork-time schema (DDL + indexes) for schema-merge.
@@ -652,7 +662,9 @@ function cow_recreate_views_for_table(SQLite3 $db, string $table_suffix): void {
                 $defaults[$prow['name']] = (string)$prow['dflt_value'];
             }
         }
-        foreach (cow_trigger_sql($logical_name, $overlay_name, $tomb_name, $pk_cols, $columns, $defaults) as $trg) {
+        foreach (cow_trigger_sql($logical_name, $overlay_name, $tomb_name,
+                                 $pk_cols, $columns, $defaults,
+                                 $bid, $parent_table, $parent_cols) as $trg) {
             $db->exec($trg);
         }
     }

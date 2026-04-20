@@ -331,11 +331,18 @@ to the re-assigned `b{new_id}_wp_` on the fly.
     - `sqlite_sequence` row for the parent's table is copied to the
       overlay so AUTOINCREMENT IDs the branch generates don't collide
       with parent IDs added after fork.
-  - **Parent-side ancestor capture**: BEFORE-UPDATE/DELETE and AFTER-INSERT
-    triggers are installed on the parent's real table so that any
-    pre-divergence row state needed by 3-way merge (`db_ancestor_overlay`)
-    or any post-fork insertion (`db_post_fork_inserts`) is captured
-    automatically as the parent mutates.
+  - **Parent-side ancestor capture** (TODO3 #3, O(1) shared scheme):
+    ONE BEFORE-UPDATE/DELETE and AFTER-INSERT trigger is installed on
+    each parent real table. The trigger body writes exactly once per
+    parent write into the shared `db_parent_ancestor` /
+    `db_parent_post_fork_inserts` tables, keyed by
+    (parent_table_name, row_pk) — independent of how many descendant
+    branches exist. Merge fans the ancestor out across descendants at
+    merge time (only for branches that actually diverge). Pre-TODO3 the
+    trigger body fanned out via a JOIN against `db_cow_branches`,
+    producing one INSERT per descendant per parent write; parent
+    throughput degraded linearly with sibling-branch count — the exact
+    workload pattern cheap branching was meant to encourage.
   - **Marker**: `db_cow_branches(branch_id, table_suffix, parent_branch_id,
     parent_table_name, fork_token)` records that the branch is in COW
     format and tracks the parent's table for merge-time ancestor lookup.

@@ -59,7 +59,7 @@ otherwise document explicitly that the live tests need binary rebuild.
 
 ---
 
-## [ ] 3. `db_ancestor_overlay` triggers tax every parent write [CRITICAL]
+## [x] 3. `db_ancestor_overlay` triggers tax every parent write [CRITICAL]
 
 **Problem**
 Each child branch installs BEFORE-UPDATE/DELETE triggers on the parent's

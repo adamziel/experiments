@@ -281,7 +281,9 @@ class BranchedPDO extends PDO
                 }
             }
         }
-        foreach (cow_trigger_sql($logical, $overlay, $tomb, $pk_cols, $columns, $defaults) as $trg) {
+        foreach (cow_trigger_sql($logical, $overlay, $tomb,
+                                 $pk_cols, $columns, $defaults,
+                                 $bid, $parent_table, $parent_cols) as $trg) {
             parent::exec($trg);
         }
     }

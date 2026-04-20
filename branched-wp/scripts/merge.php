@@ -396,8 +396,10 @@ function db_ancestor_rows_cow(SQLite3 $db, int $branch_id, string $logical_name,
     if (empty($divergent_pks)) return $rows;
 
     // First: look up captured fork-time ancestors in db_ancestor_overlay
-    // (populated by parent-side BEFORE-UPDATE/DELETE triggers when the
-    // parent diverged before the branch did).
+    // (per-branch snapshot, populated by legacy parent-side triggers
+    // pre-TODO3 or by explicit refresh after merge — see the refresh
+    // path below). Takes priority so merge #N can overwrite snapshot
+    // #N-1's ancestor with the current branch state.
     $anc_lookup = $db->prepare(
         "SELECT row_pk, row_json FROM db_ancestor_overlay "
       . "WHERE branch_id = :b AND table_name = :t"
@@ -406,10 +408,23 @@ function db_ancestor_rows_cow(SQLite3 $db, int $branch_id, string $logical_name,
     $anc_lookup->bindValue(':t', $logical_name, SQLITE3_TEXT);
     $rr = $anc_lookup->execute();
     while ($row = $rr->fetchArray(SQLITE3_ASSOC)) {
-        // Only include ancestors that match a divergent PK (i.e. that the
-        // branch actually overlays/tombstones — others are noise from
-        // unrelated parent edits).
         if (isset($divergent_pks[$row['row_pk']])) {
+            $rows[$row['row_pk']] = $row['row_json'];
+        }
+    }
+
+    // TODO3 #3: also look up the SHARED parent ancestor snapshot
+    // (populated by the O(1) parent-side trigger). Only applies for PKs
+    // we didn't already resolve via the per-branch overlay.
+    $sh_lookup = $db->prepare(
+        "SELECT row_pk, row_json FROM db_parent_ancestor "
+      . "WHERE parent_table_name = :p"
+    );
+    $sh_lookup->bindValue(':p', $parent_table, SQLITE3_TEXT);
+    $sr = $sh_lookup->execute();
+    while ($row = $sr->fetchArray(SQLITE3_ASSOC)) {
+        if (isset($divergent_pks[$row['row_pk']])
+            && !isset($rows[$row['row_pk']])) {
             $rows[$row['row_pk']] = $row['row_json'];
         }
     }
@@ -428,6 +443,23 @@ function db_ancestor_rows_cow(SQLite3 $db, int $branch_id, string $logical_name,
     $pfr = $pf_lookup->execute();
     $post_fork = [];
     while ($row = $pfr->fetchArray(SQLITE3_ASSOC)) {
+        $post_fork[$row['row_pk']] = true;
+    }
+    // Also consult the shared-across-descendants post-fork inserts table
+    // (TODO3 #3). A row here means the parent inserted this PK at some
+    // point; only rows captured AFTER this branch was forked qualify as
+    // "post-fork" for this particular branch — rows captured before the
+    // branch existed are simply fork-time-inherited.
+    $spf_lookup = $db->prepare(
+        "SELECT pf.row_pk FROM db_parent_post_fork_inserts pf "
+      . "JOIN branches b ON b.id = :b "
+      . "WHERE pf.parent_table_name = :p "
+      . "  AND pf.captured_at >= b.created_at"
+    );
+    $spf_lookup->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $spf_lookup->bindValue(':p', $parent_table, SQLITE3_TEXT);
+    $spr = $spf_lookup->execute();
+    while ($row = $spr->fetchArray(SQLITE3_ASSOC)) {
         $post_fork[$row['row_pk']] = true;
     }
 
@@ -514,6 +546,33 @@ function db_ancestor_fill_for_diff(
             $post_fork[$row2['row_pk']] = true;
         }
     }
+    // TODO3 #3: shared parent-side post-fork inserts (captured after the
+    // branch was forked).
+    $spf = $db->prepare(
+        "SELECT pf.row_pk FROM db_parent_post_fork_inserts pf "
+      . "JOIN branches b ON b.id = :b "
+      . "WHERE pf.parent_table_name = :p "
+      . "  AND pf.captured_at >= b.created_at"
+    );
+    $spf->bindValue(':b', $branch_id, SQLITE3_INTEGER);
+    $spf->bindValue(':p', $parent_table, SQLITE3_TEXT);
+    $spr = $spf->execute();
+    while ($row2 = $spr->fetchArray(SQLITE3_ASSOC)) {
+        $post_fork[$row2['row_pk']] = true;
+    }
+    // Pre-load shared parent ancestor snapshots; used to short-circuit
+    // the "parent's current row" fallback below with the captured
+    // pre-divergence value.
+    $shared_anc = [];
+    $sa = $db->prepare(
+        "SELECT row_pk, row_json FROM db_parent_ancestor "
+      . "WHERE parent_table_name = :p"
+    );
+    $sa->bindValue(':p', $parent_table, SQLITE3_TEXT);
+    $sar = $sa->execute();
+    while ($row2 = $sar->fetchArray(SQLITE3_ASSOC)) {
+        $shared_anc[$row2['row_pk']] = $row2['row_json'];
+    }
 
     $where = implode(' AND ', array_map(fn($c) => '"' . $c . '" = :' . $c, $pk_cols));
     $sel = $db->prepare(
@@ -526,6 +585,14 @@ function db_ancestor_fill_for_diff(
         $tgt_json = $tgt_rows[$pk] ?? null;
         // If src and tgt agree, no ancestor needed (this PK already noops).
         if ($src_json === $tgt_json) continue;
+
+        // TODO3 #3: prefer the shared parent snapshot (captured value
+        // from BEFORE parent's first post-fork modification) over the
+        // current-row fallback below — that's the true ancestor.
+        if (isset($shared_anc[$pk])) {
+            $anc_rows[$pk] = $shared_anc[$pk];
+            continue;
+        }
 
         $pk_map = json_decode($pk, true);
         if (!is_array($pk_map)) continue;
