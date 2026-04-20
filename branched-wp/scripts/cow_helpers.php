@@ -828,6 +828,28 @@ function cow_migrate_legacy_branch(SQLite3 $db, int $branch_id): int {
         $overlay_name = $logical_name . '__overlay';
         $tomb_name    = $logical_name . '__tombstones';
 
+        // If the legacy branch had columns the parent lacked (branch-side
+        // schema evolution), the freshly-created overlay (built from the
+        // parent's DDL) will be missing those columns. Sync them now, and
+        // rebuild the view/triggers to expose them.
+        $overlay_cols = cow_table_columns($db, $overlay_name);
+        $missing_on_overlay = array_diff($columns, $overlay_cols);
+        if (!empty($missing_on_overlay)) {
+            $branch_ddl = (string)$db->querySingle(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+              . SQLite3::escapeString($branch_table . '__stash_for_ddl') . "'"
+            );
+            // The branch_table was just dropped; re-derive column types from
+            // the $branch_rows structure (all-TEXT fallback is fine for the
+            // legacy case — rows still round-trip).
+            foreach ($missing_on_overlay as $mcol) {
+                @$db->exec('ALTER TABLE "' . $overlay_name . '" ADD COLUMN "'
+                         . $mcol . '" TEXT');
+            }
+            // Rebuild view + triggers to pick up the new columns.
+            cow_recreate_views_for_table($db, $suffix);
+        }
+
         // Compute the diff. Anything in branch_rows that differs from
         // parent_rows[same key] (or has no parent counterpart) → overlay.
         $col_list = implode(', ', array_map(fn($c) => '"' . $c . '"', $columns));
@@ -835,6 +857,13 @@ function cow_migrate_legacy_branch(SQLite3 $db, int $branch_id): int {
         $insert_overlay = $db->prepare(
             "INSERT OR REPLACE INTO \"$overlay_name\" ($col_list) VALUES ($placeholders)"
         );
+        if ($insert_overlay === false) {
+            throw new RuntimeException(
+                "cow_migrate_legacy_branch: could not prepare overlay INSERT for "
+              . "$overlay_name (columns: " . implode(', ', $columns) . "): "
+              . $db->lastErrorMsg()
+            );
+        }
         foreach ($branch_rows as $key => $row) {
             $parent_row = $parent_rows[$key] ?? null;
             if ($parent_row !== null && $parent_row == $row) continue; // identical → no overlay needed
