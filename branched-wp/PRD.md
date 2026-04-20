@@ -671,6 +671,15 @@ on a real conflict do not touch any ancestor table.
 - (Removed — single-process PHP serving replaced by multi-worker mode in F1 / CLI2)
 - (Removed — now implemented via ancestor snapshot refresh in F9)
 - (Removed — DB merge for schema changes is now implemented via Phase 2b in F9)
+- **Tables without an explicit PRIMARY KEY have limited DELETE semantics.**
+  For a no-PK `b1_wp_X` table, the branch view is built without a tombstone
+  filter (the full-row-identity filter across UNION ALL produces ambiguity
+  with duplicates and is nontrivial to implement correctly). DELETE of a
+  branch-only overlay row works; DELETE of an inherited parent row writes
+  a tombstone but the branch view still shows the parent row. WordPress
+  core has PKs on every table so this does not affect real usage. See
+  `e2e/test_rigorous_pk.py::TestNoExplicitPK::test_no_pk_delete_hidden_via_tombstone`
+  (xfail with this explanation).
 - **Autoincrement PK collision when an ancestor mutates after a descendant is created.**
   `sqlite_sequence` is seeded per-overlay at fork time. If parent `a` inserts a
   new autoincrement row AFTER child branch `b` has been created, and child `b`
