@@ -104,14 +104,12 @@ EXACT_SAFE_NAMES = {
     "logical", "logical_name", "view_name",
     "physical",
     "parent_table", "parent_q",
-    "ov_q", "ovl_q",
+    "ovl_q",
     "vname", "tname",
     "tgt_table", "src_table",
-    "trigger_name",
     # Column-name fragments (always identifier arrays or identifier lists
     # derived from sqlite_master / PRAGMA table_info output).
-    "col_list", "col_name", "col_type", "col_def",
-    "pk_col_q",
+    "col_list", "col_name", "col_type",
     "mcol",   # iter var over ALTER TABLE ADD COLUMN list
     # DDL source captures — come from sqlite_master.sql, not user input.
     "ddl_source", "new_ddl", "body", "def", "idx_sql", "view_sql_body",
@@ -193,6 +191,35 @@ def test_lint_actually_catches_risky_concat():
             "If this assertion ever fires, the safelist has grown too "
             "permissive and real injection risks will slip through CI."
         )
+
+
+def test_allowlist_has_no_dead_entries():
+    """Conformance check: every EXACT_SAFE_NAMES entry must correspond to
+    a real `$<name>` reference somewhere in production PHP (scripts/).
+
+    Dead allowlist entries are a latent injection risk — if someone later
+    introduces a new variable with one of these names flowing from user
+    input, the lint would auto-allow it silently. Hostile-review round 3
+    found `col_def`, `ov_q`, `pk_col_q`, `trigger_name` were stale after
+    the round-2 cleanup; this test keeps the justification list honest.
+    """
+    var_re = re.compile(r"\$([A-Za-z_][A-Za-z0-9_]*)\b")
+    seen: set[str] = set()
+    for script in SCRIPTS:
+        for m in var_re.finditer(script.read_text()):
+            seen.add(m.group(1))
+
+    dead = sorted(n for n in EXACT_SAFE_NAMES if n not in seen)
+    assert not dead, (
+        f"{len(dead)} EXACT_SAFE_NAMES "
+        f"{'entry has' if len(dead) == 1 else 'entries have'} "
+        f"zero `$name` references in scripts/**/*.php: "
+        f"{', '.join(dead)}.\n"
+        "Either (a) add the variable to production PHP if you genuinely "
+        "need it allowlisted, or (b) remove the dead entry from "
+        "EXACT_SAFE_NAMES so a future injection-prone variable reusing "
+        "the same name is not auto-permitted."
+    )
 
 
 def test_schema_generated_names_use_escape_string():
