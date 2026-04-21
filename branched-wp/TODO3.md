@@ -202,7 +202,7 @@ content). Merging both into main → guaranteed conflict that
 
 ---
 
-## [ ] 8. `BranchedPDO` is a wrapper you have to remember [HIGH]
+## [x] 8. `BranchedPDO` is a wrapper you have to remember [HIGH]
 
 **Problem**
 Developer writes `new PDO("sqlite:" . $site_fp)` instead of

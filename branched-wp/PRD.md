@@ -404,6 +404,17 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   to b{id}_wp_), and BranchedPDO transparently routes those to the
   overlay.
 
+  **Raw-PDO guard** (TODO3 #8): a caller that forgets to use
+  `BranchedPDO::connect()` and instantiates `new PDO('sqlite:…fp')`
+  directly gets silent misses on DDL interception. Bootstraps should
+  add a one-line check:
+  ```php
+  BranchedPDO::assert_branched($pdo, $site_fp);
+  ```
+  With `FORKPRESS_STRICT_PDO=1` in the environment, the helper throws
+  `RuntimeException` on a raw PDO; otherwise it `error_log()`s a
+  diagnostic so operators can find the offending code and fix it.
+
 - **Transparent DDL routing over the MySQL wire protocol**
   (`fileserver/src/mysql_proxy.rs`): out-of-band SQL clients (wp-cli
   `db query`, the `mysql` command-line client, phpMyAdmin, any JDBC/

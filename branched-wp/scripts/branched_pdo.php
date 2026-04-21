@@ -396,6 +396,53 @@ class BranchedPDO extends PDO
         return true;
     }
 
+    /** TODO3 #8 — guard against raw `new PDO('sqlite:…fp')` misuse.
+     *
+     *  A caller that forgets to wrap the connection in BranchedPDO sees
+     *  SELECTs work (the view's UNION ALL returns the right rows) but
+     *  DDL against a branch view errors out, and any ADD/DROP/RENAME
+     *  COLUMN silently bypasses the view/trigger rebuild — a subtle
+     *  "WordPress plugin that used to work starts corrupting state"
+     *  failure mode.
+     *
+     *  This static helper takes a PDO (or null) and the `.fp` path it
+     *  points at, and:
+     *    - returns null if the PDO is a BranchedPDO (all good);
+     *    - logs a warning via `error_log()` and returns the message if
+     *      it's a raw PDO; callers in strict mode (env
+     *      `FORKPRESS_STRICT_PDO=1`) will see the function throw
+     *      RuntimeException instead of just logging.
+     *
+     *  Typical bootstrap:
+     *  ```
+     *  $pdo = BranchedPDO::connect($site_fp, $branch);
+     *  BranchedPDO::assert_branched($pdo, $site_fp);   // no-op here
+     *  // ... pass $pdo to WP_SQLite_Connection or plugin code ...
+     *  ```
+     *
+     *  Third-party code that accidentally does
+     *  `new PDO("sqlite:$site_fp")` can still be caught by running
+     *  `assert_branched()` on the connection before use.
+     */
+    public static function assert_branched(?PDO $pdo, string $site_fp = ''): ?string {
+        if ($pdo === null) {
+            return null;
+        }
+        if ($pdo instanceof self) {
+            return null;
+        }
+        $fp_hint = $site_fp !== '' ? " '$site_fp'" : '';
+        $msg = "BranchedPDO: raw PDO instance detected on$fp_hint. "
+             . "COW DDL interception will silently miss. "
+             . "Use BranchedPDO::connect(\$site_fp, \$branch) instead of "
+             . "`new PDO('sqlite:…')`.";
+        @error_log($msg);
+        if (getenv('FORKPRESS_STRICT_PDO') === '1') {
+            throw new RuntimeException($msg);
+        }
+        return $msg;
+    }
+
     /** True iff $name is a view (i.e. a COW branch's logical table). */
     private function is_branch_view(string $name): bool {
         $stmt = parent::prepare(
