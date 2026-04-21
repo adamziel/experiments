@@ -526,38 +526,3 @@ class BootstrapBranchedPDO
     }
 }
 
-/**
- * BranchedSession — sanctioned session entry point (finding #5).
- *
- * `BranchedSession::open($site_fp, $branch, $principal)` opens a
- * BranchedPDO-wrapped connection AND records the principal for any audit
- * writes that follow inside the session. This is the ONLY sanctioned
- * path that entry points in scripts/ and ext/ use when they need a PHP
- * connection to a .fp. Direct `new PDO('sqlite:…')` is detectable via
- * BootstrapBranchedPDO::ensure() and reported/rejected.
- */
-class BranchedSession
-{
-    public BranchedPDO $pdo;
-    public Principal   $principal;
-    public string      $branch;
-    public string      $site_fp;
-
-    private function __construct(BranchedPDO $pdo, Principal $principal,
-                                 string $branch, string $site_fp)
-    {
-        $this->pdo       = $pdo;
-        $this->principal = $principal;
-        $this->branch    = $branch;
-        $this->site_fp   = $site_fp;
-    }
-
-    public static function open(string $site_fp, string $branch,
-                                Principal $principal): self
-    {
-        require_once __DIR__ . '/audit_helpers.php';
-        audit_log_set_principal($principal);
-        $pdo = BootstrapBranchedPDO::open($site_fp, $branch);
-        return new self($pdo, $principal, $branch, $site_fp);
-    }
-}

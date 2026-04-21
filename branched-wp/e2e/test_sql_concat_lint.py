@@ -88,69 +88,49 @@ def exec_query_interpolations(text: str):
             yield name, arg
 
 
-# Name-suffix allowlist for identifier fragments that are constructed
-# internally (not from user input) and get spliced into SQL as object
-# names, column lists, DDL fragments, or pre-escaped values. Catching
-# these as "injection risk" would be a false positive — the code never
-# flows external text through them.
-SAFE_NAME_SUFFIXES = (
-    "_name",   # $overlay_name, $view_name, $table_name, $trigger_name, …
-    "_cols",   # $pk_cols, $col_cols — always arrays of identifiers
-    "_list",   # $col_list, $placeholder_list — comma-joined identifier strings
-    "_q",      # $parent_q, $tomb_q, $ovl_q — pre-escaped identifiers
-    "_esc",    # $pa_prefix_esc, $x_esc — pre-escaped values
-    "_sql",    # $idx_sql, $view_sql_body — DDL fragments
-    "_body",   # $body, $view_body — DDL fragments
-    "_pk",     # $tomb_pk, $pk — PK column list
-    "_def",    # $col_def — column definitions
-    "_type",   # $col_type — SQL type fragments
-)
-SAFE_NAME_PREFIXES = (
-    "trg",         # $trg, $trg_upd, $trg_del, $trg_ins — trigger names
-    "overlay",     # $overlay, $overlay_name
-    "tomb",        # $tomb, $tomb_name
-    "logical",     # $logical, $logical_name
-    "physical",    # $physical
-    "view",        # $view, $view_name
-    "parent_",     # $parent_table, $parent_q
-    "placeholders",# $placeholders — '?,?,?'
-    "col_",        # $col_name, $col_type, $col_def, $col_list
-    "ddl_source",  # $ddl_source — CREATE TABLE capture
-    "tgt_table",   # $tgt_table — constructed from branch prefix + suffix
-    "src_table",   # $src_table — constructed from branch prefix + suffix
-)
+# EXPLICIT allowlist of variable names that are constructed internally
+# (never from user input) and splice safely into SQL. Hostile review
+# round 2 flagged pattern-based suffix/prefix rules (`_name`, `_body`,
+# `_sql`) as overly permissive — names like `$user_name`, `$request_body`,
+# `$search_sql` would slip through unchecked. An explicit-only allowlist
+# forces every NEW safe variable to be justified with a comment here.
 EXACT_SAFE_NAMES = {
-    # PDO self-reference inside branched_pdo.php's $this->quote() chain.
-    "this",
-    # Hardcoded prefix strings like 'b1_wp_', 'branchfs://', built in PHP
-    # outside SQL construction and safe-by-content.
-    "prefix", "vname", "tname", "n",
-    # CHECK / DDL fragment strings built from constants.
-    "body", "def", "idx_sql",
-    # merge.php internal identifiers:
-    # $esc = $db->escapeString(...) — pre-escaped value, safe.
-    "esc",
-    # $ov_suffix = '__overlay' — hardcoded constant.
-    "ov_suffix",
-    # $where = implode(' AND ', <PK column name fragments>) — built
-    # from internal PK column identifiers, no external input.
+    # Trigger / view / table object names — built from `b{bid}_wp_<suffix>`
+    # where bid is an integer and suffix is hardcoded.
+    "trg", "trg_upd", "trg_del", "trg_ins",
+    "overlay", "overlay_name",
+    "tomb", "tomb_name", "tomb_pk", "tomb_q", "tomb_cols",
+    "tomb_col_list", "tomb_ph",  # identifier list + '?,?,?' placeholders
+    "logical", "logical_name", "view_name",
+    "physical",
+    "parent_table", "parent_q",
+    "ov_q", "ovl_q",
+    "vname", "tname",
+    "tgt_table", "src_table",
+    "trigger_name",
+    # Column-name fragments (always identifier arrays or identifier lists
+    # derived from sqlite_master / PRAGMA table_info output).
+    "col_list", "col_name", "col_type", "col_def",
+    "pk_col_q",
+    "mcol",   # iter var over ALTER TABLE ADD COLUMN list
+    # DDL source captures — come from sqlite_master.sql, not user input.
+    "ddl_source", "new_ddl", "body", "def", "idx_sql", "view_sql_body",
+    # Placeholders built from integer-range joins — '?,?,?'.
+    "placeholders",
+    # Pre-escaped values: the RHS of `$db->escapeString(...)` assigned
+    # on the line above. Safe by construction at the assignment site.
+    "esc", "pa_prefix_esc",
+    # Hardcoded constants: `'__overlay'`, `'b1_wp_'`.
+    "ov_suffix", "prefix", "n",
+    # WHERE fragment: `implode(' AND ', <internal PK col names>)`.
     "where",
-    # $mcol — iteration variable over internal column name list in
-    # cow_helpers.php ALTER TABLE ADD COLUMN loop.
-    "mcol",
+    # PDO / this self-reference inside branched_pdo.php's quote() chain.
+    "this",
 }
 
 
 def _is_safe_identifier(var: str) -> bool:
-    if var in INT_VARS or var in EXACT_SAFE_NAMES:
-        return True
-    for suffix in SAFE_NAME_SUFFIXES:
-        if var.endswith(suffix):
-            return True
-    for prefix in SAFE_NAME_PREFIXES:
-        if var.startswith(prefix):
-            return True
-    return False
+    return var in INT_VARS or var in EXACT_SAFE_NAMES
 
 
 def test_no_unallowed_variable_interpolation_in_sql():
@@ -172,10 +152,47 @@ def test_no_unallowed_variable_interpolation_in_sql():
         f"{len(violations)} new unprepared SQL interpolation(s) — prefer "
         f"prepared statements with bindValue, pre-escape with "
         f"SQLite3::escapeString(), or add the variable to INT_VARS / "
-        f"SAFE_NAME_{{PREFIXES,SUFFIXES}} / EXACT_SAFE_NAMES if it is "
+        f"EXACT_SAFE_NAMES (with a justification comment) if it is "
         f"safe by construction (TODO3 #20, hostile review #15).\n"
         + "\n".join(violations[:30])
     )
+
+
+# ── Negative smoke test ──────────────────────────────────────────────
+#
+# The lint is only useful if it actually fails on the kind of regression
+# it claims to prevent. Feed it a synthetic PHP snippet with a clearly
+# risky concat (variable name NOT on the allowlist, no escapeString, no
+# bindValue) and assert the matcher surfaces it. This closes the
+# hostile-review-round-2 finding that commit 7242bf3 promised a smoke
+# test in the commit message but didn't actually include one.
+RISKY_SNIPPETS = [
+    # Double-quoted interpolation with a fresh (non-allowlisted) name.
+    '$db->exec("SELECT * FROM items WHERE name = \'$userSupplied\'");',
+    # Dot-concatenation with a fresh name.
+    '$db->exec("SELECT * FROM items WHERE name = \'" . $userSupplied . "\'");',
+    # Variable name that WOULD have passed the old pattern-based safelist
+    # (ends with `_name`) — must now be caught by the explicit allowlist.
+    '$db->exec("UPDATE items SET v=" . $request_name);',
+    # Variable name that WOULD have passed the old safelist (ends in
+    # `_body`) — must now be caught.
+    '$db->query("INSERT INTO logs (msg) VALUES (\'" . $request_body . "\')");',
+]
+
+
+def test_lint_actually_catches_risky_concat():
+    for snippet in RISKY_SNIPPETS:
+        hits = [
+            (v, c) for v, c in exec_query_interpolations(snippet)
+            if not _is_safe_identifier(v)
+            and "escapeString" not in c
+            and "bindValue" not in c
+        ]
+        assert hits, (
+            f"lint failed to flag risky concat:\n  {snippet}\n"
+            "If this assertion ever fires, the safelist has grown too "
+            "permissive and real injection risks will slip through CI."
+        )
 
 
 def test_schema_generated_names_use_escape_string():

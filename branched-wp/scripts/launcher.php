@@ -87,15 +87,7 @@ $_branch_id = $_fp_db->querySingle(
 $_fp_db->close();
 $_branch_id = $_branch_id ?: 1;
 
-/* Hostile-review finding #5 — wire BootstrapBranchedPDO::ensure() into
- * the front-door launcher so any regression that drops the PDO back to
- * raw-sqlite is caught here. When WP-SQLite calls into our PHP it hands
- * back a PDO we don't control; ensure() runs the assertion and logs (or
- * throws in strict mode) if it isn't a BranchedPDO. */
 require_once __DIR__ . '/branched_pdo.php';
-$GLOBALS['_branchfs_bootstrap_ensure'] = static function (?PDO $pdo) use ($branch): void {
-    BootstrapBranchedPDO::ensure($pdo, BRANCHFS_DB, $branch);
-};
 
 // WordPress table prefix: b{branch_id}_wp_
 $GLOBALS['_branchfs_table_prefix'] = "b{$_branch_id}_wp_";

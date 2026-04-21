@@ -852,10 +852,11 @@ failures were swallowed.
 - `scripts/audit_helpers.php` — `audit_log_set_principal()` and
   `audit_log_write()` with loud failure.
 - `scripts/branched_pdo.php` — `BootstrapBranchedPDO::ensure()` is the
-  sanctioned chokepoint every entry point calls after opening a PDO to
-  enforce BranchedPDO wrapping (finding #5). `BranchedSession::open()`
-  is the one-call sanctioned path that binds PDO + principal in a
-  single step.
+  sanctioned chokepoint wired into `branchctl _ddl` (finding #5); every
+  entry point that opens a PDO against the `.fp` and then executes DDL
+  calls it before touching sqlite_master. Principal + audit binding
+  happens at the scripts/audit_helpers.php layer, not through a
+  PDO-wrapping facade.
 - `scripts/branchctl.php` — resolves a principal once up front,
   rejects writers when auth is enabled and no credentials are
   supplied, and gates `_ddl` SQL through a DDL allowlist.

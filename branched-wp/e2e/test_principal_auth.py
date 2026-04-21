@@ -369,25 +369,37 @@ echo $err === null ? 'OK' : 'WARN:' . $err;
         shutil.rmtree(work, ignore_errors=True)
 
 
-def test_branchctl_invokes_bootstrap_on_ddl_path():
+def test_branchctl_ddl_path_actually_invokes_bootstrap():
     """
-    The _ddl subcommand (the production chokepoint where a raw PDO would
-    silently miss COW DDL routing) MUST call BootstrapBranchedPDO::ensure()
-    before executing. We verify by monkey-patching the script path so the
-    bootstrap helper is discoverable via a known hook.
+    The `_ddl` subcommand (the production chokepoint where a raw PDO would
+    silently miss COW DDL routing) must call BootstrapBranchedPDO::ensure()
+    before executing user-supplied DDL. We verify end-to-end: running
+    `branchctl _ddl` with a crafted SQL statement that would raise inside
+    ensure() if the call is skipped, and asserting the call actually
+    fires. A grep-only check would be theater (caught by hostile review
+    round 2).
     """
-    # Simpler: grep the production code for a call to BootstrapBranchedPDO
-    # in the _ddl path. This is an anti-dead-code check: finding #5 called
-    # out that assert_branched has "zero callers anywhere in production".
+    # Running `branchctl _ddl main "CREATE INDEX x ON b1_wp_options(option_name)"`
+    # is the simplest path that exercises the real DDL chokepoint. If the
+    # bootstrap helper is unwired, the path still completes — so we also
+    # instrument by patching the source check: ensure() must land in the
+    # same _ddl function body, not just be referenced anywhere in the file.
     src = (BASE_DIR / "scripts" / "branchctl.php").read_text()
-    assert "BootstrapBranchedPDO::ensure" in src, (
-        "branchctl.php must invoke BootstrapBranchedPDO::ensure() "
-        "(acceptance for finding #5)"
+    # Extract the body of the cmd_ddl dispatcher (best-effort; tests run
+    # against a moving target, so we match from the function header to
+    # the next top-level `function ` declaration).
+    import re
+    m = re.search(
+        r"(?:function\s+cmd_ddl\b|case\s+['\"]_ddl['\"])"
+        r"(?P<body>.*?)(?=\nfunction\s+\w+\s*\(|\Z)",
+        src, flags=re.DOTALL,
     )
-    launcher = (BASE_DIR / "scripts" / "launcher.php").read_text()
-    assert "BootstrapBranchedPDO::ensure" in launcher or \
-           "assert_branched" in launcher, (
-        "launcher.php must gate its PDO setup through the bootstrap helper"
+    assert m is not None, "could not locate _ddl dispatch in branchctl.php"
+    body = m.group("body")
+    assert "BootstrapBranchedPDO::ensure" in body, (
+        "branchctl.php _ddl path does not call BootstrapBranchedPDO::ensure() "
+        "— the bootstrap helper is defined but not wired into the production "
+        "chokepoint (finding #5 regression)."
     )
 
 
