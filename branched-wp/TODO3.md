@@ -164,7 +164,7 @@ DB side now has delta commits (after #2). File side still writes
 
 ---
 
-## [ ] 6. View recreation not atomic across child branches [HIGH]
+## [x] 6. View recreation not atomic across child branches [HIGH]
 
 **Problem**
 When parent's schema changes, every dependent branch's view is dropped

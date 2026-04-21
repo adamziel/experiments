@@ -586,7 +586,18 @@ function cow_create_branch_table(SQLite3 $db, int $branch_id, int $parent_id,
 /** Recreate views (and triggers) for $table_suffix in every branch whose
  *  view depends on it. Used after a schema-altering operation on a parent
  *  table — `SELECT *` in views is resolved at definition time, so a new
- *  column would otherwise be invisible to descendants. */
+ *  column would otherwise be invisible to descendants.
+ *
+ *  TODO3 #6: the multi-branch recreation is wrapped in a single
+ *  `BEGIN IMMEDIATE … COMMIT` so if any individual branch's view
+ *  rebuild fails (locked table, FK violation, malformed CREATE VIEW,
+ *  …) the entire batch rolls back. Pre-TODO3 the loop committed
+ *  incrementally, so branches 1..k had the new view while k+1..N
+ *  kept the old one — a silent half-upgrade no one could detect.
+ *
+ *  If the caller is already inside a transaction (`in_transaction()`
+ *  returns true), we let the caller's outer BEGIN drive the
+ *  atomicity and rethrow on error without an extra commit. */
 function cow_recreate_views_for_table(SQLite3 $db, string $table_suffix): void {
     // Find every branch whose db_cow_branches row mentions this suffix.
     $rows = [];
@@ -597,75 +608,109 @@ function cow_recreate_views_for_table(SQLite3 $db, string $table_suffix): void {
     $st->bindValue(':s', $table_suffix, SQLITE3_TEXT);
     $r = $st->execute();
     while ($row = $r->fetchArray(SQLITE3_ASSOC)) $rows[] = $row;
+    if (empty($rows)) return;
 
-    foreach ($rows as $row) {
-        $bid          = (int)$row['branch_id'];
-        $parent_table = (string)$row['parent_table_name'];
-        $logical_name = "b{$bid}_wp_{$table_suffix}";
-        $overlay_name = $logical_name . '__overlay';
-        $tomb_name    = $logical_name . '__tombstones';
+    // A SELECT that returns 0 rows on an inactive tx, errors on an
+    // active one — used as a lightweight probe for "are we already
+    // inside an outer BEGIN?" so we don't double-nest.
+    $own_tx = false;
+    $probe = @$db->exec('BEGIN IMMEDIATE');
+    if ($probe !== false) {
+        $own_tx = true;
+    }
 
-        // Skip branches whose objects don't exist (they may have been deleted).
-        if (!cow_is_view($db, $logical_name)) continue;
-
-        // Re-derive PK + columns. The overlay is the source of truth for
-        // the view's shape: it may have columns the parent doesn't yet
-        // (e.g. when the branch ALTERed its own overlay directly), and
-        // it may be missing columns the parent has grown post-fork. We
-        // merge both so the view exposes the union of both shapes.
-        $pk_cols      = cow_extract_pk_cols($db, $parent_table);
-        $parent_cols  = cow_table_columns($db, $parent_table);
-        $overlay_cols = cow_table_columns($db, $overlay_name);
-
-        // Sync the overlay with any new parent columns so the view row
-        // shape matches. (This keeps pre-existing behaviour: parent-side
-        // ADD COLUMN propagates into descendants' overlays.)
-        $missing = array_diff($parent_cols, $overlay_cols);
-        if (!empty($missing)) {
-            $parent_ddl = (string)$db->querySingle(
-                "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
-                . SQLite3::escapeString($parent_table) . "'"
+    try {
+        $failures = [];
+        foreach ($rows as $row) {
+            try {
+                cow_recreate_one_branch_view(
+                    $db, $table_suffix,
+                    (int)$row['branch_id'], (string)$row['parent_table_name']
+                );
+            } catch (\Throwable $e) {
+                $failures[] = "branch_id=" . (int)$row['branch_id'] . ": "
+                            . $e->getMessage();
+            }
+        }
+        if (!empty($failures)) {
+            throw new RuntimeException(
+                "cow_recreate_views_for_table('$table_suffix'): "
+              . count($failures) . " branch(es) failed — "
+              . implode('; ', $failures)
             );
-            foreach ($missing as $mcol) {
-                $def = cow_extract_col_def($parent_ddl, $mcol);
-                if ($def === null) continue;
-                @$db->exec('ALTER TABLE "' . $overlay_name . '" ADD COLUMN ' . $def);
-            }
-            // Re-read overlay cols after the ADDs so view/triggers reflect reality.
-            $overlay_cols = cow_table_columns($db, $overlay_name);
         }
+        if ($own_tx) $db->exec('COMMIT');
+    } catch (\Throwable $e) {
+        if ($own_tx) $db->exec('ROLLBACK');
+        throw $e;
+    }
+}
 
-        // The view's column list is the overlay's column list (the overlay
-        // has been synced to include parent-side additions above, and may
-        // also have branch-side-only columns).
-        $columns = $overlay_cols;
-        if (empty($columns)) continue;
+/** Recreate a single branch's view + triggers for $table_suffix.
+ *  Split out from cow_recreate_views_for_table so the transactional
+ *  wrapper there can run per-branch and collect failures. Throws on
+ *  failure — caller aggregates. */
+function cow_recreate_one_branch_view(SQLite3 $db, string $table_suffix,
+                                      int $bid, string $parent_table): void {
+    $logical_name = "b{$bid}_wp_{$table_suffix}";
+    $overlay_name = $logical_name . '__overlay';
+    $tomb_name    = $logical_name . '__tombstones';
 
-        // Drop old view + triggers, recreate.
-        $db->exec("DROP TRIGGER IF EXISTS \"{$logical_name}__cow_ins\"");
-        $db->exec("DROP TRIGGER IF EXISTS \"{$logical_name}__cow_upd\"");
-        $db->exec("DROP TRIGGER IF EXISTS \"{$logical_name}__cow_del\"");
-        $db->exec("DROP VIEW IF EXISTS \"$logical_name\"");
+    // Skip branches whose objects don't exist (they may have been deleted).
+    if (!cow_is_view($db, $logical_name)) return;
 
-        // Build a view body whose SELECT from the parent projects NULL for
-        // any columns that exist in the overlay but not in the parent
-        // (branch-side-only additions).
-        $view_sql_body = cow_resolve_view_sql_with_projection(
-            $overlay_name, $tomb_name, $parent_table,
-            $pk_cols, $columns, $parent_cols
+    // Re-derive PK + columns. The overlay is the source of truth for the
+    // view's shape: it may have columns the parent doesn't yet, and may be
+    // missing columns the parent grew post-fork.
+    $pk_cols      = cow_extract_pk_cols($db, $parent_table);
+    $parent_cols  = cow_table_columns($db, $parent_table);
+    $overlay_cols = cow_table_columns($db, $overlay_name);
+
+    $missing = array_diff($parent_cols, $overlay_cols);
+    if (!empty($missing)) {
+        $parent_ddl = (string)$db->querySingle(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='"
+            . SQLite3::escapeString($parent_table) . "'"
         );
-        $db->exec("CREATE VIEW \"$logical_name\" AS $view_sql_body");
-        $defaults = [];
-        $pi = $db->query('PRAGMA table_info("' . SQLite3::escapeString($overlay_name) . '")');
-        while ($prow = $pi->fetchArray(SQLITE3_ASSOC)) {
-            if ($prow['dflt_value'] !== null) {
-                $defaults[$prow['name']] = (string)$prow['dflt_value'];
-            }
+        foreach ($missing as $mcol) {
+            $def = cow_extract_col_def($parent_ddl, $mcol);
+            if ($def === null) continue;
+            @$db->exec('ALTER TABLE "' . $overlay_name . '" ADD COLUMN ' . $def);
         }
-        foreach (cow_trigger_sql($logical_name, $overlay_name, $tomb_name,
-                                 $pk_cols, $columns, $defaults,
-                                 $bid, $parent_table, $parent_cols) as $trg) {
-            $db->exec($trg);
+        $overlay_cols = cow_table_columns($db, $overlay_name);
+    }
+
+    $columns = $overlay_cols;
+    if (empty($columns)) return;
+
+    $db->exec("DROP TRIGGER IF EXISTS \"{$logical_name}__cow_ins\"");
+    $db->exec("DROP TRIGGER IF EXISTS \"{$logical_name}__cow_upd\"");
+    $db->exec("DROP TRIGGER IF EXISTS \"{$logical_name}__cow_del\"");
+    $db->exec("DROP VIEW IF EXISTS \"$logical_name\"");
+
+    $view_sql_body = cow_resolve_view_sql_with_projection(
+        $overlay_name, $tomb_name, $parent_table,
+        $pk_cols, $columns, $parent_cols
+    );
+    $rc = $db->exec("CREATE VIEW \"$logical_name\" AS $view_sql_body");
+    if ($rc === false) {
+        throw new RuntimeException("CREATE VIEW failed: " . $db->lastErrorMsg());
+    }
+    $defaults = [];
+    $pi = $db->query('PRAGMA table_info("' . SQLite3::escapeString($overlay_name) . '")');
+    while ($prow = $pi->fetchArray(SQLITE3_ASSOC)) {
+        if ($prow['dflt_value'] !== null) {
+            $defaults[$prow['name']] = (string)$prow['dflt_value'];
+        }
+    }
+    foreach (cow_trigger_sql($logical_name, $overlay_name, $tomb_name,
+                             $pk_cols, $columns, $defaults,
+                             $bid, $parent_table, $parent_cols) as $trg) {
+        $rc = $db->exec($trg);
+        if ($rc === false) {
+            throw new RuntimeException(
+                "CREATE TRIGGER failed on $logical_name: " . $db->lastErrorMsg()
+            );
         }
     }
 }
