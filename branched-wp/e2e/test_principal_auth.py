@@ -371,36 +371,56 @@ echo $err === null ? 'OK' : 'WARN:' . $err;
 
 def test_branchctl_ddl_path_actually_invokes_bootstrap():
     """
-    The `_ddl` subcommand (the production chokepoint where a raw PDO would
-    silently miss COW DDL routing) must call BootstrapBranchedPDO::ensure()
-    before executing user-supplied DDL. We verify end-to-end: running
-    `branchctl _ddl` with a crafted SQL statement that would raise inside
-    ensure() if the call is skipped, and asserting the call actually
-    fires. A grep-only check would be theater (caught by hostile review
-    round 2).
+    End-to-end behavioral test: the `_ddl` subcommand (production chokepoint
+    where a raw PDO would silently miss COW DDL routing) MUST invoke
+    BootstrapBranchedPDO::ensure() at runtime before executing user DDL.
+
+    This test is explicitly designed to defeat grep-theater. Prior versions
+    regex-matched the source of branchctl.php or substring-searched for
+    "BootstrapBranchedPDO::ensure" — both satisfiable by a stray comment or
+    dead code (hostile review round 2 / 3 findings).
+
+    Design: ensure() contains an env-gated sentinel
+    (`if (getenv('BRANCHFS_TRACE_ENSURE')) fwrite(STDERR, "BRANCHFS_ENSURE_CALLED\\n")`).
+    We spawn `branchctl _ddl --branch main` in a real subprocess with the
+    env var set, feed a valid CREATE INDEX on stdin, and assert both:
+      (a) the subprocess exits 0 (DDL actually executed), and
+      (b) the stderr contains BRANCHFS_ENSURE_CALLED (ensure() really ran).
+
+    Deleting the ::ensure() call at branchctl.php while keeping the
+    surrounding comment causes this test to fail — the sentinel never
+    fires because ensure() is never invoked. A comment cannot satisfy
+    this test; only a runtime call can.
     """
-    # Running `branchctl _ddl main "CREATE INDEX x ON b1_wp_options(option_name)"`
-    # is the simplest path that exercises the real DDL chokepoint. If the
-    # bootstrap helper is unwired, the path still completes — so we also
-    # instrument by patching the source check: ensure() must land in the
-    # same _ddl function body, not just be referenced anywhere in the file.
-    src = (BASE_DIR / "scripts" / "branchctl.php").read_text()
-    # Extract the body of the cmd_ddl dispatcher (best-effort; tests run
-    # against a moving target, so we match from the function header to
-    # the next top-level `function ` declaration).
-    import re
-    m = re.search(
-        r"(?:function\s+cmd_ddl\b|case\s+['\"]_ddl['\"])"
-        r"(?P<body>.*?)(?=\nfunction\s+\w+\s*\(|\Z)",
-        src, flags=re.DOTALL,
-    )
-    assert m is not None, "could not locate _ddl dispatch in branchctl.php"
-    body = m.group("body")
-    assert "BootstrapBranchedPDO::ensure" in body, (
-        "branchctl.php _ddl path does not call BootstrapBranchedPDO::ensure() "
-        "— the bootstrap helper is defined but not wired into the production "
-        "chokepoint (finding #5 regression)."
-    )
+    work, site_fp = _fresh_site_with_auth("prinauth_ddl_trace_")
+    try:
+        token = _mint_token(site_fp, "admin")
+        env = {**os.environ,
+               "BRANCHFS_DB": str(site_fp),
+               "FORKPRESS_TOKEN": token,
+               "BRANCHFS_TRACE_ENSURE": "1"}
+        # CREATE INDEX on main's b1_wp_options is a valid, allowlisted DDL
+        # form that exercises the real BranchedPDO::connect +
+        # BootstrapBranchedPDO::ensure path.
+        sql = "CREATE INDEX test_idx_ensure_trace ON b1_wp_options(option_name)"
+        p = subprocess.Popen(
+            [PHP_BIN, "-d", f"extension={EXT_PATH}",
+             str(BRANCHCTL_PHP), "_ddl", "--branch", "main"],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, env=env,
+        )
+        out, err = p.communicate(input=sql, timeout=30)
+        assert p.returncode == 0, (
+            f"_ddl subprocess failed; stdout={out!r} stderr={err!r}"
+        )
+        assert "BRANCHFS_ENSURE_CALLED" in err, (
+            "BootstrapBranchedPDO::ensure() was NOT invoked at runtime on the "
+            "_ddl path — the bootstrap helper is defined but not wired into "
+            "the production chokepoint (finding #5 regression). "
+            f"stderr={err!r} stdout={out!r}"
+        )
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
 
 
 # ══════════════════════════════════════════════════════════════════════════
