@@ -198,18 +198,11 @@ class TestUniqueViolation:
         )
         assert "unique" in r.stdout.lower() or "constraint" in r.stdout.lower()
 
-    @pytest.mark.xfail(
-        reason="Cross-layer UNIQUE: inserting into a branch overlay a value "
-               "that already exists ONLY in the inherited parent does not "
-               "violate the overlay's UNIQUE constraint (which only sees "
-               "overlay rows). The view then shows duplicates. Would require "
-               "the INSTEAD OF INSERT trigger to pre-check the parent, adding "
-               "a SELECT per insert. Documented in PRD.md non-requirements."
-    )
     def test_cross_layer_unique_violation_rejected(self, site_branch):
         """Inheriting rows from parent + inserting a duplicate into the
-        overlay should be rejected by the view's logical UNIQUE contract.
-        Currently not enforced — see xfail reason."""
+        overlay must be rejected by the view's logical UNIQUE contract.
+        Enforced by cross-layer UNIQUE RAISE guard in INSTEAD OF triggers
+        (cow_helpers.php)."""
         site, fid = site_branch
         body = (
             "try {"
