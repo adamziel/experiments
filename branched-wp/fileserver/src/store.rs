@@ -828,4 +828,82 @@ mod tests {
         ).unwrap();
         assert_eq!(second_parent, Some(first_id), "second commit parent_id should equal first commit id");
     }
+
+    // ───── TODO3 #13 — auth-path unit tests ──────────────────────────
+
+    #[test]
+    fn test_verify_user_password_rejects_unknown_user() {
+        let store = make_store();
+        assert!(store.verify_user_password("ghost", "x").is_none());
+    }
+
+    #[test]
+    fn test_verify_user_password_accepts_correct_bcrypt() {
+        let store = make_store();
+        // bcrypt("correct-horse", cost=4) — precomputed so the test is fast.
+        let hash = bcrypt::hash("correct-horse", bcrypt::DEFAULT_COST).unwrap();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS users(
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    mysql_sha1 TEXT,
+                    role TEXT NOT NULL CHECK(role IN ('admin','write','read')),
+                    created_at TEXT DEFAULT (datetime('now'))
+                )",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (?1, ?2, 'write')",
+                params!["alice", hash],
+            ).unwrap();
+        }
+        assert_eq!(
+            store.verify_user_password("alice", "correct-horse").as_deref(),
+            Some("write")
+        );
+        assert!(store.verify_user_password("alice", "wrong").is_none());
+    }
+
+    #[test]
+    fn test_user_mysql_creds_returns_hash_and_role() {
+        let store = make_store();
+        {
+            let conn = store.conn.lock().unwrap();
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS users(
+                    username TEXT PRIMARY KEY,
+                    password_hash TEXT NOT NULL,
+                    mysql_sha1 TEXT,
+                    role TEXT NOT NULL CHECK(role IN ('admin','write','read')),
+                    created_at TEXT DEFAULT (datetime('now'))
+                )",
+                [],
+            ).unwrap();
+            conn.execute(
+                "INSERT INTO users (username, password_hash, mysql_sha1, role) \
+                 VALUES (?1, 'x', ?2, 'read')",
+                params!["bob", "deadbeef".to_string()],
+            ).unwrap();
+        }
+        let out = store.user_mysql_creds("bob");
+        assert_eq!(out, Some(("deadbeef".to_string(), "read".to_string())));
+        assert!(store.user_mysql_creds("nobody").is_none());
+    }
+
+    #[test]
+    fn test_store_db_path_round_trips() {
+        // TODO3 #13 coverage for the TODO3 #1 plumbing: the store
+        // must retain the db path passed to `open()` so the MySQL
+        // proxy can hand it to the PHP DDL helper.
+        let f = NamedTempFile::new().unwrap();
+        let path = f.path().to_path_buf();
+        std::mem::forget(f);
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(include_str!("../../sql/schema.sql")).unwrap();
+        drop(conn);
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.db_path(), path.as_path());
+    }
 }

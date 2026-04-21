@@ -275,7 +275,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 13. Test coverage stops at PHP/SQLite layer [HIGH]
+## [x] 13. Test coverage stops at PHP/SQLite layer [HIGH]
 
 **Acceptance**
 - Build the forkpress binary if cargo is available; if not, document the
