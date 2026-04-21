@@ -330,7 +330,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 18. PRD has accumulated edits [LOW]
+## [x] 18. PRD has accumulated edits [LOW]
 
 **Acceptance**
 - Re-organize PRD.md so requirements (F1, F2…) read coherently

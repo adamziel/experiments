@@ -366,10 +366,13 @@ to the re-assigned `b{new_id}_wp_` on the fly.
 - `router.php` sets `$GLOBALS['_branchfs_table_prefix'] = "b{id}_wp_"` before
   WordPress boots so HTTP requests use the correct branch's tables (the
   view layer is transparent to WordPress and the MySQL proxy).
-- **Schema-change propagation**: when a `branchctl alter-add-column` (or
-  any tooling that goes through the COW helpers) changes a parent table's
-  shape, every descendant branch's view is dropped and recreated so
-  `SELECT *` resolves the new column set.
+- **Schema-change propagation** (TODO3 #6 wrap-in-transaction): when a
+  `branchctl alter-add-column` (or any tooling that goes through the
+  COW helpers) changes a parent table's shape, every descendant
+  branch's view is dropped and recreated so `SELECT *` resolves the
+  new column set. The multi-branch loop runs inside
+  `BEGIN IMMEDIATE … COMMIT`; any per-branch failure rolls back the
+  whole batch and surfaces the failing branch id.
 - **Transparent DDL routing through COW views**
   (`scripts/branched_pdo.php`): user PHP code that runs raw SQL via
   `BranchedPDO::connect($site_fp, $branch)` instead of `new PDO(...)`
