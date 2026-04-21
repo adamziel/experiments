@@ -204,9 +204,12 @@ unpolluted.
 | `gc` | Remove unreferenced blobs across the whole store (shares `fs_gc()` with inline delete-GC). |
 
 ### CLI4 — `forkpress backup <source.fp> <dest.fp>`
-Consistent hot-copy of a running site via SQLite's `VACUUM INTO`.
-Takes a brief read lock, emits a defragmented / checkpointed copy,
-releases. Safe to run while the server is up.
+Consistent hot-copy of a running site via SQLite's online backup API
+(`SQLite3::backup`, PHP 8.1+) — TODO3 #14. The online backup copies
+pages in small batches and yields the write lock between each batch,
+so concurrent writers stall for milliseconds per batch instead of
+being blocked for the full copy duration. Falls back to `VACUUM INTO`
+on pre-8.1 PHP where the backup method isn't available.
 
 ### CLI5 — `forkpress export <source.fp> <output-dir>`
 Writes the site to a portable directory tree:

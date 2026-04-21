@@ -289,7 +289,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 14. Backup `VACUUM INTO` blocks writers [MEDIUM]
+## [x] 14. Backup `VACUUM INTO` blocks writers [MEDIUM]
 
 **Acceptance**
 - Use SQLite's online backup API (`sqlite3_backup_init` / `step` / `finish`)
