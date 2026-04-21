@@ -54,7 +54,7 @@ if (!in_array($on_id_collision, ['conflict', 'renumber'], true)) {
 }
 
 if (!extension_loaded('branchfs')) {
-    fwrite(STDERR, "ERROR: branchfs extension not loaded\n");
+    fwrite(STDERR, "merge: branchfs extension not loaded\n");
     exit(1);
 }
 
@@ -1487,8 +1487,8 @@ function db_copy_table(SQLite3 $db, string $src_table, string $tgt_table,
 
 $src_id = merge_branch_id($db, $source);
 $tgt_id = merge_branch_id($db, $target);
-if (!$src_id) { fwrite(STDERR, "ERROR: source branch '$source' not found\n"); exit(1); }
-if (!$tgt_id) { fwrite(STDERR, "ERROR: target branch '$target' not found\n"); exit(1); }
+if (!$src_id) { fwrite(STDERR, "merge: source branch '$source' not found\n"); exit(1); }
+if (!$tgt_id) { fwrite(STDERR, "merge: target branch '$target' not found\n"); exit(1); }
 
 $base = merge_find_ancestor($db, $source, $target);
 echo "Phase 1: file 3-way merge (fork parent: $base) ...\n";

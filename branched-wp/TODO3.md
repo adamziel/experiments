@@ -339,7 +339,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 19. Inconsistent error handling in PHP [LOW]
+## [x] 19. Inconsistent error handling in PHP [LOW]
 
 **Acceptance**
 - Standardize: throw exceptions inside library code, catch + format at

@@ -38,12 +38,12 @@ $db->exec('PRAGMA wal_autocheckpoint = 500');
 
 $schema = file_get_contents($schema_path);
 if (!$schema) {
-    die("ERROR: Cannot read schema from $schema_path\n");
+    die("init_db:Cannot read schema from $schema_path\n");
 }
 
 $result = $db->exec($schema);
 if (!$result) {
-    die("ERROR: " . $db->lastErrorMsg() . "\n");
+    die("init_db:" . $db->lastErrorMsg() . "\n");
 }
 
 echo "Database initialized successfully.\n";

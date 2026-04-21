@@ -14,18 +14,18 @@ $db_path  = $argv[2] ?? __DIR__ . '/../branchfs.db';
 $branch   = $argv[3] ?? 'main';
 
 if (!is_dir($wp_dir)) {
-    die("ERROR: $wp_dir is not a directory\n");
+    die("import_wp:$wp_dir is not a directory\n");
 }
 
 if (!extension_loaded('branchfs')) {
-    die("ERROR: branchfs extension not loaded. Use: php -d extension=ext/branchfs.so\n");
+    die("import_wp:branchfs extension not loaded. Use: php -d extension=ext/branchfs.so\n");
 }
 
 branchfs_set_db($db_path);
 
 $branch_id = branchfs_create_branch($branch, $branch === 'main' ? null : 'main');
 if ($branch_id === false) {
-    die("ERROR: Could not create/find branch '$branch'\n");
+    die("import_wp:Could not create/find branch '$branch'\n");
 }
 
 echo "Importing $wp_dir into branch '$branch' (id=$branch_id)...\n";
