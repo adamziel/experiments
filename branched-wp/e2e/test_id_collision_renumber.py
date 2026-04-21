@@ -407,9 +407,14 @@ class TestIdCollisionRenumber:
 
     def test_mixed_renumber_and_real_conflict(self, branched):
         """
-        wp_posts.ID collides (renumbered) AND wp_options.option_name (on a
+        wp_posts.ID collides (renumbered) AND wp_options.option_id (on a
         separate non-mapped row) also conflicts. merge must still exit 2 —
         but the renumber-handled collision should NOT appear as a conflict.
+
+        Note: Post-TODO3 #10 the overlay's cross-layer UNIQUE guard blocks
+        a branch INSERT whose option_name collides with an inherited parent
+        row. So we use DIFFERENT option_names on each side — the conflict
+        is on the PK (option_id), not the UNIQUE (option_name).
         """
         fp, fid = branched["site_fp"], branched["feature_id"]
 
@@ -419,13 +424,13 @@ class TestIdCollisionRenumber:
         sqlite_exec(fp, f"INSERT INTO b{fid}_wp_posts (ID, post_title) VALUES (?, ?)",
                     (42, "from branch"))
 
-        # Non-renumber conflict on options
+        # Non-renumber conflict on options (same PK, different option_names).
         sqlite_exec(fp,
             "INSERT INTO b1_wp_options (option_id, option_name, option_value) "
-            "VALUES (?, ?, ?)", (77, "k", "main_val"))
+            "VALUES (?, ?, ?)", (77, "main_key", "main_val"))
         sqlite_exec(fp,
             f"INSERT INTO b{fid}_wp_options (option_id, option_name, option_value) "
-            f"VALUES (?, ?, ?)", (77, "k", "branch_val"))
+            f"VALUES (?, ?, ?)", (77, "branch_key", "branch_val"))
 
         r = branchctl(fp, "merge", "feature", "--into", "main",
                       "--on-id-collision", "renumber")
