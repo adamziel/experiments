@@ -344,22 +344,29 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
     }
     $tomb_cols = implode(', ', array_map(fn($c) => '"' . $c . '"', $pk_cols_for_tomb));
 
-    // ── Cross-layer UNIQUE guard (TODO3 #10) ─────────────────────────
+    // ── Cross-layer UNIQUE guard (TODO3 #10, Cluster-A #1/#9) ────────
     //
     // A naive overlay-only INSERT can admit a row whose UNIQUE-constrained
     // column matches an inherited (non-tombstoned) parent row: the view's
     // UNION ALL then returns two rows with the same "unique" value. Build
     // a RAISE(ABORT, …) preamble that mirrors SQLite's native
     // SQLITE_CONSTRAINT_UNIQUE for each single-column UNIQUE the overlay
-    // carries. Composite UNIQUE and cross-layer UPSERT semantics are
-    // handled by the analogous UPDATE-path block below.
+    // carries.
+    //
+    // Cluster-A fix: the NOT-IN subquery must use the FULL composite PK
+    // tuple — pre-fix this used only $pk_cols[0], so on a 2-col-PK table
+    // a tombstone on (1, 20) would make the guard think (1, 10) was also
+    // deleted, admitting a UNIQUE collision.
     $unique_ins_preamble = '';
     $unique_upd_preamble = '';
     if (!empty($unique_cols) && !empty($pk_cols) && $parent_table !== '') {
         $parent_q = str_replace('"', '""', $parent_table);
         $tomb_q   = str_replace('"', '""', $tombstone_name);
         $ovl_q    = str_replace('"', '""', $overlay_name);
-        $pk_col_q = '"' . $pk_cols[0] . '"';
+        // Build the full composite-PK tuple expressions the guard needs.
+        $pk_tuple_p   = '(' . implode(', ', array_map(fn($c) => 'p."' . $c . '"', $pk_cols)) . ')';
+        $pk_tuple_new = '(' . implode(', ', array_map(fn($c) => 'NEW."' . $c . '"', $pk_cols)) . ')';
+        $pk_sel       = implode(', ', array_map(fn($c) => '"' . $c . '"', $pk_cols));
         foreach ($unique_cols as $uc) {
             $uc_q = '"' . $uc . '"';
             $msg_ins = "UNIQUE constraint failed: "
@@ -370,20 +377,20 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
                 . "    WHERE NEW.$uc_q IS NOT NULL AND EXISTS (\n"
                 . "        SELECT 1 FROM \"$parent_q\" p\n"
                 . "        WHERE p.$uc_q IS NEW.$uc_q\n"
-                . "          AND p.$pk_col_q NOT IN (SELECT $pk_col_q FROM \"$tomb_q\")\n"
-                . "          AND p.$pk_col_q NOT IN (SELECT $pk_col_q FROM \"$ovl_q\")\n"
+                . "          AND $pk_tuple_p NOT IN (SELECT $pk_sel FROM \"$tomb_q\")\n"
+                . "          AND $pk_tuple_p NOT IN (SELECT $pk_sel FROM \"$ovl_q\")\n"
                 . "    );\n";
             // On UPDATE: if NEW's unique value matches an inherited
-            // parent row whose PK differs from the row being updated,
-            // that's also a cross-layer collision.
+            // parent row whose PK tuple differs from NEW, that's a
+            // cross-layer collision.
             $unique_upd_preamble .=
                   "    SELECT RAISE(ABORT, '" . str_replace("'", "''", $msg_upd) . "')\n"
                 . "    WHERE NEW.$uc_q IS NOT NULL AND EXISTS (\n"
                 . "        SELECT 1 FROM \"$parent_q\" p\n"
                 . "        WHERE p.$uc_q IS NEW.$uc_q\n"
-                . "          AND p.$pk_col_q IS NOT NEW.$pk_col_q\n"
-                . "          AND p.$pk_col_q NOT IN (SELECT $pk_col_q FROM \"$tomb_q\")\n"
-                . "          AND p.$pk_col_q NOT IN (SELECT $pk_col_q FROM \"$ovl_q\")\n"
+                . "          AND $pk_tuple_p IS NOT $pk_tuple_new\n"
+                . "          AND $pk_tuple_p NOT IN (SELECT $pk_sel FROM \"$tomb_q\")\n"
+                . "          AND $pk_tuple_p NOT IN (SELECT $pk_sel FROM \"$ovl_q\")\n"
                 . "    );\n";
         }
     }
@@ -395,11 +402,66 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
              . "    INSERT INTO \"$overlay_name\" ($col_list) VALUES ($new_vals);\n"
              . "END";
 
+    // ── INSTEAD OF UPDATE (Cluster-A #1) ─────────────────────────────
+    //
+    // Pre-Cluster-A: `INSERT OR REPLACE INTO overlay VALUES (…)` silently
+    // deleted any overlay row whose UNIQUE value conflicted with NEW —
+    // SQL users expect UNIQUE-violation errors, not REPLACE semantics,
+    // unless they wrote "OR REPLACE" themselves. And when NEW.PK ≠ OLD.PK
+    // the old overlay row's tombstone coverage was lost (the parent row
+    // at OLD.PK reappeared through the view).
+    //
+    // Post-Cluster-A:
+    //   1. Cross-layer UNIQUE guard (above) — unchanged in spirit,
+    //      composite-PK-safe now.
+    //   2. If PK changed:
+    //        a. tombstone OLD.PK (so parent's row at OLD doesn't show).
+    //        b. delete the old overlay row at OLD.PK.
+    //      Else skip both (same-PK update).
+    //   3. Remove any tombstone at NEW.PK (we're placing a row there).
+    //   4. UPSERT into overlay at NEW.PK — `ON CONFLICT(pk) DO UPDATE`.
+    //      SQLite's native UNIQUE-on-non-PK enforcement then fires
+    //      cleanly if NEW's unique value collides with another overlay
+    //      row (a case INSERT OR REPLACE used to swallow).
+    //
+    // Tombstone values for OLD.PK must match the tombstone's column
+    // list. For no-explicit-PK tables the tombstone covers all columns,
+    // matching $pk_cols_for_tomb; otherwise it's $pk_cols.
+    $pk_match_old_eq_new = empty($pk_cols)
+        ? implode(' AND ', array_map(
+            fn($c) => 'OLD."' . $c . '" IS NEW."' . $c . '"', $columns
+          ))
+        : implode(' AND ', array_map(
+            fn($c) => 'OLD."' . $c . '" IS NEW."' . $c . '"', $pk_cols
+          ));
+
+    // Non-PK columns for the UPSERT's DO UPDATE SET. Can't set the PK
+    // to itself; only non-PK columns need re-assigning. When all
+    // columns are PK, DO UPDATE has nothing to set, so fall back to a
+    // no-op (DO NOTHING).
+    $nonpk_cols = empty($pk_cols)
+        ? []
+        : array_values(array_diff($columns, $pk_cols));
+    if (!empty($nonpk_cols)) {
+        $upsert_set = implode(', ', array_map(
+            fn($c) => '"' . $c . '" = excluded."' . $c . '"', $nonpk_cols
+        ));
+        $upsert_tail = "ON CONFLICT($tomb_cols) DO UPDATE SET $upsert_set";
+    } else {
+        // Table is all-PK (rare; tombstone/overlay degenerate case).
+        $upsert_tail = "ON CONFLICT($tomb_cols) DO NOTHING";
+    }
+
     $upd_trg = "CREATE TRIGGER \"{$view_name}__cow_upd\" INSTEAD OF UPDATE ON \"$view_name\"\n"
              . "BEGIN\n"
              . $unique_upd_preamble
-             . "    DELETE FROM \"$tombstone_name\" WHERE $pk_match_old;\n"
-             . "    INSERT OR REPLACE INTO \"$overlay_name\" ($col_list) VALUES ($new_vals);\n"
+             . "    INSERT OR IGNORE INTO \"$tombstone_name\" ($tomb_cols)\n"
+             . "        SELECT $tomb_old_vals WHERE NOT ($pk_match_old_eq_new);\n"
+             . "    DELETE FROM \"$overlay_name\"\n"
+             . "        WHERE $pk_match_old AND NOT ($pk_match_old_eq_new);\n"
+             . "    DELETE FROM \"$tombstone_name\" WHERE $pk_match_new;\n"
+             . "    INSERT INTO \"$overlay_name\" ($col_list) VALUES ($new_vals)\n"
+             . "        $upsert_tail;\n"
              . "END";
 
     $del_trg = "CREATE TRIGGER \"{$view_name}__cow_del\" INSTEAD OF DELETE ON \"$view_name\"\n"

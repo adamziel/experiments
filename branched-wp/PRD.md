@@ -382,6 +382,26 @@ to the re-assigned `b{new_id}_wp_` on the fly.
 - All branches see their own isolated database state — INSTEAD OF triggers
   enforce isolation; UPDATEs on the branch view only touch the branch's
   overlay, never the parent's table.
+- **INSTEAD OF UPDATE semantics** (Cluster-A #1): the UPDATE trigger
+  uses an explicit "tombstone-old-then-upsert-new" sequence rather
+  than `INSERT OR REPLACE`. Pre-Cluster-A the trigger did
+  `INSERT OR REPLACE INTO overlay (…) VALUES (NEW.*)` which silently
+  deleted any overlay row whose UNIQUE column collided with NEW —
+  SQL users expect `SQLITE_CONSTRAINT_UNIQUE`, not REPLACE, unless
+  they wrote `OR REPLACE` themselves. And when `NEW.PK ≠ OLD.PK` the
+  old overlay row's tombstone coverage vanished so the parent's
+  row at `OLD.PK` re-emerged through the view. Post-Cluster-A the
+  trigger body is:
+  1. Cross-layer UNIQUE guard (composite-PK-safe — `pk_tuple_p NOT IN
+     (SELECT pk_tuple FROM tombstones/overlay)` rather than the
+     single-column `$pk_cols[0]` form).
+  2. If `NEW.PK ≠ OLD.PK`: `INSERT OR IGNORE` a tombstone for OLD.PK
+     and DELETE the old overlay row at OLD.PK.
+  3. DELETE any tombstone at NEW.PK.
+  4. `INSERT INTO overlay (…) VALUES (NEW.*) ON CONFLICT(pk)
+     DO UPDATE SET …` — a PK conflict at NEW (same-PK update) runs
+     the UPDATE branch; UNIQUE violations on non-PK columns fire
+     natively as `SQLITE_CONSTRAINT_UNIQUE`.
 - `router.php` sets `$GLOBALS['_branchfs_table_prefix'] = "b{id}_wp_"` before
   WordPress boots so HTTP requests use the correct branch's tables (the
   view layer is transparent to WordPress and the MySQL proxy).
