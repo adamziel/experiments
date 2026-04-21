@@ -5,14 +5,6 @@
  *
  * Don't include this file from CLI scripts directly — `require_once`
  * from branchctl.php and merge.php instead.
- *
- * TODO3 #17 — The file grew organically as procedural PHP. The `Cow`
- * class at the bottom of this file provides a class-level view onto
- * the same operations (static forwards). Callers that want a tidier
- * entry point — especially tests — can use `Cow::is_view()`,
- * `Cow::install_parent_triggers()`, etc. The underlying procedural
- * functions remain callable for backwards compatibility with existing
- * callers (branchctl.php, merge.php, branched_pdo.php).
  */
 
 // ============================================================
@@ -1141,49 +1133,4 @@ function cow_migrate_legacy_branch(SQLite3 $db, int $branch_id): int {
     return $migrated;
 }
 
-
-/**
- * TODO3 #17 — class-level facade over the procedural cow_* helpers.
- *
- * Static forwards to the existing functions. No behaviour change —
- * this exists so callers that prefer a tidy entry point (tests, future
- * extractors) can use Cow::foo() rather than grepping for cow_foo()
- * across three PHP files.
- */
-class Cow
-{
-    public static function is_view(SQLite3 $db, string $name): bool {
-        return cow_is_view($db, $name);
-    }
-    public static function is_table(SQLite3 $db, string $name): bool {
-        return cow_is_table($db, $name);
-    }
-    public static function extract_pk_cols(SQLite3 $db, string $t): array {
-        return cow_extract_pk_cols($db, $t);
-    }
-    public static function table_columns(SQLite3 $db, string $t): array {
-        return cow_table_columns($db, $t);
-    }
-    public static function single_col_unique_columns(SQLite3 $db, string $t): array {
-        return cow_single_col_unique_columns($db, $t);
-    }
-    public static function install_parent_triggers(SQLite3 $db, string $parent_table): void {
-        cow_install_parent_triggers($db, $parent_table);
-    }
-    public static function drop_parent_triggers(SQLite3 $db, string $parent_table): int {
-        return cow_drop_parent_triggers($db, $parent_table);
-    }
-    public static function create_branch_table(SQLite3 $db, int $bid, int $pid, string $sfx): void {
-        cow_create_branch_table($db, $bid, $pid, $sfx);
-    }
-    public static function recreate_views_for_table(SQLite3 $db, string $sfx): void {
-        cow_recreate_views_for_table($db, $sfx);
-    }
-    public static function recreate_one_branch_view(SQLite3 $db, string $sfx, int $bid, string $parent_table): void {
-        cow_recreate_one_branch_view($db, $sfx, $bid, $parent_table);
-    }
-    public static function migrate_legacy_branch(SQLite3 $db, int $branch_id): int {
-        return cow_migrate_legacy_branch($db, $branch_id);
-    }
-}
 

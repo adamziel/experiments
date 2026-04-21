@@ -77,6 +77,28 @@ shared blobs (still referenced by a sibling or parent branch) are left
 in place. A stdout line `branchfs: reclaimed N orphaned blob(s), M
 bytes` appears when N > 0.
 
+### SF2 — Branch isolation
+Both the filesystem and the database are branch-isolated.
+
+- **Filesystem**: copy-on-write blobs per branch (existing `files` table overlay).
+  Large-file writes use the chunked layout from SF1 so that uploading a
+  multi-MB media asset never holds the entire payload in a single SQLite
+  row — peak memory stays bounded by the chunk size instead of the file
+  size.
+- **Database (COW)**: each branch owns its own set of WordPress tables with
+  prefix `b{branch_id}_wp_` (e.g. `b2_wp_posts`). For NON-MAIN branches,
+  `b{id}_wp_X` is a **VIEW** that UNION-ALLs an overlay (changed/added rows)
+  with the parent's view minus tombstones (deleted PKs). INSTEAD OF triggers
+  on the view route INSERT/UPDATE/DELETE to overlay/tombstones — WordPress
+  and the MySQL proxy both write to the view transparently, no SQL rewrite.
+  For MAIN (id=1), `b1_wp_X` remains a real table (no view layer); branches
+  inherit from main via the chain.
+
+  Branch creation is therefore **O(num_tables)**, not O(num_rows): a 10k-row
+  site forks in milliseconds and grows the `.fp` file by ~12 KB per table
+  instead of copying every row. Storage is proportional to the divergent
+  rows the branch actually overlays — empty branches are nearly free.
+
 ### SF2a — Concurrent-writer resilience
 Every PHP writer (branchctl, merge.php, checkpoint.php) opens SQLite with
 `busyTimeout(15000)` (15 s), and the long-running critical transactions
@@ -104,28 +126,6 @@ transient `SQLITE_BUSY` no longer surfaces as a 500 / failed command.
   accompany it. A `cp site.fp backup.fp` while the server is up requires
   copying all three, or running `scripts/checkpoint.php` first to
   collapse the WAL into the main file.
-
-### SF2 — Branch isolation
-Both the filesystem and the database are branch-isolated.
-
-- **Filesystem**: copy-on-write blobs per branch (existing `files` table overlay).
-  Large-file writes use the chunked layout from SF1 so that uploading a
-  multi-MB media asset never holds the entire payload in a single SQLite
-  row — peak memory stays bounded by the chunk size instead of the file
-  size.
-- **Database (COW)**: each branch owns its own set of WordPress tables with
-  prefix `b{branch_id}_wp_` (e.g. `b2_wp_posts`). For NON-MAIN branches,
-  `b{id}_wp_X` is a **VIEW** that UNION-ALLs an overlay (changed/added rows)
-  with the parent's view minus tombstones (deleted PKs). INSTEAD OF triggers
-  on the view route INSERT/UPDATE/DELETE to overlay/tombstones — WordPress
-  and the MySQL proxy both write to the view transparently, no SQL rewrite.
-  For MAIN (id=1), `b1_wp_X` remains a real table (no view layer); branches
-  inherit from main via the chain.
-
-  Branch creation is therefore **O(num_tables)**, not O(num_rows): a 10k-row
-  site forks in milliseconds and grows the `.fp` file by ~12 KB per table
-  instead of copying every row. Storage is proportional to the divergent
-  rows the branch actually overlays — empty branches are nearly free.
 
 ---
 
@@ -221,6 +221,12 @@ Writes the site to a portable directory tree:
 ```
 Suitable for long-term archival and format-version migrations.
 
+### CLI6 — `forkpress import <input-dir> <new.fp>`
+Reverse of export: runs `init`, recreates branches in topological
+order, replays their files through the branchfs stream wrapper, then
+applies each branch's `db.sql`. `b{old_id}_wp_` prefixes are rewritten
+to the re-assigned `b{new_id}_wp_` on the fly.
+
 ### CLI7 — `forkpress user <subcommand>`
 Manage authentication users. Forwards to `scripts/user_admin.php`.
 
@@ -236,12 +242,6 @@ Password hashing: bcrypt via PHP's `password_hash(PASSWORD_BCRYPT)`;
 also stores `mysql_sha1 = SHA1(SHA1(password))` hex so the MySQL proxy
 can run a real `mysql_native_password` handshake without ever holding
 the plaintext or a reversible hash.
-
-### CLI6 — `forkpress import <input-dir> <new.fp>`
-Reverse of export: runs `init`, recreates branches in topological
-order, replays their files through the branchfs stream wrapper, then
-applies each branch's `db.sql`. `b{old_id}_wp_` prefixes are rewritten
-to the re-assigned `b{new_id}_wp_` on the fly.
 
 ---
 
@@ -586,126 +586,6 @@ inherited from the original merge-time code.
   sites upgraded in place) is a no-op — only the file side rolls back,
   matching the pre-versioning behaviour.
 
-### F9a — OPcache invalidation for out-of-process writers
-Router serves PHP via `branchfs://<branch>/path.php` URLs so OPcache keys
-bytecode per-branch. Any writer that mutates a `.php` file on disk from a
-*different* PHP process (branchctl merge/reset/rollback) must communicate
-the change to the running PHP server, otherwise stale bytecode keeps
-serving the old code until OPcache TTL expires.
-
-Implementation (`scripts/opcache.php`):
-- Table `opcache_invalidations(id, url, created_at)` is a cross-process
-  queue inside the `.fp` file.
-- Writers (merge.php, branchctl reset/rollback) call
-  `opcache_queue_invalidate($db, $branch, $path)` inside the same
-  transaction as the file change. Non-`.php`/`.phtml` paths are skipped
-  because they never have OPcache entries.
-- Router (`e2e/router.php`) calls `opcache_process_pending($db)` at the
-  start of every request, pops every queued URL, and calls
-  `opcache_invalidate()` for each. Safe when OPcache is not loaded — the
-  queue is still drained, just without the actual invalidation call.
-
-### FAUTH — Authentication for write surfaces
-Every non-HTTP write surface (SFTP, SMB, MySQL proxy, git push) honours
-a per-site auth gate backed by two new SQLite tables:
-
-- `users(username TEXT PRIMARY KEY, password_hash TEXT, mysql_sha1 TEXT,
-  role TEXT CHECK(role IN ('admin','write','read')), created_at TEXT)`
-- `site_config(key TEXT PRIMARY KEY, value TEXT)` — auth is on when
-  `auth_enabled='1'`.
-
-Role semantics:
-
-| Role | HTTP preview | SFTP read | SFTP write | MySQL SELECT | MySQL DML | SMB | git clone | git push |
-|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
-| `admin`/`write` | open | yes | yes | yes | yes | if `auth_enabled='0'` | yes | yes |
-| `read` | open | yes | **403** | yes | **403** | if `auth_enabled='0'` | yes | **403** |
-| unauthenticated (when `auth_enabled='1'`) | open | **reject** | — | **reject** | — | **reject** | open | **401** |
-
-Back-compat:
-- **new sites** created via `forkpress init` / `scripts/init_db.php`
-  default to `auth_enabled='1'` and ship with an `admin` user whose
-  one-time password is printed during init.
-- **pre-change sites** (the `.fp` was created before this feature) have
-  no `site_config` row at all; the first `fs_migrate()` on them seeds
-  `auth_enabled='0'` so existing workflows don't break. Operators opt
-  into auth by running `forkpress user add admin <pw> --role admin &&
-  forkpress user auth-enabled 1`.
-
-Password recovery is intentionally manual — there is no email loop, no
-reset token. Operators rotate credentials with
-`forkpress user remove <name> && forkpress user add <name> <newpw>`.
-
-### F12 — Audit log (principal-bound, tamper-resistant)
-
-Every state-mutating branchctl command (create, commit, delete, merge,
-rollback, reset, migrate, `_ddl`) writes one row into `audit_log`:
-
-```
-audit_log(id, ts, actor, action, target, details)
-```
-
-**Principal binding.** `audit_log.actor` is sourced from a resolved
-`Principal` (see `scripts/principal.php`), **not** from
-`FORKPRESS_ACTOR`. The resolver runs once at CLI startup and
-registers itself on `audit_helpers.php` so every subsequent
-`audit_log_write` call uses the same identity:
-
-- `auth_enabled='1'`: the CLI accepts `--user <u> --password <p>` OR
-  `FORKPRESS_TOKEN=<signed>`. Credentials are verified against
-  `users.password_hash` (bcrypt) or the HMAC-signed token. The env var
-  `FORKPRESS_ACTOR` is **ignored** — setting it does nothing.
-- `auth_enabled='0'` (legacy): no credentials required. The principal
-  is a synthetic `system` role; `FORKPRESS_ACTOR` is honoured as a
-  display-only hint for audit attribution but confers no security.
-
-**Token format.** A FORKPRESS_TOKEN is
-`base64url("<username>.<exp_unix>.<hex_sha256_hmac>")`. The HMAC key
-is stored in `site_config['hmac_secret']` (32 bytes, hex-encoded) and
-auto-generated on first use. The secret is never logged. The MySQL
-proxy mints 60-second tokens via `Store::mint_principal_token()` when
-it shells out to `branchctl _ddl`.
-
-**Tamper resistance.** `audit_log` carries two SQLite triggers:
-
-```sql
-CREATE TRIGGER audit_log_no_update
-BEFORE UPDATE ON audit_log
-BEGIN SELECT RAISE(ABORT, 'audit_log is append-only (tamper-resistant)'); END;
-CREATE TRIGGER audit_log_no_delete
-BEFORE DELETE ON audit_log
-BEGIN SELECT RAISE(ABORT, 'audit_log is append-only (tamper-resistant)'); END;
-```
-
-So a caller who runs `DELETE FROM audit_log` or `UPDATE audit_log SET
-actor='victim'` — whether via sqlite3 shell, the MySQL proxy, or a
-PHP caller — is stopped with a `SQLITE_CONSTRAINT`-style abort. There
-is one SQLite-scope limitation: a caller who can `DROP TABLE
-audit_log` or physically replace the `.fp` file has escaped every
-constraint SQLite can enforce. Operators who need stronger guarantees
-should mount the `.fp` read-only for untrusted consumers. See
-LIMITATIONS.md.
-
-**Failure semantics.** `audit_log_write` failures are **not silent**.
-If the INSERT fails for any reason (e.g. a broken schema from
-administrative corruption), the helper writes a diagnostic to STDERR
-and the CLI exits non-zero — closing hostile-review finding #2 where
-failures were swallowed.
-
-**Chokepoints.**
-- `scripts/principal.php` — `Principal` class, token mint/verify,
-  `principal_resolve()`.
-- `scripts/audit_helpers.php` — `audit_log_set_principal()` and
-  `audit_log_write()` with loud failure.
-- `scripts/branched_pdo.php` — `BootstrapBranchedPDO::ensure()` is the
-  sanctioned chokepoint every entry point calls after opening a PDO to
-  enforce BranchedPDO wrapping (finding #5). `BranchedSession::open()`
-  is the one-call sanctioned path that binds PDO + principal in a
-  single step.
-- `scripts/branchctl.php` — resolves a principal once up front,
-  rejects writers when auth is enabled and no credentials are
-  supplied, and gates `_ddl` SQL through a DDL allowlist.
-
 ### F9 — Merge
 `branchctl merge <from> --into <target> [--strategy=abort|ours|theirs] [--on-id-collision=conflict|renumber]`
 
@@ -859,6 +739,126 @@ value) get the same ancestor refresh: source's CURRENT value is recorded
 so the next merge sees `s == a → noop`, preserving the user's "ours"
 decision across iterative merges. Merges that exit via `--strategy=abort`
 on a real conflict do not touch any ancestor table.
+
+### F9a — OPcache invalidation for out-of-process writers
+Router serves PHP via `branchfs://<branch>/path.php` URLs so OPcache keys
+bytecode per-branch. Any writer that mutates a `.php` file on disk from a
+*different* PHP process (branchctl merge/reset/rollback) must communicate
+the change to the running PHP server, otherwise stale bytecode keeps
+serving the old code until OPcache TTL expires.
+
+Implementation (`scripts/opcache.php`):
+- Table `opcache_invalidations(id, url, created_at)` is a cross-process
+  queue inside the `.fp` file.
+- Writers (merge.php, branchctl reset/rollback) call
+  `opcache_queue_invalidate($db, $branch, $path)` inside the same
+  transaction as the file change. Non-`.php`/`.phtml` paths are skipped
+  because they never have OPcache entries.
+- Router (`e2e/router.php`) calls `opcache_process_pending($db)` at the
+  start of every request, pops every queued URL, and calls
+  `opcache_invalidate()` for each. Safe when OPcache is not loaded — the
+  queue is still drained, just without the actual invalidation call.
+
+### FAUTH — Authentication for write surfaces
+Every non-HTTP write surface (SFTP, SMB, MySQL proxy, git push) honours
+a per-site auth gate backed by two new SQLite tables:
+
+- `users(username TEXT PRIMARY KEY, password_hash TEXT, mysql_sha1 TEXT,
+  role TEXT CHECK(role IN ('admin','write','read')), created_at TEXT)`
+- `site_config(key TEXT PRIMARY KEY, value TEXT)` — auth is on when
+  `auth_enabled='1'`.
+
+Role semantics:
+
+| Role | HTTP preview | SFTP read | SFTP write | MySQL SELECT | MySQL DML | SMB | git clone | git push |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `admin`/`write` | open | yes | yes | yes | yes | if `auth_enabled='0'` | yes | yes |
+| `read` | open | yes | **403** | yes | **403** | if `auth_enabled='0'` | yes | **403** |
+| unauthenticated (when `auth_enabled='1'`) | open | **reject** | — | **reject** | — | **reject** | open | **401** |
+
+Back-compat:
+- **new sites** created via `forkpress init` / `scripts/init_db.php`
+  default to `auth_enabled='1'` and ship with an `admin` user whose
+  one-time password is printed during init.
+- **pre-change sites** (the `.fp` was created before this feature) have
+  no `site_config` row at all; the first `fs_migrate()` on them seeds
+  `auth_enabled='0'` so existing workflows don't break. Operators opt
+  into auth by running `forkpress user add admin <pw> --role admin &&
+  forkpress user auth-enabled 1`.
+
+Password recovery is intentionally manual — there is no email loop, no
+reset token. Operators rotate credentials with
+`forkpress user remove <name> && forkpress user add <name> <newpw>`.
+
+### F12 — Audit log (principal-bound, tamper-resistant)
+
+Every state-mutating branchctl command (create, commit, delete, merge,
+rollback, reset, migrate, `_ddl`) writes one row into `audit_log`:
+
+```
+audit_log(id, ts, actor, action, target, details)
+```
+
+**Principal binding.** `audit_log.actor` is sourced from a resolved
+`Principal` (see `scripts/principal.php`), **not** from
+`FORKPRESS_ACTOR`. The resolver runs once at CLI startup and
+registers itself on `audit_helpers.php` so every subsequent
+`audit_log_write` call uses the same identity:
+
+- `auth_enabled='1'`: the CLI accepts `--user <u> --password <p>` OR
+  `FORKPRESS_TOKEN=<signed>`. Credentials are verified against
+  `users.password_hash` (bcrypt) or the HMAC-signed token. The env var
+  `FORKPRESS_ACTOR` is **ignored** — setting it does nothing.
+- `auth_enabled='0'` (legacy): no credentials required. The principal
+  is a synthetic `system` role; `FORKPRESS_ACTOR` is honoured as a
+  display-only hint for audit attribution but confers no security.
+
+**Token format.** A FORKPRESS_TOKEN is
+`base64url("<username>.<exp_unix>.<hex_sha256_hmac>")`. The HMAC key
+is stored in `site_config['hmac_secret']` (32 bytes, hex-encoded) and
+auto-generated on first use. The secret is never logged. The MySQL
+proxy mints 60-second tokens via `Store::mint_principal_token()` when
+it shells out to `branchctl _ddl`.
+
+**Tamper resistance.** `audit_log` carries two SQLite triggers:
+
+```sql
+CREATE TRIGGER audit_log_no_update
+BEFORE UPDATE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only (tamper-resistant)'); END;
+CREATE TRIGGER audit_log_no_delete
+BEFORE DELETE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only (tamper-resistant)'); END;
+```
+
+So a caller who runs `DELETE FROM audit_log` or `UPDATE audit_log SET
+actor='victim'` — whether via sqlite3 shell, the MySQL proxy, or a
+PHP caller — is stopped with a `SQLITE_CONSTRAINT`-style abort. There
+is one SQLite-scope limitation: a caller who can `DROP TABLE
+audit_log` or physically replace the `.fp` file has escaped every
+constraint SQLite can enforce. Operators who need stronger guarantees
+should mount the `.fp` read-only for untrusted consumers. See
+LIMITATIONS.md.
+
+**Failure semantics.** `audit_log_write` failures are **not silent**.
+If the INSERT fails for any reason (e.g. a broken schema from
+administrative corruption), the helper writes a diagnostic to STDERR
+and the CLI exits non-zero — closing hostile-review finding #2 where
+failures were swallowed.
+
+**Chokepoints.**
+- `scripts/principal.php` — `Principal` class, token mint/verify,
+  `principal_resolve()`.
+- `scripts/audit_helpers.php` — `audit_log_set_principal()` and
+  `audit_log_write()` with loud failure.
+- `scripts/branched_pdo.php` — `BootstrapBranchedPDO::ensure()` is the
+  sanctioned chokepoint every entry point calls after opening a PDO to
+  enforce BranchedPDO wrapping (finding #5). `BranchedSession::open()`
+  is the one-call sanctioned path that binds PDO + principal in a
+  single step.
+- `scripts/branchctl.php` — resolves a principal once up front,
+  rejects writers when auth is enabled and no credentials are
+  supplied, and gates `_ddl` SQL through a DDL allowlist.
 
 ---
 
