@@ -349,7 +349,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 20. SQL string concatenation [LOW]
+## [x] 20. SQL string concatenation [LOW]
 
 **Acceptance**
 - Audit all `$db->exec(...)` and `$db->query(...)` calls in scripts/
