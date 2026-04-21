@@ -254,7 +254,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 11. No `branchctl status` / `branchctl diff` for DB [LOW]
+## [x] 11. No `branchctl status` / `branchctl diff` for DB [LOW]
 
 **Acceptance**
 - `branchctl status <branch>` prints per-table summary: rows added,

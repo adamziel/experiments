@@ -39,7 +39,8 @@ Usage:
 
   branchctl commit  <name>  [-m "message"]
   branchctl log     <name>  [-n <count>]
-  branchctl diff    <a> <b>
+  branchctl diff    <a> <b>  [--rows]   (--rows = row-level DB diff)
+  branchctl status  <name>
   branchctl merge   <from>  --into <target>
   branchctl reset   <name>  <commit-hash>  [--force]
   branchctl rollback <name>  [--force]
@@ -2049,15 +2050,122 @@ case 'log': {
     break;
 }
 
+case 'status': {
+    // TODO3 #11 — per-table summary of branch divergence.
+    //
+    // Prints overlay / tombstone row counts per b{id}_wp_X table plus
+    // a note when the branch has uncommitted DB changes since the
+    // last db_commit. Intended as a fast "what's different on this
+    // branch right now?" orientation for operators.
+    $name = $pos[1] ?? die_usage("`status` needs a branch name");
+    if (!valid_branch_name($name) && $name !== 'main') die_usage("invalid branch: $name");
+    $db = sqlite_open($DB_PATH);
+    $bid = fs_branch_id($db, $name);
+    if ($bid <= 0) {
+        fwrite(STDERR, "branchctl: no branch named '$name'\n");
+        exit(4);
+    }
+    echo "branchfs: status of '$name' (id=$bid)\n";
+    printf("\n  %-24s %10s %10s\n", "TABLE_SUFFIX", "OVERLAY", "TOMBS");
+    printf("  %s\n", str_repeat('-', 48));
+    $suffixes = db_branch_table_suffixes($db, $bid);
+    $total_o = 0; $total_t = 0;
+    foreach ($suffixes as $suffix) {
+        $overlay = ($bid === 1)
+            ? "b1_wp_$suffix"
+            : "b{$bid}_wp_{$suffix}__overlay";
+        $tomb    = ($bid === 1) ? null : "b{$bid}_wp_{$suffix}__tombstones";
+        $ov_n = cow_is_table($db, $overlay)
+            ? (int)$db->querySingle('SELECT COUNT(*) FROM "' . SQLite3::escapeString($overlay) . '"')
+            : 0;
+        $tb_n = ($tomb !== null && cow_is_table($db, $tomb))
+            ? (int)$db->querySingle('SELECT COUNT(*) FROM "' . SQLite3::escapeString($tomb) . '"')
+            : 0;
+        $total_o += $ov_n; $total_t += $tb_n;
+        printf("  %-24s %10d %10d\n", $suffix, $ov_n, $tb_n);
+    }
+    printf("  %s\n", str_repeat('-', 48));
+    printf("  %-24s %10d %10d\n", "total", $total_o, $total_t);
+    echo "\n";
+    if ($bid > 1) {
+        echo db_has_uncommitted_changes($db, $bid)
+            ? "  DB state: divergent from last db_commit (uncommitted changes)\n"
+            : "  DB state: clean (matches last db_commit)\n";
+    }
+    break;
+}
+
 case 'diff': {
     $a = $pos[1] ?? die_usage("`diff` needs two branch names");
     $b = $pos[2] ?? die_usage("`diff` needs two branch names");
     if (!valid_branch_name($a) && $a !== 'main') die_usage("invalid branch: $a");
     if (!valid_branch_name($b) && $b !== 'main') die_usage("invalid branch: $b");
+    // Use --rows for the DB-row-level diff mode. `--db <path>` is the
+    // global DB-path override, so those two flag names must stay distinct.
+    $mode_db = !empty($flags['rows']);
 
     $db = sqlite_open($DB_PATH);
     $aid = (int)$db->querySingle("SELECT id FROM branches WHERE name = '" . $db->escapeString($a) . "'");
     $bid = (int)$db->querySingle("SELECT id FROM branches WHERE name = '" . $db->escapeString($b) . "'");
+
+    if ($mode_db) {
+        // TODO3 #11 — row-level DB diff between two branches. Walks the
+        // union of suffixes on both sides and prints the PK-level
+        // differences in each table. Runs against the view layer so
+        // cross-branch inherited rows are taken into account.
+        echo "branchfs: db diff '$a' vs '$b'\n";
+        $a_sufs = $aid > 0 ? db_branch_table_suffixes($db, $aid) : [];
+        $b_sufs = $bid > 0 ? db_branch_table_suffixes($db, $bid) : [];
+        $all = array_values(array_unique(array_merge($a_sufs, $b_sufs)));
+        sort($all);
+        $total = 0;
+        foreach ($all as $suffix) {
+            $ta = $aid > 0 ? db_overlay_or_real($aid, $suffix) : '';
+            $tb = $bid > 0 ? db_overlay_or_real($bid, $suffix) : '';
+            // Diff via the VIEW layer so inherited rows aren't confused
+            // with divergence; read each branch's logical name.
+            $la = ($aid === 1) ? "b1_wp_$suffix" : "b{$aid}_wp_$suffix";
+            $lb = ($bid === 1) ? "b1_wp_$suffix" : "b{$bid}_wp_$suffix";
+            if (!cow_is_table($db, $la) && !cow_is_view($db, $la)) { continue; }
+            if (!cow_is_table($db, $lb) && !cow_is_view($db, $lb)) { continue; }
+            $pk_cols = cow_extract_pk_cols($db, $la);
+            $cols    = cow_table_columns($db, $la);
+            if (empty($cols)) continue;
+
+            $row_a = [];
+            $r = $db->query('SELECT * FROM "' . SQLite3::escapeString($la) . '"');
+            while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+                $pkm = [];
+                foreach ($pk_cols as $c) $pkm[$c] = $row[$c] ?? null;
+                $row_a[json_encode($pkm)] = json_encode($row);
+            }
+            $r->finalize();
+            $row_b = [];
+            $r = $db->query('SELECT * FROM "' . SQLite3::escapeString($lb) . '"');
+            while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+                $pkm = [];
+                foreach ($pk_cols as $c) $pkm[$c] = $row[$c] ?? null;
+                $row_b[json_encode($pkm)] = json_encode($row);
+            }
+            $r->finalize();
+            $added = array_diff_key($row_b, $row_a);
+            $removed = array_diff_key($row_a, $row_b);
+            $modified = [];
+            foreach ($row_a as $pk => $ja) {
+                if (isset($row_b[$pk]) && $row_b[$pk] !== $ja) {
+                    $modified[$pk] = true;
+                }
+            }
+            if (!$added && !$removed && !$modified) continue;
+            printf("  table %s: +%d / -%d / ~%d\n",
+                $suffix, count($added), count($removed), count($modified));
+            $total += count($added) + count($removed) + count($modified);
+        }
+        if ($total === 0) {
+            echo "  (no row differences between '$a' and '$b')\n";
+        }
+        break;
+    }
 
     echo "branchfs: overlay diff '$a' vs '$b'\n";
 
