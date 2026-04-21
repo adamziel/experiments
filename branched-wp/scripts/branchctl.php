@@ -1516,9 +1516,11 @@ function db_rebuild_view_for(SQLite3 $db, int $branch_id, string $suffix): void 
             $defaults[$prow['name']] = (string)$prow['dflt_value'];
         }
     }
+    $unique_cols = cow_single_col_unique_columns($db, $overlay);
     foreach (cow_trigger_sql($logical, $overlay, $tomb,
                              $pk_cols, $columns, $defaults,
-                             $branch_id, $parent_table, $parent_cols) as $trg) {
+                             $branch_id, $parent_table, $parent_cols,
+                             $unique_cols) as $trg) {
         $db->exec($trg);
     }
 }

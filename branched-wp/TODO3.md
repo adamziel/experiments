@@ -236,7 +236,7 @@ Renumber would orphan child rows.
 
 ---
 
-## [ ] 10. Cross-layer UNIQUE doesn't enforce [HIGH]
+## [x] 10. Cross-layer UNIQUE doesn't enforce [HIGH]
 
 **Problem**
 A branch's overlay accepts a row with a "unique" value that conflicts

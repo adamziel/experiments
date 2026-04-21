@@ -70,6 +70,40 @@ function cow_extract_pk_cols(SQLite3 $db, string $real_table_name): array {
     return array_values($pk);
 }
 
+/** TODO3 #10 — return single-column UNIQUE constraints declared on $table.
+ *
+ *  Walks PRAGMA index_list; for each entry with origin='u' (CREATE TABLE
+ *  UNIQUE) or origin='c' (CREATE UNIQUE INDEX), if the index covers exactly
+ *  one column, include that column in the result. Multi-column UNIQUE and
+ *  the PK's auto-created index (origin='pk') are excluded.
+ *
+ *  Used to emit cross-layer UNIQUE RAISE guards in INSTEAD OF triggers so
+ *  a branch's overlay can't admit a row whose "unique" value already
+ *  exists on an inherited parent row. */
+function cow_single_col_unique_columns(SQLite3 $db, string $table): array {
+    $result = [];
+    $r = $db->query('PRAGMA index_list("' . SQLite3::escapeString($table) . '")');
+    if (!$r) return [];
+    $indexes = [];
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) $indexes[] = $row;
+    $r->finalize();
+    foreach ($indexes as $ix) {
+        if ((int)($ix['unique'] ?? 0) !== 1) continue;
+        $origin = (string)($ix['origin'] ?? '');
+        if ($origin !== 'u' && $origin !== 'c') continue;
+        $iname = (string)$ix['name'];
+        $ir = $db->query('PRAGMA index_info("' . SQLite3::escapeString($iname) . '")');
+        if (!$ir) continue;
+        $cols = [];
+        while ($row = $ir->fetchArray(SQLITE3_ASSOC)) {
+            $cols[] = (string)$row['name'];
+        }
+        $ir->finalize();
+        if (count($cols) === 1) $result[$cols[0]] = true;
+    }
+    return array_keys($result);
+}
+
 /** Return ordered list of all column names for a table. */
 function cow_table_columns(SQLite3 $db, string $real_table_name): array {
     $cols = [];
@@ -261,13 +295,13 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
                         string $tombstone_name, array $pk_cols,
                         array $columns, array $defaults = [],
                         int $branch_id = 0, string $parent_table = '',
-                        array $parent_columns = []): array {
-    // branch_id / parent_table / parent_columns are accepted for forward
-    // compatibility (callers that wire up lazy branch-side capture) but
-    // the TODO3 #3 fix achieves O(1)-per-parent-write ancestor capture via
-    // the shared-parent-table approach in cow_install_parent_triggers,
-    // so this function no longer emits a per-row ancestor preamble.
-    unset($branch_id, $parent_table, $parent_columns);
+                        array $parent_columns = [],
+                        array $unique_cols = []): array {
+    // branch_id / parent_table / parent_columns were originally added for
+    // lazy branch-side ancestor capture (TODO3 #3 pivoted to a shared
+    // parent-trigger scheme instead); they remain in the signature to
+    // keep the data flow available to cross-layer UNIQUE guards (TODO3 #10)
+    // and forward-compat callers.
 
     $col_list   = implode(', ', array_map(fn($c) => '"' . $c . '"', $columns));
     $new_vals_with_default = function (string $c) use ($defaults): string {
@@ -302,14 +336,60 @@ function cow_trigger_sql(string $view_name, string $overlay_name,
     }
     $tomb_cols = implode(', ', array_map(fn($c) => '"' . $c . '"', $pk_cols_for_tomb));
 
+    // ── Cross-layer UNIQUE guard (TODO3 #10) ─────────────────────────
+    //
+    // A naive overlay-only INSERT can admit a row whose UNIQUE-constrained
+    // column matches an inherited (non-tombstoned) parent row: the view's
+    // UNION ALL then returns two rows with the same "unique" value. Build
+    // a RAISE(ABORT, …) preamble that mirrors SQLite's native
+    // SQLITE_CONSTRAINT_UNIQUE for each single-column UNIQUE the overlay
+    // carries. Composite UNIQUE and cross-layer UPSERT semantics are
+    // handled by the analogous UPDATE-path block below.
+    $unique_ins_preamble = '';
+    $unique_upd_preamble = '';
+    if (!empty($unique_cols) && !empty($pk_cols) && $parent_table !== '') {
+        $parent_q = str_replace('"', '""', $parent_table);
+        $tomb_q   = str_replace('"', '""', $tombstone_name);
+        $ovl_q    = str_replace('"', '""', $overlay_name);
+        $pk_col_q = '"' . $pk_cols[0] . '"';
+        foreach ($unique_cols as $uc) {
+            $uc_q = '"' . $uc . '"';
+            $msg_ins = "UNIQUE constraint failed: "
+                     . $view_name . '.' . $uc . " (cross-layer collision)";
+            $msg_upd = $msg_ins;
+            $unique_ins_preamble .=
+                  "    SELECT RAISE(ABORT, '" . str_replace("'", "''", $msg_ins) . "')\n"
+                . "    WHERE NEW.$uc_q IS NOT NULL AND EXISTS (\n"
+                . "        SELECT 1 FROM \"$parent_q\" p\n"
+                . "        WHERE p.$uc_q IS NEW.$uc_q\n"
+                . "          AND p.$pk_col_q NOT IN (SELECT $pk_col_q FROM \"$tomb_q\")\n"
+                . "          AND p.$pk_col_q NOT IN (SELECT $pk_col_q FROM \"$ovl_q\")\n"
+                . "    );\n";
+            // On UPDATE: if NEW's unique value matches an inherited
+            // parent row whose PK differs from the row being updated,
+            // that's also a cross-layer collision.
+            $unique_upd_preamble .=
+                  "    SELECT RAISE(ABORT, '" . str_replace("'", "''", $msg_upd) . "')\n"
+                . "    WHERE NEW.$uc_q IS NOT NULL AND EXISTS (\n"
+                . "        SELECT 1 FROM \"$parent_q\" p\n"
+                . "        WHERE p.$uc_q IS NEW.$uc_q\n"
+                . "          AND p.$pk_col_q IS NOT NEW.$pk_col_q\n"
+                . "          AND p.$pk_col_q NOT IN (SELECT $pk_col_q FROM \"$tomb_q\")\n"
+                . "          AND p.$pk_col_q NOT IN (SELECT $pk_col_q FROM \"$ovl_q\")\n"
+                . "    );\n";
+        }
+    }
+
     $ins_trg = "CREATE TRIGGER \"{$view_name}__cow_ins\" INSTEAD OF INSERT ON \"$view_name\"\n"
              . "BEGIN\n"
+             . $unique_ins_preamble
              . "    DELETE FROM \"$tombstone_name\" WHERE $pk_match_new;\n"
              . "    INSERT INTO \"$overlay_name\" ($col_list) VALUES ($new_vals);\n"
              . "END";
 
     $upd_trg = "CREATE TRIGGER \"{$view_name}__cow_upd\" INSTEAD OF UPDATE ON \"$view_name\"\n"
              . "BEGIN\n"
+             . $unique_upd_preamble
              . "    DELETE FROM \"$tombstone_name\" WHERE $pk_match_old;\n"
              . "    INSERT OR REPLACE INTO \"$overlay_name\" ($col_list) VALUES ($new_vals);\n"
              . "END";
@@ -521,9 +601,13 @@ function cow_create_branch_table(SQLite3 $db, int $branch_id, int $parent_id,
     }
     // Parent columns for the lazy-ancestor row snapshot (TODO3 #3).
     $parent_cols = cow_table_columns($db, $parent_table);
+    // Single-column UNIQUE constraints — used for cross-layer UNIQUE
+    // RAISE guards in the INSTEAD OF triggers (TODO3 #10).
+    $unique_cols = cow_single_col_unique_columns($db, $overlay_name);
     foreach (cow_trigger_sql($logical_name, $overlay_name, $tomb_name,
                              $pk_cols, $columns, $defaults,
-                             $branch_id, $parent_table, $parent_cols) as $trg) {
+                             $branch_id, $parent_table, $parent_cols,
+                             $unique_cols) as $trg) {
         $db->exec($trg);
     }
 
@@ -722,9 +806,11 @@ function cow_recreate_one_branch_view(SQLite3 $db, string $table_suffix,
             $defaults[$prow['name']] = (string)$prow['dflt_value'];
         }
     }
+    $unique_cols = cow_single_col_unique_columns($db, $overlay_name);
     foreach (cow_trigger_sql($logical_name, $overlay_name, $tomb_name,
                              $pk_cols, $columns, $defaults,
-                             $bid, $parent_table, $parent_cols) as $trg) {
+                             $bid, $parent_table, $parent_cols,
+                             $unique_cols) as $trg) {
         $rc = $db->exec($trg);
         if ($rc === false) {
             throw new RuntimeException(

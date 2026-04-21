@@ -281,11 +281,36 @@ class BranchedPDO extends PDO
                 }
             }
         }
+        // TODO3 #10: discover single-col UNIQUE constraints so the
+        // rebuilt triggers carry the cross-layer UNIQUE guards.
+        $unique_cols = $this->pdo_single_col_unique_columns($overlay);
         foreach (cow_trigger_sql($logical, $overlay, $tomb,
                                  $pk_cols, $columns, $defaults,
-                                 $bid, $parent_table, $parent_cols) as $trg) {
+                                 $bid, $parent_table, $parent_cols,
+                                 $unique_cols) as $trg) {
             parent::exec($trg);
         }
+    }
+
+    /** PDO-flavoured equivalent of cow_single_col_unique_columns. */
+    private function pdo_single_col_unique_columns(string $table): array {
+        $r = parent::query('PRAGMA index_list("' . str_replace('"','""',$table) . '")');
+        if (!$r) return [];
+        $out = [];
+        foreach ($r->fetchAll(PDO::FETCH_ASSOC) as $ix) {
+            if ((int)($ix['unique'] ?? 0) !== 1) continue;
+            $origin = (string)($ix['origin'] ?? '');
+            if ($origin !== 'u' && $origin !== 'c') continue;
+            $iname = (string)$ix['name'];
+            $ir = parent::query('PRAGMA index_info("' . str_replace('"','""',$iname) . '")');
+            if (!$ir) continue;
+            $cols = [];
+            foreach ($ir->fetchAll(PDO::FETCH_ASSOC) as $row) {
+                $cols[] = (string)$row['name'];
+            }
+            if (count($cols) === 1) $out[$cols[0]] = true;
+        }
+        return array_keys($out);
     }
 
     private function pdo_table_columns(string $name): array {
