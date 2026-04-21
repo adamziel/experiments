@@ -219,7 +219,7 @@ Developer writes `new PDO("sqlite:" . $site_fp)` instead of
 
 ---
 
-## [ ] 9. `--on-id-collision=renumber` hardcodes WP FK graph [MEDIUM]
+## [x] 9. `--on-id-collision=renumber` hardcodes WP FK graph [MEDIUM]
 
 **Problem**
 Plugin's `wp_acf_fields(group_id) → wp_acf_groups(id)` invisible.

@@ -94,6 +94,12 @@ function merge_branch_id(SQLite3 $db, string $name): int {
  *
  * Values are [fk_table_suffix, fk_column] pairs that reference the PK-owning
  * table's PK column.
+ *
+ * TODO3 #9: this hard-coded map is the FALLBACK. At merge time we union it
+ * with any FK edges declared via `PRAGMA foreign_key_list` on the actual
+ * overlay tables (see merge_discover_fk_map below), so plugin tables that
+ * carry real FK declarations (e.g. ACF, WooCommerce extensions) get their
+ * references renumbered automatically.
  */
 function merge_fk_map(): array {
     return [
@@ -118,6 +124,87 @@ function merge_fk_map(): array {
             ['term_relationships', 'term_taxonomy_id'],
         ],
     ];
+}
+
+/**
+ * TODO3 #9 — discover FK edges at runtime via PRAGMA foreign_key_list.
+ *
+ * Walks every overlay table under the given prefix and records each
+ * declared foreign key. Result shape matches merge_fk_map(): a map
+ * `suffix_of_PK_table => [[suffix_of_referencing_table, fk_column], …]`.
+ *
+ * For COW branches, the authoritative declarations live on the overlay
+ * tables (views don't carry `foreign_key_list` metadata), so this helper
+ * walks `b{id}_wp_<suffix>__overlay` entries.
+ *
+ * Caller is expected to merge this with `merge_fk_map()` so:
+ *   - Plugin tables with declared FKs get renumbered automatically.
+ *   - WP-core tables (which don't declare FKs) still work via the
+ *     hard-coded fallback.
+ */
+function merge_discover_fk_map(SQLite3 $db, string $branch_prefix): array {
+    $out = [];
+    $ov_suffix = '__overlay';
+    $esc = $db->escapeString($branch_prefix);
+    $r = $db->query(
+        "SELECT name FROM sqlite_master WHERE type='table' "
+      . "  AND name LIKE '" . $esc . "%" . $ov_suffix . "'"
+    );
+    if (!$r) return $out;
+    $tables = [];
+    while ($row = $r->fetchArray(SQLITE3_NUM)) {
+        $full = (string)$row[0];
+        // strip 'b{id}_wp_' prefix and '__overlay' suffix → bare suffix
+        $suffix = substr($full, strlen($branch_prefix));
+        $suffix = substr($suffix, 0, -strlen($ov_suffix));
+        $tables[$full] = $suffix;
+    }
+    $r->finalize();
+
+    foreach ($tables as $full => $suffix) {
+        $fk = $db->query(
+            'PRAGMA foreign_key_list("' . SQLite3::escapeString($full) . '")'
+        );
+        if (!$fk) continue;
+        while ($fkrow = $fk->fetchArray(SQLITE3_ASSOC)) {
+            $target = (string)($fkrow['table'] ?? '');
+            if ($target === '') continue;
+            // Target table name may be bare (unprefixed) in plugin DDL;
+            // try to resolve to a suffix we recognize.
+            $target_suffix = null;
+            if (str_starts_with($target, $branch_prefix)) {
+                $target_suffix = substr($target, strlen($branch_prefix));
+                if (str_ends_with($target_suffix, $ov_suffix)) {
+                    $target_suffix = substr($target_suffix, 0, -strlen($ov_suffix));
+                }
+            } elseif (isset($tables[$branch_prefix . $target . $ov_suffix])) {
+                $target_suffix = $target;
+            }
+            if ($target_suffix === null) continue;
+            $fk_col = (string)($fkrow['from'] ?? '');
+            if ($fk_col === '') continue;
+            $out[$target_suffix][] = [$suffix, $fk_col];
+        }
+        $fk->finalize();
+    }
+    return $out;
+}
+
+/** Union two FK maps (same shape). Avoids duplicates by [suffix, column]. */
+function merge_union_fk_maps(array $a, array $b): array {
+    $out = $a;
+    foreach ($b as $pk_suffix => $edges) {
+        foreach ($edges as $edge) {
+            $found = false;
+            foreach ($out[$pk_suffix] ?? [] as $existing) {
+                if ($existing[0] === $edge[0] && $existing[1] === $edge[1]) {
+                    $found = true; break;
+                }
+            }
+            if (!$found) $out[$pk_suffix][] = $edge;
+        }
+    }
+    return $out;
 }
 
 /**
@@ -1692,7 +1779,19 @@ $db_deleted      = 0;
 $renumber_map     = [];
 $renumber_log     = [];
 $renumber_next_id = [];
-$FK_MAP           = merge_fk_map();
+// TODO3 #9: the hard-coded WP FK graph stays as the fallback, but we
+// union it with FK edges discovered at runtime via PRAGMA foreign_key_list
+// on the source and target overlay tables. That way plugin tables with
+// real FK declarations (e.g. ACF's group_id → acf_groups.id) get their
+// references renumbered automatically — without pre-registering them
+// in merge_fk_map().
+$FK_MAP           = merge_union_fk_maps(
+    merge_fk_map(),
+    merge_union_fk_maps(
+        merge_discover_fk_map($db, $src_prefix),
+        merge_discover_fk_map($db, $tgt_prefix)
+    )
+);
 
 foreach ($all_suffixes as $suffix) {
     $src_tname = $src_tables[$suffix] ?? null;
