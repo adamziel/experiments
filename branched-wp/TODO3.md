@@ -148,7 +148,7 @@ merged stays in the inefficient format forever.
 
 ---
 
-## [ ] 5. `fs_commit_files` O(N) per commit on the file side [MEDIUM]
+## [x] 5. `fs_commit_files` O(N) per commit on the file side [MEDIUM]
 
 **Problem**
 DB side now has delta commits (after #2). File side still writes

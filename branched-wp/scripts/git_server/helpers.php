@@ -57,12 +57,12 @@ function git_fs_find_commit_by_hash(SQLite3 $db, int $branch_id, string $commit_
     return $row ?: null;
 }
 
+require_once __DIR__ . '/../fs_commit_helpers.php';
+
 function git_fs_digest_of_commit(SQLite3 $db, int $commit_id): string {
-    $tree = [];
-    $r = $db->query("SELECT path, blob_hash, is_dir FROM fs_commit_files WHERE commit_id = $commit_id");
-    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-        $tree[$row['path']] = $row;
-    }
+    // TODO3 #5: walk the commit chain so digests over delta-encoded
+    // commits match digests over full-snapshot commits.
+    $tree = fs_materialize_commit_tree($db, $commit_id);
     return git_fs_tree_digest($tree);
 }
 
@@ -72,21 +72,39 @@ function git_fs_record_snapshot(SQLite3 $db, int $branch_id, string $message): i
     $parent = git_fs_last_commit($db, $branch_id);
     $parent_id = $parent['id'] ?? null;
 
+    // TODO3 #5: delta-encode if there's a prior commit on this branch.
+    $kind = $parent_id === null ? 'FULL' : 'DELTA';
+    $prev_tree = ($kind === 'DELTA')
+        ? fs_materialize_commit_tree($db, (int)$parent_id)
+        : [];
+
     $db->exec('BEGIN IMMEDIATE');
     try {
-        $s = $db->prepare("INSERT INTO fs_commits (branch_id, commit_hash, parent_id, message) VALUES (:b, :h, :p, :m)");
+        $s = $db->prepare("INSERT INTO fs_commits (branch_id, commit_hash, parent_id, message, kind) VALUES (:b, :h, :p, :m, :k)");
         $s->bindValue(':b', $branch_id, SQLITE3_INTEGER);
         $s->bindValue(':h', $commit_hash, SQLITE3_TEXT);
         $parent_id === null ? $s->bindValue(':p', null, SQLITE3_NULL) : $s->bindValue(':p', $parent_id, SQLITE3_INTEGER);
         $s->bindValue(':m', $message, SQLITE3_TEXT);
+        $s->bindValue(':k', $kind, SQLITE3_TEXT);
         $s->execute();
         $cid = (int)$db->lastInsertRowID();
 
         $ins = $db->prepare(
-            "INSERT INTO fs_commit_files (commit_id, path, blob_hash, mode, mtime, is_dir) "
-          . "VALUES (:c, :p, :bh, :md, :mt, :d)"
+            "INSERT INTO fs_commit_files (commit_id, path, blob_hash, mode, mtime, is_dir, op) "
+          . "VALUES (:c, :p, :bh, :md, :mt, :d, :op)"
         );
+        $cur_paths = [];
         foreach ($tree as $path => $e) {
+            $cur_paths[$path] = true;
+            if ($kind === 'DELTA') {
+                $prev = $prev_tree[$path] ?? null;
+                $same = $prev
+                    && (string)($prev['blob_hash'] ?? '') === (string)($e['blob_hash'] ?? '')
+                    && (int)($prev['mode']   ?? 0) === (int)($e['mode']   ?? 0)
+                    && (int)($prev['mtime']  ?? 0) === (int)($e['mtime']  ?? 0)
+                    && (int)($prev['is_dir'] ?? 0) === (int)($e['is_dir'] ?? 0);
+                if ($same) continue;
+            }
             $ins->bindValue(':c',  $cid, SQLITE3_INTEGER);
             $ins->bindValue(':p',  $path, SQLITE3_TEXT);
             $ins->bindValue(':bh', $e['blob_hash'] ?? null,
@@ -94,8 +112,23 @@ function git_fs_record_snapshot(SQLite3 $db, int $branch_id, string $message): i
             $ins->bindValue(':md', (int)($e['mode'] ?? 0),  SQLITE3_INTEGER);
             $ins->bindValue(':mt', (int)($e['mtime'] ?? 0), SQLITE3_INTEGER);
             $ins->bindValue(':d',  (int)($e['is_dir'] ?? 0), SQLITE3_INTEGER);
+            $ins->bindValue(':op', 'UPSERT', SQLITE3_TEXT);
             $ins->execute();
             $ins->reset();
+        }
+        if ($kind === 'DELTA') {
+            foreach ($prev_tree as $p => $_) {
+                if (isset($cur_paths[$p])) continue;
+                $ins->bindValue(':c',  $cid,   SQLITE3_INTEGER);
+                $ins->bindValue(':p',  $p,     SQLITE3_TEXT);
+                $ins->bindValue(':bh', null,   SQLITE3_NULL);
+                $ins->bindValue(':md', 0,      SQLITE3_INTEGER);
+                $ins->bindValue(':mt', 0,      SQLITE3_INTEGER);
+                $ins->bindValue(':d',  0,      SQLITE3_INTEGER);
+                $ins->bindValue(':op', 'DELETE', SQLITE3_TEXT);
+                $ins->execute();
+                $ins->reset();
+            }
         }
         $db->exec('COMMIT');
         return $cid;

@@ -444,7 +444,15 @@ inherited from the original merge-time code.
 
 ### F7 — Committing (files + DB, atomic)
 - `branchctl commit <branch>` records a snapshot of BOTH:
-  - **Files**: `fs_commits` + `fs_commit_files` (resolved tree at HEAD).
+  - **Files** (TODO3 #5, delta-encoded, mirrors the DB side below):
+    `fs_commits` rows carry `kind='FULL'` (initial snapshot — every
+    path as `op='UPSERT'`) or `kind='DELTA'` (only paths that changed
+    since the previous commit; `op='UPSERT'` for added/changed,
+    `op='DELETE'` for removed). A 3k-path WP tree committed 100 times
+    with 5 changed files each costs ~3030 rows pre-TODO3 and ~530 now
+    (30 seed + 100×5). Readers materialize a commit's full tree via
+    `fs_materialize_commit_tree()` in `scripts/fs_commit_helpers.php`
+    (shared between branchctl, merge, and the git server).
   - **DB** (TODO3 #2, delta-encoded): `db_commits` + `db_commit_overlays`
     + `db_commit_tombstones` + `db_commit_schema`. Each `db_commits` row
     is marked `kind='FULL'` (complete snapshot of the branch's overlay

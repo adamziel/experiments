@@ -64,6 +64,7 @@ require_once __DIR__ . '/sqlite_retry.php';
 // used to recreate parent-side ancestor-capture triggers around schema
 // rebuilds in this script.
 require_once __DIR__ . '/cow_helpers.php';
+require_once __DIR__ . '/fs_commit_helpers.php';
 
 branchfs_set_db($db_path);
 
@@ -245,10 +246,10 @@ function merge_load_fork_base(SQLite3 $db, int $branch_id): ?array {
     $r = $s->execute();
     $row = $r->fetchArray(SQLITE3_ASSOC);
     if (!$row) return null;
-    $tree = [];
-    $r2 = $db->query("SELECT path, blob_hash, mode, mtime, is_dir FROM fs_commit_files WHERE commit_id = {$row['id']}");
-    while ($rr = $r2->fetchArray(SQLITE3_ASSOC)) $tree[$rr['path']] = $rr;
-    return $tree;
+    // TODO3 #5: the first commit is always FULL, so the materialized
+    // tree here equals the raw rows — but use the walker anyway so this
+    // code keeps working if the "first commit" bookkeeping ever changes.
+    return fs_materialize_commit_tree($db, (int)$row['id']);
 }
 
 /**

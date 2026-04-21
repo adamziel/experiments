@@ -173,12 +173,17 @@ CREATE TABLE IF NOT EXISTS fs_commits (
     parent_id   INTEGER,
     message     TEXT,
     created_at  TEXT DEFAULT (datetime('now')),
+    kind        TEXT NOT NULL DEFAULT 'FULL',    -- TODO3 #5: FULL | DELTA
     UNIQUE (branch_id, commit_hash),
     FOREIGN KEY (branch_id) REFERENCES branches(id),
     FOREIGN KEY (parent_id) REFERENCES fs_commits(id)
 );
 CREATE INDEX IF NOT EXISTS idx_fs_commits_branch ON fs_commits(branch_id);
 CREATE INDEX IF NOT EXISTS idx_fs_commits_hash ON fs_commits(branch_id, commit_hash);
+/* TODO3 #5: op encodes delta semantics for file-side commits.
+ *   'UPSERT' — path exists at this commit with the given metadata
+ *   'DELETE' — path existed at a prior commit but is gone in this one
+ * Default 'UPSERT' keeps pre-TODO3 rows interpretable as a full snapshot. */
 CREATE TABLE IF NOT EXISTS fs_commit_files (
     commit_id   INTEGER NOT NULL,
     path        TEXT NOT NULL,
@@ -186,6 +191,7 @@ CREATE TABLE IF NOT EXISTS fs_commit_files (
     mode        INTEGER,
     mtime       INTEGER,
     is_dir      INTEGER DEFAULT 0,
+    op          TEXT NOT NULL DEFAULT 'UPSERT',
     PRIMARY KEY (commit_id, path),
     FOREIGN KEY (commit_id) REFERENCES fs_commits(id),
     FOREIGN KEY (blob_hash) REFERENCES blobs(hash)
@@ -390,6 +396,25 @@ SQL);
         $db->exec("INSERT OR IGNORE INTO site_config (key, value) VALUES ('auth_enabled', '0')");
     }
 
+    /* TODO3 #5 migration: add kind / op columns for delta-encoded
+     * file commits (same pattern as TODO3 #2 did for db_commits). */
+    $cols_fs_commits = [];
+    $ri = $db->query('PRAGMA table_info("fs_commits")');
+    while ($row = $ri->fetchArray(SQLITE3_ASSOC)) $cols_fs_commits[] = (string)$row['name'];
+    if (!in_array('kind', $cols_fs_commits, true)) {
+        @$db->exec(
+            "ALTER TABLE fs_commits ADD COLUMN kind TEXT NOT NULL DEFAULT 'FULL'"
+        );
+    }
+    $cols_fs_files = [];
+    $ri = $db->query('PRAGMA table_info("fs_commit_files")');
+    while ($row = $ri->fetchArray(SQLITE3_ASSOC)) $cols_fs_files[] = (string)$row['name'];
+    if (!in_array('op', $cols_fs_files, true)) {
+        @$db->exec(
+            "ALTER TABLE fs_commit_files ADD COLUMN op TEXT NOT NULL DEFAULT 'UPSERT'"
+        );
+    }
+
     /* TODO3 #2 migration: add kind / op columns for delta-encoded commits.
      * ALTER TABLE ADD COLUMN is O(1) in SQLite — no table rewrite. New
      * columns land with their DEFAULT so existing rows are interpreted as
@@ -484,6 +509,7 @@ function fs_resolve_tree(SQLite3 $db, int $branch_id): array {
 // the same file so it can drop/recreate parent triggers around table
 // rebuilds without duplicating the trigger-DDL generation logic.
 require_once __DIR__ . '/cow_helpers.php';
+require_once __DIR__ . '/fs_commit_helpers.php';
 
 /* Deterministic hash of a resolved tree, used to detect uncommitted
  * changes against the last fs_commit. Fast enough for O(3000 files). */
@@ -628,13 +654,11 @@ function fs_gc(SQLite3 $db, array $candidate_hashes = []): array {
     return [count($to_delete), $bytes_free];
 }
 
+// TODO3 #5: `fs_materialize_commit_tree` lives in fs_commit_helpers.php
+// (shared between branchctl, merge, and the git server).
+
 function fs_digest_of_commit(SQLite3 $db, int $commit_id): string {
-    $tree = [];
-    $r = $db->query("SELECT path, blob_hash, is_dir FROM fs_commit_files WHERE commit_id = $commit_id");
-    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
-        $tree[$row['path']] = $row;
-    }
-    return fs_tree_digest($tree);
+    return fs_tree_digest(fs_materialize_commit_tree($db, $commit_id));
 }
 
 function fs_record_snapshot(SQLite3 $db, int $branch_id, string $message): int {
@@ -643,21 +667,40 @@ function fs_record_snapshot(SQLite3 $db, int $branch_id, string $message): int {
     $parent = fs_last_commit($db, $branch_id);
     $parent_id = $parent['id'] ?? null;
 
+    // TODO3 #5: delta-encode if there's a prior commit on this branch.
+    $kind = $parent_id === null ? 'FULL' : 'DELTA';
+    $prev_tree = [];
+    if ($kind === 'DELTA') {
+        $prev_tree = fs_materialize_commit_tree($db, (int)$parent_id);
+    }
+
     $db->exec('BEGIN IMMEDIATE');
     try {
-        $s = $db->prepare("INSERT INTO fs_commits (branch_id, commit_hash, parent_id, message) VALUES (:b, :h, :p, :m)");
+        $s = $db->prepare("INSERT INTO fs_commits (branch_id, commit_hash, parent_id, message, kind) VALUES (:b, :h, :p, :m, :k)");
         $s->bindValue(':b', $branch_id, SQLITE3_INTEGER);
         $s->bindValue(':h', $commit_hash, SQLITE3_TEXT);
         $parent_id === null ? $s->bindValue(':p', null, SQLITE3_NULL) : $s->bindValue(':p', $parent_id, SQLITE3_INTEGER);
         $s->bindValue(':m', $message, SQLITE3_TEXT);
+        $s->bindValue(':k', $kind, SQLITE3_TEXT);
         $s->execute();
         $cid = (int)$db->lastInsertRowID();
 
         $ins = $db->prepare(
-            "INSERT INTO fs_commit_files (commit_id, path, blob_hash, mode, mtime, is_dir) "
-          . "VALUES (:c, :p, :bh, :md, :mt, :d)"
+            "INSERT INTO fs_commit_files (commit_id, path, blob_hash, mode, mtime, is_dir, op) "
+          . "VALUES (:c, :p, :bh, :md, :mt, :d, :op)"
         );
+        $cur_paths = [];
         foreach ($tree as $path => $e) {
+            $cur_paths[$path] = true;
+            if ($kind === 'DELTA') {
+                $prev = $prev_tree[$path] ?? null;
+                $same = $prev
+                    && (string)($prev['blob_hash'] ?? '') === (string)($e['blob_hash'] ?? '')
+                    && (int)($prev['mode']  ?? 0) === (int)($e['mode']  ?? 0)
+                    && (int)($prev['mtime'] ?? 0) === (int)($e['mtime'] ?? 0)
+                    && (int)($prev['is_dir'] ?? 0) === (int)($e['is_dir'] ?? 0);
+                if ($same) continue;
+            }
             $ins->bindValue(':c',  $cid, SQLITE3_INTEGER);
             $ins->bindValue(':p',  $path, SQLITE3_TEXT);
             $ins->bindValue(':bh', $e['blob_hash'] ?? null,
@@ -665,8 +708,23 @@ function fs_record_snapshot(SQLite3 $db, int $branch_id, string $message): int {
             $ins->bindValue(':md', (int)($e['mode'] ?? 0),  SQLITE3_INTEGER);
             $ins->bindValue(':mt', (int)($e['mtime'] ?? 0), SQLITE3_INTEGER);
             $ins->bindValue(':d',  (int)($e['is_dir'] ?? 0), SQLITE3_INTEGER);
+            $ins->bindValue(':op', 'UPSERT', SQLITE3_TEXT);
             $ins->execute();
             $ins->reset();
+        }
+        if ($kind === 'DELTA') {
+            foreach ($prev_tree as $p => $_) {
+                if (isset($cur_paths[$p])) continue;
+                $ins->bindValue(':c',  $cid, SQLITE3_INTEGER);
+                $ins->bindValue(':p',  $p, SQLITE3_TEXT);
+                $ins->bindValue(':bh', null, SQLITE3_NULL);
+                $ins->bindValue(':md', 0, SQLITE3_INTEGER);
+                $ins->bindValue(':mt', 0, SQLITE3_INTEGER);
+                $ins->bindValue(':d',  0, SQLITE3_INTEGER);
+                $ins->bindValue(':op', 'DELETE', SQLITE3_TEXT);
+                $ins->execute();
+                $ins->reset();
+            }
         }
         $db->exec('COMMIT');
         return $cid;
@@ -698,6 +756,11 @@ function fs_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
     }
     $r->finalize();
 
+    // TODO3 #5: materialize target tree from the commit chain, not just
+    // the target commit's own rows (which under delta encoding hold
+    // only changes since the previous commit).
+    $materialized_tree = fs_materialize_commit_tree($db, $commit_id);
+
     $db->exec('BEGIN IMMEDIATE');
     try {
         $db->exec("DELETE FROM files WHERE branch_id = $branch_id");
@@ -707,8 +770,7 @@ function fs_restore_snapshot(SQLite3 $db, int $branch_id, int $commit_id): int {
         );
         $count = 0;
         $post_paths = [];
-        $r = $db->query("SELECT path, blob_hash, mode, mtime, is_dir FROM fs_commit_files WHERE commit_id = $commit_id");
-        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        foreach ($materialized_tree as $p => $row) {
             $ins->bindValue(':b',  $branch_id, SQLITE3_INTEGER);
             $ins->bindValue(':p',  $row['path'], SQLITE3_TEXT);
             $ins->bindValue(':bh', $row['blob_hash'] ?? null,
@@ -1694,24 +1756,44 @@ case 'commit': {
     $parent = $current_fs_snap;
     $parent_id = $parent['id'] ?? null;
 
+    // TODO3 #5: delta-encode file commits inline (same logic as
+    // fs_record_snapshot, but we open our own BEGIN here so fs side +
+    // db side share a single atomic transaction).
+    $fs_kind = $parent_id === null ? 'FULL' : 'DELTA';
+    $fs_prev_tree = ($fs_kind === 'DELTA')
+        ? fs_materialize_commit_tree($db, (int)$parent_id)
+        : [];
+
     $db->exec('BEGIN IMMEDIATE');
     try {
         // ---- fs side ----
-        $s = $db->prepare("INSERT INTO fs_commits (branch_id, commit_hash, parent_id, message) VALUES (:b, :h, :p, :m)");
+        $s = $db->prepare("INSERT INTO fs_commits (branch_id, commit_hash, parent_id, message, kind) VALUES (:b, :h, :p, :m, :k)");
         $s->bindValue(':b', $bid,         SQLITE3_INTEGER);
         $s->bindValue(':h', $commit_hash, SQLITE3_TEXT);
         $parent_id === null
             ? $s->bindValue(':p', null,       SQLITE3_NULL)
             : $s->bindValue(':p', $parent_id, SQLITE3_INTEGER);
         $s->bindValue(':m', $msg, SQLITE3_TEXT);
+        $s->bindValue(':k', $fs_kind, SQLITE3_TEXT);
         $s->execute();
         $fs_cid = (int)$db->lastInsertRowID();
 
         $ins = $db->prepare(
-            "INSERT INTO fs_commit_files (commit_id, path, blob_hash, mode, mtime, is_dir) "
-          . "VALUES (:c, :p, :bh, :md, :mt, :d)"
+            "INSERT INTO fs_commit_files (commit_id, path, blob_hash, mode, mtime, is_dir, op) "
+          . "VALUES (:c, :p, :bh, :md, :mt, :d, :op)"
         );
+        $cur_paths = [];
         foreach ($tree as $path => $e) {
+            $cur_paths[$path] = true;
+            if ($fs_kind === 'DELTA') {
+                $prev = $fs_prev_tree[$path] ?? null;
+                $same = $prev
+                    && (string)($prev['blob_hash'] ?? '') === (string)($e['blob_hash'] ?? '')
+                    && (int)($prev['mode']   ?? 0) === (int)($e['mode']   ?? 0)
+                    && (int)($prev['mtime']  ?? 0) === (int)($e['mtime']  ?? 0)
+                    && (int)($prev['is_dir'] ?? 0) === (int)($e['is_dir'] ?? 0);
+                if ($same) continue;
+            }
             $ins->bindValue(':c',  $fs_cid, SQLITE3_INTEGER);
             $ins->bindValue(':p',  $path,   SQLITE3_TEXT);
             $ins->bindValue(':bh', $e['blob_hash'] ?? null,
@@ -1719,8 +1801,23 @@ case 'commit': {
             $ins->bindValue(':md', (int)($e['mode']   ?? 0), SQLITE3_INTEGER);
             $ins->bindValue(':mt', (int)($e['mtime']  ?? 0), SQLITE3_INTEGER);
             $ins->bindValue(':d',  (int)($e['is_dir'] ?? 0), SQLITE3_INTEGER);
+            $ins->bindValue(':op', 'UPSERT', SQLITE3_TEXT);
             $ins->execute();
             $ins->reset();
+        }
+        if ($fs_kind === 'DELTA') {
+            foreach ($fs_prev_tree as $p => $_) {
+                if (isset($cur_paths[$p])) continue;
+                $ins->bindValue(':c',  $fs_cid, SQLITE3_INTEGER);
+                $ins->bindValue(':p',  $p,      SQLITE3_TEXT);
+                $ins->bindValue(':bh', null,    SQLITE3_NULL);
+                $ins->bindValue(':md', 0,       SQLITE3_INTEGER);
+                $ins->bindValue(':mt', 0,       SQLITE3_INTEGER);
+                $ins->bindValue(':d',  0,       SQLITE3_INTEGER);
+                $ins->bindValue(':op', 'DELETE', SQLITE3_TEXT);
+                $ins->execute();
+                $ins->reset();
+            }
         }
 
         // ---- db side ----

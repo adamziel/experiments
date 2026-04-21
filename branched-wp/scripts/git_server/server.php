@@ -183,6 +183,11 @@ function git_rollback_to_state(?array $state, SQLite3 $sqlite): void {
  * Restore branch overlay from a specific fs_commit id (rollback helper).
  */
 function git_fs_restore_from_commit(SQLite3 $db, int $branch_id, int $commit_id): void {
+    // TODO3 #5: under delta encoding, the target commit's raw rows only
+    // hold changes since the previous commit. Use the chain walker so
+    // restore sees the full materialized tree.
+    require_once __DIR__ . '/../fs_commit_helpers.php';
+    $tree = fs_materialize_commit_tree($db, $commit_id);
     $db->exec('BEGIN IMMEDIATE');
     try {
         $db->exec("DELETE FROM files WHERE branch_id = $branch_id");
@@ -190,8 +195,7 @@ function git_fs_restore_from_commit(SQLite3 $db, int $branch_id, int $commit_id)
             "INSERT INTO files (branch_id, path, blob_hash, mode, mtime, is_dir) "
           . "VALUES (:b, :p, :bh, :md, :mt, :d)"
         );
-        $r = $db->query("SELECT path, blob_hash, mode, mtime, is_dir FROM fs_commit_files WHERE commit_id = $commit_id");
-        while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        foreach ($tree as $path => $row) {
             $ins->bindValue(':b',  $branch_id, SQLITE3_INTEGER);
             $ins->bindValue(':p',  $row['path'], SQLITE3_TEXT);
             $ins->bindValue(':bh', $row['blob_hash'] ?? null,
@@ -375,13 +379,17 @@ function git_build_repository(string $repo_dir, SQLite3 $sqlite): void {
         $parent_git_hash = null;
         $tip_hash = null;
 
+        require_once __DIR__ . '/../fs_commit_helpers.php';
         foreach ($fs_commits as $fc) {
             $fc_id = (int)$fc['id'];
 
-            // Build the wordpress/ file tree for this commit
+            // TODO3 #5: materialize the commit's tree via the chain
+            // walker so delta-encoded commits present the same view to
+            // git clients as full-snapshot commits did.
             $updates = [];
-            $tree_rows = $sqlite->query("SELECT path, blob_hash FROM fs_commit_files WHERE commit_id = $fc_id AND is_dir = 0 AND blob_hash IS NOT NULL");
-            while ($fr = $tree_rows->fetchArray(SQLITE3_ASSOC)) {
+            $tree = fs_materialize_commit_tree($sqlite, $fc_id);
+            foreach ($tree as $p => $fr) {
+                if (!empty($fr['is_dir']) || empty($fr['blob_hash'])) continue;
                 $blob_data = git_get_blob_data($sqlite, $fr['blob_hash']);
                 if ($blob_data !== null) {
                     $updates['wordpress/' . $fr['path']] = $blob_data;
