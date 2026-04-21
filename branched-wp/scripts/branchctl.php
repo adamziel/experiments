@@ -47,6 +47,7 @@ Usage:
   branchctl migrate <name>   — migrate a legacy (pre-COW) branch in place
   branchctl migrate --all    — migrate every legacy branch
   branchctl gc              [--dry-run]
+  branchctl audit           [--since <ts>] [--actor <name>]
 
 Flags:
   --db <path>   override BRANCHFS_DB (default: /tmp/branchfs-dev/branchfs.db)
@@ -339,6 +340,23 @@ CREATE TABLE IF NOT EXISTS db_parent_post_fork_inserts (
     captured_at       TEXT DEFAULT (datetime('now')),
     PRIMARY KEY (parent_table_name, row_pk)
 );
+/* TODO3 #12: audit trail. Every branchctl action that mutates state
+ * writes a row here: create, commit, merge, rollback, reset, delete,
+ * migrate. Readers: `branchctl audit [--since <ts>] [--actor <name>]`.
+ *
+ * `actor` comes from the FORKPRESS_ACTOR env var (typically set by the
+ * authenticated caller's shell) falling back to the system user via
+ * get_current_user(), or 'anonymous' when neither is available. */
+CREATE TABLE IF NOT EXISTS audit_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts      TEXT    NOT NULL DEFAULT (datetime('now')),
+    actor   TEXT    NOT NULL,
+    action  TEXT    NOT NULL,
+    target  TEXT,
+    details TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_log_ts    ON audit_log(ts);
+CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor);
 CREATE TABLE IF NOT EXISTS db_snapshots_schema (
     branch_id    INTEGER NOT NULL,
     table_name   TEXT NOT NULL,
@@ -468,6 +486,41 @@ SQL);
         foreach ($parents as $p) {
             cow_install_parent_triggers($db, $p);
         }
+    }
+}
+
+/** TODO3 #12 — write a row into audit_log.
+ *
+ *  Best-effort: if the audit_log table isn't present yet (migration in
+ *  flight) or the INSERT fails for any reason, return silently. Audit
+ *  is a bookkeeping feature — a logging failure must never abort an
+ *  otherwise-valid user command. */
+function audit_log_write(SQLite3 $db, string $action, ?string $target = null,
+                         ?array $details = null): void {
+    $actor = getenv('FORKPRESS_ACTOR');
+    if ($actor === false || $actor === '') {
+        $actor = function_exists('get_current_user') ? get_current_user() : '';
+    }
+    if ($actor === '' || $actor === false) $actor = 'anonymous';
+    try {
+        $s = @$db->prepare(
+            "INSERT INTO audit_log (actor, action, target, details) "
+          . "VALUES (:a, :act, :t, :d)"
+        );
+        if (!$s) return;
+        $s->bindValue(':a',   $actor,  SQLITE3_TEXT);
+        $s->bindValue(':act', $action, SQLITE3_TEXT);
+        if ($target === null) {
+            $s->bindValue(':t', null, SQLITE3_NULL);
+        } else {
+            $s->bindValue(':t', $target, SQLITE3_TEXT);
+        }
+        $s->bindValue(':d',
+            $details === null ? null : json_encode($details, JSON_UNESCAPED_UNICODE),
+            $details === null ? SQLITE3_NULL : SQLITE3_TEXT);
+        @$s->execute();
+    } catch (\Throwable $_) {
+        /* swallow */
     }
 }
 
@@ -1685,6 +1738,7 @@ case 'create': {
     $root_host = getenv('BRANCHFS_ROOT_HOST') ?: 'localhost';
     $port = getenv('PORT') ?: '80';
     echo "Visit http://$name.$root_host:$port/ to see this branch.\n";
+    audit_log_write($db, 'create', $name, ['from' => $from]);
     break;
 }
 
@@ -1834,6 +1888,8 @@ case 'commit': {
         fwrite(STDERR, "branchctl: commit failed: " . $e->getMessage() . "\n");
         exit(5);
     }
+    audit_log_write($db, 'commit', $name,
+        ['commit_hash' => $commit_hash, 'message' => $msg]);
     break;
 }
 
@@ -1971,6 +2027,8 @@ case 'delete': {
         printf("branchfs: reclaimed %d orphaned blob(s), %d bytes\n",
             $reclaimed_n, $reclaimed_bytes);
     }
+    audit_log_write($db, 'delete', $name,
+        ['blobs_reclaimed' => $reclaimed_n, 'bytes' => $reclaimed_bytes]);
     break;
 }
 
@@ -2291,8 +2349,16 @@ case 'merge': {
     );
     passthru($cmdline, $rc);
     if ($rc !== 0) {
+        $audit_db = sqlite_open($DB_PATH);
+        audit_log_write($audit_db, 'merge_failed', "$from -> $into",
+            ['rc' => $rc]);
         fwrite(STDERR, "branchctl: merge exited with status $rc\n");
         exit($rc);
+    }
+    {
+        $audit_db = sqlite_open($DB_PATH);
+        audit_log_write($audit_db, 'merge', "$from -> $into",
+            ['strategy' => $flags['strategy'] ?? 'abort']);
     }
     break;
 }
@@ -2366,6 +2432,8 @@ case 'reset': {
     if ($db_commit) {
         echo "branchfs: restored $db_rows db row(s)/tombstone(s) from db_commit #{$db_commit['id']}\n";
     }
+    audit_log_write($db, 'reset', $name,
+        ['commit' => $commit, 'files' => $n, 'db_rows' => $db_rows]);
     break;
 }
 
@@ -2445,6 +2513,8 @@ case 'rollback': {
     if ($db_prev) {
         echo "branchfs: restored $db_rows db row(s)/tombstone(s) from db_commit #{$db_prev['id']}\n";
     }
+    audit_log_write($db, 'rollback', $name,
+        ['commit' => $prev['commit_hash'] ?? '', 'files' => $n, 'db_rows' => $db_rows]);
     break;
 }
 
@@ -2563,6 +2633,7 @@ case 'migrate': {
             $total_migrated += $n;
             $branches_migrated++;
             echo "branchctl: migrated $n legacy table(s) on '$bname' to COW format\n";
+            audit_log_write($db, 'migrate', $bname, ['tables' => $n]);
         } catch (\Throwable $e) {
             $db->exec('ROLLBACK');
             fwrite(STDERR, "branchctl: migrate '$bname' failed: "
@@ -2669,6 +2740,44 @@ case 'alter-add-column': {
     }
     echo "branchctl: added column '$col_name' $col_type to b{$bid}_wp_{$suffix} "
        . "(updated dependent branch views)\n";
+    break;
+}
+
+case 'audit': {
+    // TODO3 #12 — `branchctl audit [--since <ts>] [--actor <name>]`.
+    //
+    // Prints the audit_log table's rows in id-DESC order. Both filter
+    // flags are optional. --since accepts any SQLite-parseable datetime
+    // literal (e.g. "2026-04-20", "2026-04-20 12:00:00", "-7 days").
+    $since = isset($flags['since']) ? (string)$flags['since'] : null;
+    $actor = isset($flags['actor']) ? (string)$flags['actor'] : null;
+    $db = sqlite_open($DB_PATH);
+    $where = [];
+    $bind  = [];
+    if ($since !== null && $since !== '' && $since !== '1') {
+        $where[] = "ts >= datetime(:since)";
+        $bind[':since'] = $since;
+    }
+    if ($actor !== null && $actor !== '' && $actor !== '1') {
+        $where[] = "actor = :actor";
+        $bind[':actor'] = $actor;
+    }
+    $clause = empty($where) ? '' : ' WHERE ' . implode(' AND ', $where);
+    $sql = "SELECT id, ts, actor, action, target, details "
+         . "FROM audit_log$clause ORDER BY id DESC LIMIT 500";
+    $s = $db->prepare($sql);
+    foreach ($bind as $k => $v) $s->bindValue($k, $v, SQLITE3_TEXT);
+    $r = $s->execute();
+    printf("%-4s  %-19s  %-12s  %-12s  %s\n", "ID", "TS", "ACTOR", "ACTION", "TARGET");
+    printf("%s\n", str_repeat('-', 80));
+    $count = 0;
+    while ($row = $r->fetchArray(SQLITE3_ASSOC)) {
+        printf("%-4s  %-19s  %-12s  %-12s  %s\n",
+            $row['id'], $row['ts'], $row['actor'], $row['action'],
+            $row['target'] ?? '');
+        $count++;
+    }
+    if ($count === 0) echo "(no audit rows)\n";
     break;
 }
 

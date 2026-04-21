@@ -264,7 +264,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 12. No audit trail [MEDIUM]
+## [x] 12. No audit trail [MEDIUM]
 
 **Acceptance**
 - New table `audit_log(id, ts, actor, action, target, details)`
