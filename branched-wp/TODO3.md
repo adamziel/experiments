@@ -182,7 +182,7 @@ No transactional wrap.
 
 ---
 
-## [ ] 7. AUTOINCREMENT sibling collision [MEDIUM]
+## [x] 7. AUTOINCREMENT sibling collision [MEDIUM]
 
 **Problem**
 Two child branches forked from the same parent both insert posts using

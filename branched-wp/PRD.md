@@ -328,9 +328,13 @@ to the re-assigned `b{new_id}_wp_` on the fly.
       (tombstones)`. Composite PKs use row-value tuples
       `(pk1, pk2) NOT IN (SELECT pk1, pk2 FROM overlay)`.
     - INSTEAD OF triggers on the view route writes to overlay/tombstones.
-    - `sqlite_sequence` row for the parent's table is copied to the
-      overlay so AUTOINCREMENT IDs the branch generates don't collide
-      with parent IDs added after fork.
+    - `sqlite_sequence` row for the overlay is set to
+      `parent_max + (branch_id - 1) * 1_000_000_000` (TODO3 #7). This
+      gives each non-main branch its own ~10⁹-wide AUTOINCREMENT band,
+      so two siblings forked from the same parent never collide on
+      inserted IDs. Main (branch_id=1) keeps its natural sequence so
+      on-disk IDs stay small. `--on-id-collision=renumber` handles
+      remapping sibling-band IDs back into main's gap at merge time.
   - **Parent-side ancestor capture** (TODO3 #3, O(1) shared scheme):
     ONE BEFORE-UPDATE/DELETE and AFTER-INSERT trigger is installed on
     each parent real table. The trigger body writes exactly once per

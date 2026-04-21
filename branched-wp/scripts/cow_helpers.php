@@ -475,15 +475,34 @@ function cow_create_branch_table(SQLite3 $db, int $branch_id, int $parent_id,
         @$db->exec($idx_sql);
     }
 
-    // Copy parent's sqlite_sequence row so branch INSERTs don't collide.
-    // (Only meaningful for AUTOINCREMENT tables, but harmless for others.)
+    // TODO3 #7: Reserve a disjoint AUTOINCREMENT range for this branch.
+    // Sibling branches forked from the same parent used to inherit the
+    // SAME sqlite_sequence starting point and both generate ID 101, 102,
+    // … → guaranteed collision on merge.
+    //
+    // Formula: seq = parent_max + (branch_id - 1) * COW_AUTOINCR_STRIDE.
+    // With a 1-billion stride each branch gets ~1e9 AUTOINCREMENT values
+    // before colliding with the next branch's range — comfortably below
+    // the INTEGER PRIMARY KEY max of 2^63-1.
+    //
+    // Main (branch_id=1) keeps its natural sequence so on-disk IDs stay
+    // small; siblings live in their own high-number bands. Merge's
+    // `--on-id-collision=renumber` path already handles remapping these
+    // back into main's gap on a per-FK-graph basis.
+    if (!defined('COW_AUTOINCR_STRIDE')) {
+        define('COW_AUTOINCR_STRIDE', 1_000_000_000);
+    }
     $seq_max_parent = (int)$db->querySingle(
         "SELECT seq FROM sqlite_sequence WHERE name='"
         . SQLite3::escapeString($ddl_source) . "'"
     );
-    if ($seq_max_parent > 0) {
+    $branch_stride_offset = ($branch_id > 1)
+        ? ($branch_id - 1) * COW_AUTOINCR_STRIDE
+        : 0;
+    $branch_seq = $seq_max_parent + $branch_stride_offset;
+    if ($branch_seq > 0) {
         $db->exec("INSERT OR REPLACE INTO sqlite_sequence (name, seq) "
-                . "VALUES ('" . SQLite3::escapeString($overlay_name) . "', $seq_max_parent)");
+                . "VALUES ('" . SQLite3::escapeString($overlay_name) . "', $branch_seq)");
     }
 
     // Create view + triggers.
