@@ -300,7 +300,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 15. `db_ancestor_overlay` not GC'd on branch delete [MEDIUM]
+## [x] 15. `db_ancestor_overlay` not GC'd on branch delete [MEDIUM]
 
 **Acceptance**
 - `branchctl delete <branch>` also deletes from `db_ancestor_overlay`,

@@ -2008,6 +2008,17 @@ case 'delete': {
         $db->exec("DELETE FROM db_commits   WHERE branch_id = $bid");
         $db->exec("DELETE FROM files        WHERE branch_id = $bid");
         $db->exec("DELETE FROM db_snapshots WHERE branch_id = $bid");
+        // TODO3 #15: OPcache invalidation queue entries reference the
+        // branch by URL prefix `branchfs://<branch>/…`. Purge them so
+        // high-churn sites (per-PR preview branches) don't accumulate
+        // stale rows.
+        $inv = $db->prepare(
+            "DELETE FROM opcache_invalidations WHERE url LIKE :p"
+        );
+        if ($inv) {
+            $inv->bindValue(':p', 'branchfs://' . $name . '/%', SQLITE3_TEXT);
+            @$inv->execute();
+        }
         $db->exec("DELETE FROM branches     WHERE id        = $bid");
 
         /* Inline GC on the candidate hashes only. fs_gc is transaction-aware:
