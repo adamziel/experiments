@@ -2095,6 +2095,18 @@ case 'delete': {
         $db->exec("DELETE FROM db_snapshots_schema WHERE branch_id = $bid");
         $db->exec("DELETE FROM db_ancestor_overlay WHERE branch_id = $bid");
         $db->exec("DELETE FROM db_post_fork_inserts WHERE branch_id = $bid");
+        // Hostile-review #8: lazy-ancestor snapshots are keyed by
+        // (parent_table_name, row_pk). When a branch whose tables served
+        // as "parent" for those snapshots is deleted, its tables are
+        // dropped — leaving orphaned rows that nothing can reference.
+        // Purge rows whose parent_table_name points at this branch's
+        // (just-dropped) table-space so db_parent_ancestor stays bounded
+        // on high-churn sites (per-PR preview-branch lifecycle).
+        $pa_prefix_esc = SQLite3::escapeString($prefix);
+        $db->exec(
+            "DELETE FROM db_parent_ancestor "
+          . "WHERE parent_table_name LIKE '{$pa_prefix_esc}%'"
+        );
         /* fs_commit_files rows are keyed by commit_id, so they must go
          * before (or together with) the fs_commits rows to avoid orphan
          * rows after delete. Previously, the delete path forgot fs_commits

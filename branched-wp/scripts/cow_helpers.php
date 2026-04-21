@@ -625,32 +625,30 @@ function cow_create_branch_table(SQLite3 $db, int $branch_id, int $parent_id,
         @$db->exec($idx_sql);
     }
 
-    // TODO3 #7: Reserve a disjoint AUTOINCREMENT range for this branch.
-    // Sibling branches forked from the same parent used to inherit the
-    // SAME sqlite_sequence starting point and both generate ID 101, 102,
-    // … → guaranteed collision on merge.
+    // TODO3 #7 + hostile-review #17: Reserve a disjoint AUTOINCREMENT
+    // range for this branch that cannot overlap with any sibling or
+    // grandchild band regardless of fork depth.
     //
-    // Formula: seq = parent_max + (branch_id - 1) * COW_AUTOINCR_STRIDE.
-    // With a 1-billion stride each branch gets ~1e9 AUTOINCREMENT values
-    // before colliding with the next branch's range — comfortably below
-    // the INTEGER PRIMARY KEY max of 2^63-1.
+    // Formula: seq = (branch_id - 1) * COW_AUTOINCR_STRIDE — pure, stable,
+    // does NOT depend on parent_max. That's critical for nested forks:
+    //   • b2 forks from main: band [1e9, 2e9)
+    //   • b3 forks from main: band [2e9, 3e9)
+    //   • b4 forks from b2 (grandchild): band [3e9, 4e9)
+    //   • b5 forks from main: band [4e9, 5e9)
+    // Previously seq = parent_max + (branch_id-1)*STRIDE, so b4's seed
+    // was b2's current max plus 3*STRIDE, which could slide into b5's
+    // band and collide. Stripping parent_max keeps bands strictly
+    // branch-id-indexed and collision-proof.
     //
     // Main (branch_id=1) keeps its natural sequence so on-disk IDs stay
-    // small; siblings live in their own high-number bands. Merge's
-    // `--on-id-collision=renumber` path already handles remapping these
-    // back into main's gap on a per-FK-graph basis.
+    // small; siblings + grandchildren live in their own high-number
+    // bands. Merge's `--on-id-collision=renumber` path already handles
+    // remapping these back into main's gap on a per-FK-graph basis.
     if (!defined('COW_AUTOINCR_STRIDE')) {
         define('COW_AUTOINCR_STRIDE', 1_000_000_000);
     }
-    $seq_max_parent = (int)$db->querySingle(
-        "SELECT seq FROM sqlite_sequence WHERE name='"
-        . SQLite3::escapeString($ddl_source) . "'"
-    );
-    $branch_stride_offset = ($branch_id > 1)
-        ? ($branch_id - 1) * COW_AUTOINCR_STRIDE
-        : 0;
-    $branch_seq = $seq_max_parent + $branch_stride_offset;
-    if ($branch_seq > 0) {
+    if ($branch_id > 1) {
+        $branch_seq = ($branch_id - 1) * COW_AUTOINCR_STRIDE;
         $db->exec("INSERT OR REPLACE INTO sqlite_sequence (name, seq) "
                 . "VALUES ('" . SQLite3::escapeString($overlay_name) . "', $branch_seq)");
     }
