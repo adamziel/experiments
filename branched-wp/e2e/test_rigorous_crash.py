@@ -289,27 +289,50 @@ class TestKillDuringMerge:
 class TestKillDuringRollback:
 
     def test_kill_during_rollback_atomic(self, site):
-        create_branch(site, "f")
-        fid = branch_id(site, "f")
+        # Vary the kill delay across iterations so we hit both "rollback
+        # landed" and "rollback didn't start" outcomes — without observing
+        # both we wouldn't actually be testing the rollback path, we'd just
+        # be testing that SIGKILL-before-work survives. Assert atomicity
+        # on every iteration (no v1.5 / "partial rollback" state) and
+        # assert we observed the rollback-landed path at least once.
+        outcomes = set()
+        # Rollback takes ~300ms (PHP startup + transaction); span delays
+        # past that so some iterations land rollback, others kill pre-commit.
+        delays_ms = [0, 20, 80, 160, 280, 340, 400, 600]
 
-        # Set up two commits.
-        sqlite_exec(site,
-            f"UPDATE b{fid}_wp_options SET option_value='v1' WHERE option_name='blogname'")
-        r = commit_branch(site, "f", "v1")
-        assert r.returncode == 0
-        sqlite_exec(site,
-            f"UPDATE b{fid}_wp_options SET option_value='v2' WHERE option_name='blogname'")
-        r = commit_branch(site, "f", "v2")
-        assert r.returncode == 0
+        for delay_ms in delays_ms:
+            create_branch(site, "f")
+            fid = branch_id(site, "f")
 
-        p = branchctl_popen(site, "rollback", "f")
-        time.sleep(0.02)
-        p.send_signal(signal.SIGKILL)
-        p.wait(timeout=5)
+            sqlite_exec(site,
+                f"UPDATE b{fid}_wp_options SET option_value='v1' WHERE option_name='blogname'")
+            r = commit_branch(site, "f", "v1")
+            assert r.returncode == 0
+            sqlite_exec(site,
+                f"UPDATE b{fid}_wp_options SET option_value='v2' WHERE option_name='blogname'")
+            r = commit_branch(site, "f", "v2")
+            assert r.returncode == 0
 
-        assert reopen_integrity_ok(site)
-        val = sqlite_q(site,
-            f"SELECT option_value FROM b{fid}_wp_options WHERE option_name='blogname'"
-        )[0][0]
-        # Must be v1 (rollback landed) or v2 (rollback didn't start).
-        assert val in ("v1", "v2"), f"partial rollback: value={val!r}"
+            p = branchctl_popen(site, "rollback", "f")
+            if delay_ms > 0:
+                time.sleep(delay_ms / 1000.0)
+            p.send_signal(signal.SIGKILL)
+            p.wait(timeout=5)
+
+            assert reopen_integrity_ok(site), \
+                f"integrity broken at delay={delay_ms}ms"
+            val = sqlite_q(site,
+                f"SELECT option_value FROM b{fid}_wp_options WHERE option_name='blogname'"
+            )[0][0]
+            assert val in ("v1", "v2"), \
+                f"partial rollback at delay={delay_ms}ms: value={val!r}"
+            outcomes.add(val)
+
+            # Reset for next iteration by deleting the branch.
+            from _rigorous_helpers import branchctl
+            _ = branchctl(site, "delete", "f", "--force")
+
+        assert "v1" in outcomes, (
+            "Never observed rollback-landed outcome across "
+            f"delays={delays_ms} — test did not exercise rollback path"
+        )

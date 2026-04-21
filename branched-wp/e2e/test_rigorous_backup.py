@@ -53,6 +53,25 @@ class TestHotBackup:
         create_branch(site_fp, "f")
         fid = branch_id(site_fp, "f")
 
+        # Pre-seed with a meaningful payload so the backup has real work to
+        # copy (not an empty DB that's done in microseconds). ~5k rows with
+        # a non-trivial blob payload pushes the DB over a few megabytes so
+        # the backup actually spans enough wall time to overlap the writer.
+        seed_db = sqlite3.connect(str(site_fp), timeout=30.0)
+        seed_db.execute("PRAGMA busy_timeout=20000")
+        blob = "x" * 2048
+        seed_db.execute("BEGIN")
+        for i in range(5000):
+            seed_db.execute(
+                f"INSERT INTO b{fid}_wp_options "
+                "(option_name, option_value) VALUES (?, ?)",
+                (f"seed_{i}", blob),
+            )
+        seed_db.commit()
+        seed_db.close()
+
+        size_before = site_fp.stat().st_size
+
         # Writer thread inserts during backup.
         stop = threading.Event()
         insert_count = [0]
@@ -63,7 +82,7 @@ class TestHotBackup:
             db.execute("PRAGMA busy_timeout=20000")
             try:
                 i = 0
-                while not stop.is_set() and i < 500:
+                while not stop.is_set() and i < 2000:
                     try:
                         db.execute(
                             f"INSERT INTO b{fid}_wp_options "
@@ -86,15 +105,29 @@ class TestHotBackup:
         time.sleep(0.05)
 
         dst = work / "backup.fp"
+        t0 = time.time()
         r = backup_php(site_fp, dst)
+        backup_wall_ms = (time.time() - t0) * 1000.0
         assert r.returncode == 0, f"backup failed: {r.stderr}"
 
         stop.set()
         wt.join(timeout=30)
         assert not writer_err
+        # The writer must have landed inserts during the backup window —
+        # otherwise the concurrency assertion below is vacuous.
+        assert insert_count[0] > 0, (
+            f"no concurrent writes landed in {backup_wall_ms:.0f}ms backup "
+            "window; test isn't exercising the hot-backup path"
+        )
 
         # Backup is a valid sqlite file with expected tables.
         assert dst.exists()
+        # Backup size should be at least ~the DB size at start (hot-backup
+        # copies a snapshot, not diffs).
+        assert dst.stat().st_size >= size_before * 0.9, (
+            f"backup size {dst.stat().st_size} << source {size_before} — "
+            "hot backup may have shortcut on an empty/small DB"
+        )
         db = sqlite3.connect(str(dst))
         try:
             # integrity_check
@@ -105,6 +138,16 @@ class TestHotBackup:
             names = {r[0] for r in rows}
             assert "main" in names
             assert "f" in names
+            # Seed rows must all be in the backup (committed before backup
+            # started, so a consistent snapshot must include them).
+            seed_rows = db.execute(
+                f"SELECT COUNT(*) FROM b{fid}_wp_options "
+                "WHERE option_name LIKE 'seed_%'"
+            ).fetchone()[0]
+            assert seed_rows == 5000, (
+                f"backup dropped pre-backup committed rows: "
+                f"expected 5000, got {seed_rows}"
+            )
         finally:
             db.close()
 
