@@ -321,7 +321,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 17. `cow_helpers.php` procedural ad hoc [LOW]
+## [x] 17. `cow_helpers.php` procedural ad hoc [LOW]
 
 **Acceptance**
 - Refactor to a `Cow` namespace or class with explicit state
