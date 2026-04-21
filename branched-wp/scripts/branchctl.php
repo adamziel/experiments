@@ -489,40 +489,10 @@ SQL);
     }
 }
 
-/** TODO3 #12 — write a row into audit_log.
- *
- *  Best-effort: if the audit_log table isn't present yet (migration in
- *  flight) or the INSERT fails for any reason, return silently. Audit
- *  is a bookkeeping feature — a logging failure must never abort an
- *  otherwise-valid user command. */
-function audit_log_write(SQLite3 $db, string $action, ?string $target = null,
-                         ?array $details = null): void {
-    $actor = getenv('FORKPRESS_ACTOR');
-    if ($actor === false || $actor === '') {
-        $actor = function_exists('get_current_user') ? get_current_user() : '';
-    }
-    if ($actor === '' || $actor === false) $actor = 'anonymous';
-    try {
-        $s = @$db->prepare(
-            "INSERT INTO audit_log (actor, action, target, details) "
-          . "VALUES (:a, :act, :t, :d)"
-        );
-        if (!$s) return;
-        $s->bindValue(':a',   $actor,  SQLITE3_TEXT);
-        $s->bindValue(':act', $action, SQLITE3_TEXT);
-        if ($target === null) {
-            $s->bindValue(':t', null, SQLITE3_NULL);
-        } else {
-            $s->bindValue(':t', $target, SQLITE3_TEXT);
-        }
-        $s->bindValue(':d',
-            $details === null ? null : json_encode($details, JSON_UNESCAPED_UNICODE),
-            $details === null ? SQLITE3_NULL : SQLITE3_TEXT);
-        @$s->execute();
-    } catch (\Throwable $_) {
-        /* swallow */
-    }
-}
+// TODO3 #12 `audit_log_write` lives in audit_helpers.php — first slice of
+// the TODO3 #16 branchctl.php split. More command-specific helpers will
+// migrate into scripts/branchctl/ as the refactor continues.
+require_once __DIR__ . '/audit_helpers.php';
 
 function fs_branch_id(SQLite3 $db, string $name): int {
     $s = $db->prepare("SELECT id FROM branches WHERE name = :n");

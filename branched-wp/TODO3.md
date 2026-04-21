@@ -311,7 +311,7 @@ with an inherited parent row. The view returns two rows with the same
 
 ---
 
-## [ ] 16. `branchctl.php` too large [LOW — code quality]
+## [x] 16. `branchctl.php` too large [LOW — code quality]
 
 **Acceptance**
 - Split into focused files: `branchctl/cmd_create.php`,
