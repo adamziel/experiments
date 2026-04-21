@@ -375,6 +375,83 @@ class TestClusterAF11_LazyAncestor:
         finally:
             shutil.rmtree(work, ignore_errors=True)
 
+    def test_merge_filters_ancestor_by_branch_created_at(self, tmp_path):
+        """A snapshot captured BEFORE a branch was created must not be
+        consumed by that branch's merge as its pre-fork ancestor.
+
+        Scenario:
+          T=0: seed main with row X='v0'.
+          T=1: UPDATE X on main → trigger snapshots 'v0' into
+                db_parent_ancestor with captured_at=T=1.
+          T=2: branch b forked off main (captures CURRENT main state,
+                which is post-update).
+          T=3: b writes X.
+          T=4: merge b → main.
+
+        The correct ancestor for X in b's merge is main's T=2 value
+        (b's fork-time), NOT the T=1 snapshot of 'v0' which predates b.
+        The SQL at merge.php:507 and :656 must filter by
+        `captured_at >= branches.created_at` so the pre-fork snapshot
+        is not returned for this branch.
+        """
+        import time as _time
+        work, site_fp = make_fresh_site("cla_f11c_")
+        try:
+            # Seed main with a unique, distinguishable row.
+            sqlite_exec(site_fp,
+                "INSERT INTO b1_wp_options (option_name, option_value) "
+                "VALUES ('pre_fork_row', 'v0')")
+
+            # UPDATE on main — snapshot 'v0' into db_parent_ancestor.
+            _time.sleep(1.05)  # guarantee distinct captured_at (datetime now has sec resolution)
+            sqlite_exec(site_fp,
+                "UPDATE b1_wp_options SET option_value='v1' "
+                "WHERE option_name='pre_fork_row'")
+
+            # Now create the branch — its created_at must be > captured_at.
+            _time.sleep(1.05)
+            create_branch(site_fp, "late")
+
+            # The snapshot is for an UPDATE that predates the branch.
+            # Verify the SQL filter gets the correct result.
+            rows = sqlite_q(site_fp,
+                "SELECT pa.row_json, pa.captured_at, b.created_at "
+                "FROM db_parent_ancestor pa "
+                "JOIN branches b ON b.name='late' "
+                "WHERE pa.parent_table_name='b1_wp_options' "
+                "  AND pa.row_json LIKE '%pre_fork_row%' "
+                "  AND pa.captured_at >= b.created_at")
+            assert rows == [], (
+                f"A pre-branch snapshot must NOT be returned when filtering "
+                f"by captured_at >= branch.created_at; got {rows}"
+            )
+
+            # And that the merge-path SQL in merge.php filters appropriately
+            # for EACH db_parent_ancestor lookup.
+            text = (BASE_DIR / "scripts" / "merge.php").read_text()
+            # Every "FROM db_parent_ancestor" occurrence should be followed
+            # by a captured_at filter tied to branches.created_at inside
+            # ~400 chars (a single SELECT body).
+            idx = 0
+            seen = 0
+            while True:
+                i = text.find("FROM db_parent_ancestor", idx)
+                if i < 0:
+                    break
+                seen += 1
+                window = text[i:i + 800]
+                assert (
+                    "captured_at" in window and "created_at" in window
+                ), (
+                    f"db_parent_ancestor lookup at offset {i} is missing a "
+                    f"captured_at >= branches.created_at filter:\n"
+                    f"{window[:400]}"
+                )
+                idx = i + 1
+            assert seen >= 2, f"expected 2+ lookups, found {seen}"
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Finding #12 — nested branch chains (b1 → b3 → b5) precedence.

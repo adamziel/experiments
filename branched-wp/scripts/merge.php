@@ -504,10 +504,20 @@ function db_ancestor_rows_cow(SQLite3 $db, int $branch_id, string $logical_name,
     // TODO3 #3: also look up the SHARED parent ancestor snapshot
     // (populated by the O(1) parent-side trigger). Only applies for PKs
     // we didn't already resolve via the per-branch overlay.
+    //
+    // Cluster-A #11: filter by `captured_at >= branches.created_at` so a
+    // snapshot captured BEFORE this branch existed (e.g. a parent UPDATE
+    // on another descendant) is not mistakenly adopted as this branch's
+    // fork-time ancestor. Without this filter, a branch forked AFTER a
+    // parent-side DELETE of row X would see the DELETE's snapshot and
+    // use it as if X existed at fork-time — which it didn't.
     $sh_lookup = $db->prepare(
-        "SELECT row_pk, row_json FROM db_parent_ancestor "
-      . "WHERE parent_table_name = :p"
+        "SELECT pa.row_pk, pa.row_json FROM db_parent_ancestor pa "
+      . "JOIN branches b ON b.id = :b "
+      . "WHERE pa.parent_table_name = :p "
+      . "  AND pa.captured_at >= b.created_at"
     );
+    $sh_lookup->bindValue(':b', $branch_id, SQLITE3_INTEGER);
     $sh_lookup->bindValue(':p', $parent_table, SQLITE3_TEXT);
     $sr = $sh_lookup->execute();
     while ($row = $sr->fetchArray(SQLITE3_ASSOC)) {
@@ -651,11 +661,17 @@ function db_ancestor_fill_for_diff(
     // Pre-load shared parent ancestor snapshots; used to short-circuit
     // the "parent's current row" fallback below with the captured
     // pre-divergence value.
+    //
+    // Cluster-A #11: filter by `captured_at >= branches.created_at` —
+    // same rationale as the lookup above in the no-merge-base path.
     $shared_anc = [];
     $sa = $db->prepare(
-        "SELECT row_pk, row_json FROM db_parent_ancestor "
-      . "WHERE parent_table_name = :p"
+        "SELECT pa.row_pk, pa.row_json FROM db_parent_ancestor pa "
+      . "JOIN branches b ON b.id = :b "
+      . "WHERE pa.parent_table_name = :p "
+      . "  AND pa.captured_at >= b.created_at"
     );
+    $sa->bindValue(':b', $branch_id, SQLITE3_INTEGER);
     $sa->bindValue(':p', $parent_table, SQLITE3_TEXT);
     $sar = $sa->execute();
     while ($row2 = $sar->fetchArray(SQLITE3_ASSOC)) {

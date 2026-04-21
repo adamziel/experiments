@@ -369,6 +369,17 @@ to the re-assigned `b{new_id}_wp_` on the fly.
     producing one INSERT per descendant per parent write; parent
     throughput degraded linearly with sibling-branch count — the exact
     workload pattern cheap branching was meant to encourage.
+    Concurrency: the trigger uses `INSERT OR IGNORE`, so the FIRST
+    pre-update snapshot wins — concurrent parent writes cannot
+    overwrite each other's snapshot of the row-as-of-fork-time.
+    **Cluster-A #11 — merge-time filter**: when `merge.php` reads
+    `db_parent_ancestor` it JOINs the `branches` table and filters
+    by `captured_at >= branches.created_at`. A snapshot whose
+    `captured_at` predates the branch's `created_at` was populated
+    by a parent write for another (earlier) descendant and must not
+    be adopted as this branch's fork-time ancestor — doing so would
+    resurrect a row the branch never inherited. The same filter is
+    already applied to `db_parent_post_fork_inserts` lookups.
   - **Marker**: `db_cow_branches(branch_id, table_suffix, parent_branch_id,
     parent_table_name, fork_token)` records that the branch is in COW
     format and tracks the parent's table for merge-time ancestor lookup.
