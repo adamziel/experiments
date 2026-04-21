@@ -49,6 +49,20 @@ if (!$result) {
 echo "Database initialized successfully.\n";
 echo "  - 'main' branch created\n";
 
+// Test-only override: `FORKPRESS_INIT_AUTH_ENABLED=0` flips auth off at
+// init time so the e2e suite doesn't have to plumb --user/--password
+// through every branchctl invocation. Production callers (forkpress
+// init) never set this env var and keep the secure default of '1'.
+$env_auth = getenv('FORKPRESS_INIT_AUTH_ENABLED');
+if ($env_auth !== false && $env_auth !== '' && $env_auth !== '1') {
+    $stmt = $db->prepare(
+        "INSERT INTO site_config (key, value) VALUES ('auth_enabled', :v) "
+      . "ON CONFLICT(key) DO UPDATE SET value = excluded.value"
+    );
+    $stmt->bindValue(':v', '0', SQLITE3_TEXT);
+    $stmt->execute();
+}
+
 // Seed the default admin user (only if none exists yet — re-running init
 // on the same file must not clobber the live admin password).
 $existing_admin_count = (int)$db->querySingle("SELECT COUNT(*) FROM users");

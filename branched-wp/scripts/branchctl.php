@@ -357,6 +357,30 @@ CREATE TABLE IF NOT EXISTS audit_log (
 );
 CREATE INDEX IF NOT EXISTS idx_audit_log_ts    ON audit_log(ts);
 CREATE INDEX IF NOT EXISTS idx_audit_log_actor ON audit_log(actor);
+/* Hostile-review finding #2 — tamper-resistant audit_log.
+ *
+ * A user with write access to the .fp file (via sqlite3 shell, a rogue
+ * PHP caller, or the MySQL proxy) could previously run
+ *   DELETE FROM audit_log
+ *   UPDATE audit_log SET actor='spoofed'
+ * to cover their tracks. These BEFORE triggers fire RAISE(ABORT) so
+ * neither statement commits. There is NO safe path through PHP or the
+ * proxy to rewrite history.
+ *
+ * Limitation: a caller who can DROP TABLE audit_log has already escaped
+ * every protection SQLite offers. That's documented in LIMITATIONS.md.
+ * Mitigation at the OS level (write-protect the .fp when handing it to
+ * an untrusted consumer) is the operator's responsibility. */
+CREATE TRIGGER IF NOT EXISTS audit_log_no_update
+BEFORE UPDATE ON audit_log
+BEGIN
+    SELECT RAISE(ABORT, 'audit_log is append-only (tamper-resistant)');
+END;
+CREATE TRIGGER IF NOT EXISTS audit_log_no_delete
+BEFORE DELETE ON audit_log
+BEGIN
+    SELECT RAISE(ABORT, 'audit_log is append-only (tamper-resistant)');
+END;
 CREATE TABLE IF NOT EXISTS db_snapshots_schema (
     branch_id    INTEGER NOT NULL,
     table_name   TEXT NOT NULL,
@@ -1560,6 +1584,124 @@ function db_has_uncommitted_changes(SQLite3 $db, int $branch_id): bool {
     return $now !== $ref;
 }
 
+/* ================================================================
+ * Hostile-review finding #2 / #18 — resolve a Principal before any
+ * subcommand runs and register it on audit_helpers. Every subsequent
+ * `audit_log_write` call binds to this principal; CLI flags / env
+ * vars cannot override it.
+ *
+ * Read-only subcommands (list, show, audit, log, status, diff, help)
+ * don't need a principal — they don't mutate state. Everything else
+ * does. This keeps `branchctl list` usable by operators without creds.
+ * ================================================================ */
+require_once __DIR__ . '/principal.php';
+
+function branchctl_is_readonly_cmd(string $cmd): bool {
+    return in_array($cmd, [
+        'list', 'show', 'log', 'status', 'diff', 'audit', 'gc',
+        'help', '-h', '--help',
+    ], true);
+}
+
+/**
+ * Hostile-review finding #18 — DDL allowlist for the `_ddl` subcommand.
+ *
+ * Returns true only when $sql is one of:
+ *   ALTER TABLE …
+ *   CREATE [UNIQUE] INDEX …
+ *   DROP INDEX …
+ *   ALTER TABLE … RENAME …   (covered by ALTER TABLE prefix)
+ * Anything else — including DROP TABLE, CREATE TABLE, DELETE, UPDATE,
+ * INSERT, SELECT, ATTACH, DETACH, PRAGMA, any multi-statement input —
+ * is rejected. The proxy's intended DDL routing surface is exactly
+ * these three shapes; broader forms (DROP TABLE, CREATE TABLE) would
+ * need distinct handling anyway.
+ *
+ * We reject multi-statement input defensively: a single forbidden
+ * statement hidden in a payload like "ALTER TABLE x ADD y; DELETE FROM
+ * audit_log" would otherwise slip through.
+ */
+function branchctl_is_allowed_ddl(string $sql): bool {
+    // Normalize: strip leading whitespace + any SQL comments at the head.
+    $s = ltrim($sql);
+    // Strip leading SQL line & block comments until we hit real code.
+    while (true) {
+        if (strncmp($s, '--', 2) === 0) {
+            $eol = strpos($s, "\n");
+            $s = ($eol === false) ? '' : ltrim(substr($s, $eol + 1));
+            continue;
+        }
+        if (strncmp($s, '/*', 2) === 0) {
+            $end = strpos($s, '*/', 2);
+            if ($end === false) return false;
+            $s = ltrim(substr($s, $end + 2));
+            continue;
+        }
+        break;
+    }
+    if ($s === '') return false;
+
+    // Strip a trailing semicolon + whitespace so "ALTER TABLE x;" is OK.
+    // Reject multi-statement: any semicolon NOT at the trailing tail means
+    // a second statement follows.
+    $trimmed = rtrim($s, " \t\r\n;");
+    if (strpos($trimmed, ';') !== false) {
+        // A semicolon inside a string literal is fine; we do a quick
+        // scan that tracks single quotes only (DDL has no need for
+        // complex quoting — column names are backticked/double-quoted
+        // identifiers, not strings).
+        $in = false;
+        $len = strlen($trimmed);
+        for ($i = 0; $i < $len; $i++) {
+            $c = $trimmed[$i];
+            if ($c === "'") {
+                // Handle '' escape.
+                if ($in && $i + 1 < $len && $trimmed[$i + 1] === "'") {
+                    $i++;
+                    continue;
+                }
+                $in = !$in;
+            } elseif (!$in && $c === ';') {
+                return false;  // multi-statement
+            }
+        }
+    }
+
+    $up = strtoupper($trimmed);
+    // ALTER TABLE (add/drop/rename column, rename to) — BranchedPDO handles
+    // the view-rebuild. Note we accept RENAME TO even though BranchedPDO
+    // rejects it; BranchedPDO will surface its own RuntimeException.
+    if (preg_match('/^ALTER\s+TABLE\b/i', $trimmed)) return true;
+    // CREATE [UNIQUE] INDEX [IF NOT EXISTS] … ON …
+    if (preg_match('/^CREATE\s+(UNIQUE\s+)?INDEX\b/i', $trimmed)) return true;
+    // DROP INDEX [IF EXISTS] …
+    if (preg_match('/^DROP\s+INDEX\b/i', $trimmed)) return true;
+
+    return false;
+}
+
+// Ensure the .fp has an audit_log table + triggers before the principal
+// is resolved (so bootstrap migration runs exactly once, early).
+{
+    $__mig = sqlite_open($DB_PATH);
+    unset($__mig); /* sqlite_open calls fs_migrate(); close happens implicitly */
+}
+
+$__principal_reason = null;
+$__principal = principal_resolve($DB_PATH, $flags, $__principal_reason);
+if ($__principal === null) {
+    if (!branchctl_is_readonly_cmd((string)$cmd)) {
+        // Writers (including _ddl) under auth_enabled=1 require a
+        // verified principal.
+        fwrite(STDERR, "branchctl: " . ($__principal_reason ?: 'auth required') . "\n");
+        exit(2);
+    }
+    // Read-only: run under a nameless system principal. Audit rows
+    // aren't written for read-only operations so this is benign.
+    $__principal = new Principal('system', 'read', true);
+}
+audit_log_set_principal($__principal);
+
 switch ($cmd) {
 
 case 'list': {
@@ -2640,6 +2782,12 @@ case '_ddl': {
     //
     // Usage: branchctl _ddl --branch <name> [--db <path>]   (SQL on stdin)
     //
+    // Hostile-review finding #18: this subcommand previously accepted ANY
+    // SQL on stdin, including DELETE FROM audit_log. Now:
+    //   - principal resolution (above) already requires --user/--password
+    //     or FORKPRESS_TOKEN under auth_enabled=1;
+    //   - we validate the SQL is an allowlisted DDL form before running.
+    //
     // Exits 0 on success; prints the SQLite error (if any) to STDERR and
     // exits 5 on failure.
     $branch = (string)($flags['branch'] ?? '');
@@ -2652,9 +2800,24 @@ case '_ddl': {
         fwrite(STDERR, "branchctl: _ddl: no SQL on stdin\n");
         exit(2);
     }
+    // Reject non-DDL. Allowlist: ALTER TABLE, CREATE [UNIQUE] INDEX,
+    // DROP INDEX. Everything else — DROP TABLE, CREATE TABLE, DELETE,
+    // UPDATE, INSERT, SELECT, PRAGMA, ATTACH — is rejected.
+    if (!branchctl_is_allowed_ddl((string)$sql)) {
+        fwrite(STDERR,
+            "branchctl: _ddl: SQL is not an allowed DDL form — "
+          . "only ALTER TABLE, CREATE [UNIQUE] INDEX, DROP INDEX, "
+          . "and RENAME are accepted\n");
+        exit(2);
+    }
     require_once __DIR__ . '/branched_pdo.php';
     try {
+        // BranchedPDO::connect + BootstrapBranchedPDO::ensure is the
+        // sanctioned entry point. ensure() runs BranchedPDO::assert_branched
+        // so any raw-PDO regression in this path is caught immediately
+        // (finding #5 — assert_branched had zero production callers).
         $pdo = BranchedPDO::connect($DB_PATH, $branch);
+        BootstrapBranchedPDO::ensure($pdo, $DB_PATH, $branch);
         $pdo->exec((string)$sql);
     } catch (\Throwable $e) {
         fwrite(STDERR, "branchctl: _ddl: " . $e->getMessage() . "\n");

@@ -46,7 +46,11 @@ def _init_site(work: Path, admin_password: Optional[str] = None) -> Path:
             str(SCRIPTS_DIR / "init_db.php"), str(site_fp)]
     if admin_password is not None:
         args += ["--admin-password", admin_password]
-    r = subprocess.run(args, capture_output=True, text=True, timeout=30)
+    # Auth tests want the production default (auth_enabled=1). The e2e
+    # conftest sets FORKPRESS_INIT_AUTH_ENABLED=0 globally for legacy
+    # tests; override here.
+    env = {**os.environ, "FORKPRESS_INIT_AUTH_ENABLED": "1"}
+    r = subprocess.run(args, capture_output=True, text=True, timeout=30, env=env)
     if r.returncode != 0:
         pytest.skip(f"init_db.php failed: {r.stderr[:300]}")
     return site_fp

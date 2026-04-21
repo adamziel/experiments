@@ -112,6 +112,17 @@ def init_site(site_fp: Path):
     )
     if r.returncode != 0:
         raise RuntimeError(f"init_db.php failed: {r.stderr[:500]}\n{r.stdout[:500]}")
+    # init_db.php seeds auth_enabled=1 (production default). Flip off for
+    # the default testing workflow so existing tests that don't care about
+    # auth can invoke branchctl without credentials. Tests that exercise
+    # the principal-auth path (test_principal_auth.py, test_auth.py) flip
+    # this back via user_admin.php auth-enabled 1 on their own fixtures.
+    subprocess.run(
+        [PHP_BIN, "-d", f"extension={EXT_PATH}",
+         str(USER_ADMIN_PHP), "auth-enabled", "0"],
+        capture_output=True, text=True, timeout=15,
+        env={**os.environ, "BRANCHFS_DB": str(site_fp)},
+    )
 
 
 def setup_wp_tables(site_fp: Path):
@@ -155,6 +166,11 @@ def make_fresh_site(prefix="rigorous_"):
     """Create a fresh site.fp with WP tables. Returns (work_dir, site_fp).
 
     Caller is responsible for cleaning up work_dir with shutil.rmtree().
+
+    Defaults to auth_enabled=0 (legacy mode) via init_site() so existing
+    tests that don't care about auth can invoke `branchctl` without
+    credentials. Tests exercising the principal-auth path flip it back
+    explicitly.
     """
     require_ext()
     work = Path(tempfile.mkdtemp(prefix=prefix))

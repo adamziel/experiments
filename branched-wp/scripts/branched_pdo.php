@@ -479,3 +479,85 @@ class BranchedPDO extends PDO
         return $row && $row[0] === 'view';
     }
 }
+
+/**
+ * BootstrapBranchedPDO — production-chokepoint wrapper around
+ * `BranchedPDO::assert_branched()`.
+ *
+ * Closes hostile-review finding #5: the assertion existed but had zero
+ * callers anywhere in production code. This class is the sanctioned
+ * bootstrap hook every PHP entry point in scripts/ MUST call before
+ * opening a `.fp` file. It's a thin, intentional chokepoint so a hostile
+ * reviewer can grep for the class name and trust coverage.
+ *
+ *   $pdo     — a PDO or BranchedPDO (nullable; passing null is a no-op)
+ *   $site_fp — the .fp path the connection points at (for diagnostics)
+ *   $branch  — the branch name the caller intends to operate on
+ *
+ * Returns null when all is well. When the PDO is a raw one, returns the
+ * warning message that error_log already received, so the caller can
+ * inline-fail or rescue as it sees fit. Callers in strict mode
+ * (FORKPRESS_STRICT_PDO=1) never see a return value from this helper —
+ * it throws RuntimeException instead.
+ */
+class BootstrapBranchedPDO
+{
+    /** Primary chokepoint. Always call this after opening a PDO. */
+    public static function ensure(?PDO $pdo, string $site_fp, string $branch = 'main'): ?string
+    {
+        // Threaded via BranchedPDO::assert_branched() so both paths stay
+        // in sync and callers can use either name. Eg. existing code that
+        // already invokes assert_branched() directly doesn't need to
+        // change — the contract is identical.
+        return BranchedPDO::assert_branched($pdo, $site_fp);
+    }
+
+    /**
+     * Sanctioned factory: open a PDO against a .fp file for a specific
+     * branch. Guarantees every returned connection is a BranchedPDO.
+     * Entry points that want a single function call can use this; it
+     * collapses the common two-step pattern.
+     */
+    public static function open(string $site_fp, string $branch = 'main'): BranchedPDO
+    {
+        $pdo = BranchedPDO::connect($site_fp, $branch);
+        self::ensure($pdo, $site_fp, $branch);
+        return $pdo;
+    }
+}
+
+/**
+ * BranchedSession — sanctioned session entry point (finding #5).
+ *
+ * `BranchedSession::open($site_fp, $branch, $principal)` opens a
+ * BranchedPDO-wrapped connection AND records the principal for any audit
+ * writes that follow inside the session. This is the ONLY sanctioned
+ * path that entry points in scripts/ and ext/ use when they need a PHP
+ * connection to a .fp. Direct `new PDO('sqlite:…')` is detectable via
+ * BootstrapBranchedPDO::ensure() and reported/rejected.
+ */
+class BranchedSession
+{
+    public BranchedPDO $pdo;
+    public Principal   $principal;
+    public string      $branch;
+    public string      $site_fp;
+
+    private function __construct(BranchedPDO $pdo, Principal $principal,
+                                 string $branch, string $site_fp)
+    {
+        $this->pdo       = $pdo;
+        $this->principal = $principal;
+        $this->branch    = $branch;
+        $this->site_fp   = $site_fp;
+    }
+
+    public static function open(string $site_fp, string $branch,
+                                Principal $principal): self
+    {
+        require_once __DIR__ . '/audit_helpers.php';
+        audit_log_set_principal($principal);
+        $pdo = BootstrapBranchedPDO::open($site_fp, $branch);
+        return new self($pdo, $principal, $branch, $site_fp);
+    }
+}

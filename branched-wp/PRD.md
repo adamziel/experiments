@@ -271,6 +271,11 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   HTTP Basic credentials verified against the `users` table when
   `site_config.auth_enabled='1'`. Users with role `read` get HTTP 403;
   anyone else gets HTTP 401 with `WWW-Authenticate: Basic realm="BranchFS Git"`.
+- **Principal & audit binding**: the verified username is the `Principal`
+  (see F12) attached to any `fs_commits` / `audit_log` row produced by
+  the push. No caller can override the actor via env var or header —
+  `audit_log.actor` is written from the cryptographically verified
+  identity, not from `FORKPRESS_ACTOR`.
 
 ### F3 — SFTP access
 - SFTP server on `:2222` (configurable)
@@ -281,6 +286,9 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   and read files but any write / mkdir / remove returns
   `SSH_FX_PERMISSION_DENIED`.
 - File close after write → `fs_commits` row with message `sftp: edit <path>`
+- **Principal & audit binding**: the authenticated SFTP username is the
+  `Principal` (see F12) used when the close-handler writes the
+  `fs_commits` / `audit_log` row.
 
 ### F4 — SMB2 access
 - SMB2 server on `:445` (configurable)
@@ -293,6 +301,9 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   `STATUS_ACCESS_DENIED`. Sites that need SMB must either keep
   `auth_enabled='0'` or use SFTP / the MySQL proxy instead.
 - File close after write → `fs_commits` row
+- **Principal & audit binding**: because SMB NTLMSSP isn't implemented,
+  SMB paths only run under `auth_enabled='0'` and all audit rows they
+  produce are attributed to the synthetic `system` principal (see F12).
 
 ### F5 — MySQL access
 - MySQL-compatible protocol server on `:3306` (configurable)
@@ -303,6 +314,14 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   passwords are rejected. Users with role `read` can run
   SELECT/SHOW/EXPLAIN/PRAGMA/SET but any INSERT/UPDATE/DELETE/DDL
   returns `ER_ACCESS_DENIED_ERROR`.
+- **Principal & audit binding**: the proxy records the authenticated
+  username at handshake and, when it shells out to `branchctl _ddl` for
+  view-DDL routing, passes the username through as a short-lived HMAC
+  token (`FORKPRESS_TOKEN`) so branchctl resolves the same Principal
+  (see F12). `_ddl` now also rejects any SQL that isn't a DDL form in
+  the allowlist (ALTER TABLE, CREATE [UNIQUE] INDEX, DROP INDEX) —
+  closing hostile-review finding #18, where the hidden subcommand
+  previously accepted arbitrary SQL on stdin.
 - The branch-name is the MySQL "database" in the connection string
 - All `b{branch_id}_wp_*` tables for that branch are visible as `wp_*`
   (table name translation: strip the `b{id}_` prefix in responses)
@@ -571,6 +590,76 @@ Back-compat:
 Password recovery is intentionally manual — there is no email loop, no
 reset token. Operators rotate credentials with
 `forkpress user remove <name> && forkpress user add <name> <newpw>`.
+
+### F12 — Audit log (principal-bound, tamper-resistant)
+
+Every state-mutating branchctl command (create, commit, delete, merge,
+rollback, reset, migrate, `_ddl`) writes one row into `audit_log`:
+
+```
+audit_log(id, ts, actor, action, target, details)
+```
+
+**Principal binding.** `audit_log.actor` is sourced from a resolved
+`Principal` (see `scripts/principal.php`), **not** from
+`FORKPRESS_ACTOR`. The resolver runs once at CLI startup and
+registers itself on `audit_helpers.php` so every subsequent
+`audit_log_write` call uses the same identity:
+
+- `auth_enabled='1'`: the CLI accepts `--user <u> --password <p>` OR
+  `FORKPRESS_TOKEN=<signed>`. Credentials are verified against
+  `users.password_hash` (bcrypt) or the HMAC-signed token. The env var
+  `FORKPRESS_ACTOR` is **ignored** — setting it does nothing.
+- `auth_enabled='0'` (legacy): no credentials required. The principal
+  is a synthetic `system` role; `FORKPRESS_ACTOR` is honoured as a
+  display-only hint for audit attribution but confers no security.
+
+**Token format.** A FORKPRESS_TOKEN is
+`base64url("<username>.<exp_unix>.<hex_sha256_hmac>")`. The HMAC key
+is stored in `site_config['hmac_secret']` (32 bytes, hex-encoded) and
+auto-generated on first use. The secret is never logged. The MySQL
+proxy mints 60-second tokens via `Store::mint_principal_token()` when
+it shells out to `branchctl _ddl`.
+
+**Tamper resistance.** `audit_log` carries two SQLite triggers:
+
+```sql
+CREATE TRIGGER audit_log_no_update
+BEFORE UPDATE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only (tamper-resistant)'); END;
+CREATE TRIGGER audit_log_no_delete
+BEFORE DELETE ON audit_log
+BEGIN SELECT RAISE(ABORT, 'audit_log is append-only (tamper-resistant)'); END;
+```
+
+So a caller who runs `DELETE FROM audit_log` or `UPDATE audit_log SET
+actor='victim'` — whether via sqlite3 shell, the MySQL proxy, or a
+PHP caller — is stopped with a `SQLITE_CONSTRAINT`-style abort. There
+is one SQLite-scope limitation: a caller who can `DROP TABLE
+audit_log` or physically replace the `.fp` file has escaped every
+constraint SQLite can enforce. Operators who need stronger guarantees
+should mount the `.fp` read-only for untrusted consumers. See
+LIMITATIONS.md.
+
+**Failure semantics.** `audit_log_write` failures are **not silent**.
+If the INSERT fails for any reason (e.g. a broken schema from
+administrative corruption), the helper writes a diagnostic to STDERR
+and the CLI exits non-zero — closing hostile-review finding #2 where
+failures were swallowed.
+
+**Chokepoints.**
+- `scripts/principal.php` — `Principal` class, token mint/verify,
+  `principal_resolve()`.
+- `scripts/audit_helpers.php` — `audit_log_set_principal()` and
+  `audit_log_write()` with loud failure.
+- `scripts/branched_pdo.php` — `BootstrapBranchedPDO::ensure()` is the
+  sanctioned chokepoint every entry point calls after opening a PDO to
+  enforce BranchedPDO wrapping (finding #5). `BranchedSession::open()`
+  is the one-call sanctioned path that binds PDO + principal in a
+  single step.
+- `scripts/branchctl.php` — resolves a principal once up front,
+  rejects writers when auth is enabled and no credentials are
+  supplied, and gates `_ddl` SQL through a DDL allowlist.
 
 ### F9 — Merge
 `branchctl merge <from> --into <target> [--strategy=abort|ours|theirs] [--on-id-collision=conflict|renumber]`

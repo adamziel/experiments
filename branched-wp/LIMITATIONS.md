@@ -207,6 +207,24 @@ Everything is pinned to WordPress 6.5. Later minors / 6.6+ weren't
 tested. Core changed the pattern registration path a couple of times;
 a version bump may need new work.
 
+## Audit log tamper-resistance is SQLite-scoped
+
+`audit_log` is protected against `UPDATE` and `DELETE` by `BEFORE`
+triggers that `RAISE(ABORT)` (see PRD F12). This catches the realistic
+attack surfaces — the MySQL proxy, ad-hoc `sqlite3` shells, and any PHP
+caller — but a user with write access to the `.fp` file at the OS
+level can still:
+
+- `DROP TABLE audit_log` (then re-create it without triggers, or leave
+  it missing)
+- physically replace the `.fp` with a tampered copy
+
+These escape paths are inherent to SQLite's protection model: triggers
+guard rows, not table existence. Operators who need stronger guarantees
+should mount the `.fp` file read-only for any consumer that doesn't
+need write access, or mirror audit rows out to an append-only sink
+outside the file (no built-in support yet).
+
 ## Not implemented
 
 - Admin UI for branch management (branchctl is CLI-only).

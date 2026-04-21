@@ -15,6 +15,10 @@ pub struct MysqlHandler {
     /// Role assigned by the handshake authenticate() call. None = auth
     /// disabled for this site (legacy open mode).
     role: Arc<Mutex<Option<String>>>,
+    /// Username supplied at handshake time. Used as the Principal when
+    /// shelling out to `branchctl _ddl` (hostile-review finding #18) so
+    /// the audit trail attributes the DDL to the authenticated client.
+    username: Arc<Mutex<Option<String>>>,
 }
 
 impl MysqlHandler {
@@ -23,11 +27,16 @@ impl MysqlHandler {
             store,
             branch_id: 1,
             role: Arc::new(Mutex::new(None)),
+            username: Arc::new(Mutex::new(None)),
         }
     }
 
     fn is_read_only(&self) -> bool {
         matches!(self.role.lock().unwrap().as_deref(), Some("read"))
+    }
+
+    fn current_username(&self) -> Option<String> {
+        self.username.lock().unwrap().clone()
     }
 }
 
@@ -338,21 +347,30 @@ fn branchctl_bin() -> String {
 /// Run `branchctl _ddl --db <path> --branch <name>` with the SQL on stdin.
 /// Returns () on success; on failure returns the stderr message so the
 /// proxy can forward it to the client.
+///
+/// `token` is a FORKPRESS_TOKEN HMAC-signed blob identifying the authenticated
+/// MySQL user; it's passed via env so branchctl can resolve a Principal and
+/// attribute the audit row correctly (hostile-review finding #18).
 pub fn exec_ddl_via_branchctl(
     db_path: &std::path::Path,
     branch: &str,
     sql: &str,
+    token: Option<&str>,
 ) -> std::result::Result<(), String> {
     let bin = branchctl_bin();
-    let mut child = std::process::Command::new(&bin)
-        .arg("_ddl")
+    let mut cmd = std::process::Command::new(&bin);
+    cmd.arg("_ddl")
         .arg("--db")
         .arg(db_path.as_os_str())
         .arg("--branch")
         .arg(branch)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(t) = token {
+        cmd.env("FORKPRESS_TOKEN", t);
+    }
+    let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to spawn '{}': {}", bin, e))?;
     if let Some(mut stdin) = child.stdin.take() {
@@ -389,6 +407,11 @@ impl<W: AsyncWrite + Unpin + Send> AsyncMysqlShim<W> for MysqlHandler {
     ) -> bool {
         if !self.store.auth_enabled() {
             *self.role.lock().unwrap() = None;
+            // In legacy mode we still record the supplied username (if any)
+            // so the audit log can attribute MySQL-proxied DDL. This is a
+            // hint only — auth_enabled=0 confers no security claim on it.
+            *self.username.lock().unwrap() =
+                std::str::from_utf8(username).ok().map(|s| s.to_string());
             return true;
         }
         let user = match std::str::from_utf8(username) {
@@ -403,6 +426,7 @@ impl<W: AsyncWrite + Unpin + Send> AsyncMysqlShim<W> for MysqlHandler {
             Some((mysql_sha1, role)) => {
                 if verify_mysql_native(auth_data, salt, &mysql_sha1) {
                     *self.role.lock().unwrap() = Some(role);
+                    *self.username.lock().unwrap() = Some(user.to_string());
                     true
                 } else {
                     false
@@ -519,10 +543,23 @@ impl<W: AsyncWrite + Unpin + Send> AsyncMysqlShim<W> for MysqlHandler {
                     .unwrap_or_else(|| format!("b{}", self.branch_id));
                 let db_path = self.store.db_path().to_path_buf();
                 let sql_owned = rewritten.clone();
+                // Mint a short-lived FORKPRESS_TOKEN so branchctl _ddl can
+                // attribute the audit row to the connected MySQL user
+                // (hostile-review finding #18). When auth is disabled we
+                // pass no token and branchctl runs as the `system`
+                // principal in legacy mode.
+                let token: Option<String> = if self.store.auth_enabled() {
+                    self.current_username().and_then(|u| {
+                        self.store.mint_principal_token(&u, 60).ok()
+                    })
+                } else {
+                    None
+                };
                 // Run the blocking subprocess on a tokio blocking thread so
                 // we don't stall the async runtime.
                 let join = tokio::task::spawn_blocking(move || {
-                    exec_ddl_via_branchctl(&db_path, &branch, &sql_owned)
+                    exec_ddl_via_branchctl(&db_path, &branch, &sql_owned,
+                                           token.as_deref())
                 })
                 .await;
                 match join {
