@@ -393,6 +393,16 @@ to the re-assigned `b{new_id}_wp_` on the fly.
 - All branches see their own isolated database state — INSTEAD OF triggers
   enforce isolation; UPDATEs on the branch view only touch the branch's
   overlay, never the parent's table.
+- **Nested branch chains** (Cluster-A #12 — verified): a grandchild
+  branch `b5` whose parent is non-main `b3` gets a view whose
+  `UNION ALL` references `b3`'s logical view, not `b1`'s real table.
+  `cow_create_branch_table`'s `$parent_table = "b{$parent_id}_wp_…"`
+  uses the direct parent, and the INSTEAD OF trigger's cross-layer
+  UNIQUE guard walks up through SQLite's view-resolution — so a
+  grandchild's guard correctly rejects an overlay INSERT whose
+  UNIQUE value matches a row inherited three levels up. Rigorous
+  tests in `test_cluster_a.py::TestClusterAF12_NestedBranchChains`
+  cover 3- and 4-level precedence and the guard across levels.
 - **INSTEAD OF UPDATE semantics** (Cluster-A #1): the UPDATE trigger
   uses an explicit "tombstone-old-then-upsert-new" sequence rather
   than `INSERT OR REPLACE`. Pre-Cluster-A the trigger did

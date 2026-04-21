@@ -557,3 +557,91 @@ class TestClusterAF12_NestedBranchChains:
             )
         finally:
             shutil.rmtree(work, ignore_errors=True)
+
+    def test_nested_cross_layer_unique_guard_on_grandchild(self, tmp_path):
+        """Cross-layer UNIQUE guard on a grandchild branch must walk up
+        through the parent branch's VIEW. Inserting a row into the
+        grandchild with a UNIQUE value that matches a row inherited
+        from GREAT-GRANDPARENT (main) through the MID branch must
+        still be rejected — the guard's EXISTS subquery is on the
+        parent VIEW and the parent view transitively exposes main's
+        rows via its own UNION ALL."""
+        work, site_fp = make_fresh_site("cla_f12d_")
+        try:
+            mid_id = create_branch(site_fp, "mid", parent="main")
+            leaf_id = create_branch(site_fp, "leaf", parent="mid")
+
+            db = sqlite3.connect(str(site_fp))
+            try:
+                # main already has 'blogname' — try inserting a new overlay
+                # row in leaf with the same option_name. Should fail the
+                # cross-layer UNIQUE guard.
+                with pytest.raises(sqlite3.IntegrityError):
+                    db.execute(
+                        f"INSERT INTO b{leaf_id}_wp_options "
+                        "(option_name, option_value) "
+                        "VALUES ('blogname', 'leaf_blog')"
+                    )
+                    db.commit()
+                db.rollback()
+            finally:
+                db.close()
+
+            # View must still show exactly one blogname row.
+            rows = sqlite_q(site_fp,
+                f"SELECT option_value FROM b{leaf_id}_wp_options "
+                "WHERE option_name='blogname'")
+            assert len(rows) == 1, f"got {rows}"
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
+
+    def test_nested_write_chain_four_levels(self, tmp_path):
+        """Four-level branch chain: main → A → B → C. Writing at each
+        level must produce correct precedence through C's view."""
+        work, site_fp = make_fresh_site("cla_f12e_")
+        try:
+            a_id = create_branch(site_fp, "a", parent="main")
+            b_id = create_branch(site_fp, "b", parent="a")
+            c_id = create_branch(site_fp, "c", parent="b")
+
+            sqlite_exec(site_fp,
+                f"INSERT INTO b{a_id}_wp_options (option_name, option_value) "
+                "VALUES ('level_test', 'a_val')")
+            # All descendants inherit.
+            for bid, expected in ((b_id, "a_val"), (c_id, "a_val")):
+                rows = sqlite_q(site_fp,
+                    f"SELECT option_value FROM b{bid}_wp_options "
+                    "WHERE option_name='level_test'")
+                assert rows == [(expected,)], f"{bid}: got {rows}"
+
+            # b writes on top.
+            sqlite_exec(site_fp,
+                f"UPDATE b{b_id}_wp_options SET option_value='b_val' "
+                "WHERE option_name='level_test'")
+            # a still sees a_val.
+            rows = sqlite_q(site_fp,
+                f"SELECT option_value FROM b{a_id}_wp_options "
+                "WHERE option_name='level_test'")
+            assert rows == [("a_val",)], f"got {rows}"
+            # b sees b_val, c inherits b_val.
+            for bid, expected in ((b_id, "b_val"), (c_id, "b_val")):
+                rows = sqlite_q(site_fp,
+                    f"SELECT option_value FROM b{bid}_wp_options "
+                    "WHERE option_name='level_test'")
+                assert rows == [(expected,)], f"{bid}: got {rows}"
+
+            # c writes on top.
+            sqlite_exec(site_fp,
+                f"UPDATE b{c_id}_wp_options SET option_value='c_val' "
+                "WHERE option_name='level_test'")
+            rows = sqlite_q(site_fp,
+                f"SELECT option_value FROM b{c_id}_wp_options "
+                "WHERE option_name='level_test'")
+            assert rows == [("c_val",)], f"got {rows}"
+            # b unchanged.
+            rows = sqlite_q(site_fp,
+                f"SELECT option_value FROM b{b_id}_wp_options "
+                "WHERE option_name='level_test'")
+            assert rows == [("b_val",)], f"got {rows}"
+        finally:
+            shutil.rmtree(work, ignore_errors=True)
