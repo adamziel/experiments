@@ -147,12 +147,15 @@ def test_parent_update_is_O1_regardless_of_branch_count(tmp_path):
     t_50 = timed_updates(50, 100)
 
     # The O(1) claim: t_50 shouldn't grow linearly with branch count.
-    # Allow generous slack for system noise; 3× is still well under the
-    # 50× slope a fanout trigger would produce.
-    assert t_50 < max(t_1 * 3.0, 0.05), (
+    # Use a pure ratio — a floor (e.g. max(t_1 * k, 0.05)) would mask a
+    # big regression whenever the baseline is small (say 1 ms → 40 ms
+    # is a 40× slowdown but still under the old 0.05 s floor). Divide
+    # by a tiny epsilon so we never blow up when t_1 is effectively 0.
+    ratio = t_50 / max(t_1, 1e-6)
+    assert ratio < 3.0, (
         f"parent UPDATE should be O(1) across descendant count; "
-        f"t(1 branch)={t_1:.3f}s, t(50 branches)={t_50:.3f}s — "
-        f"ratio {t_50 / max(t_1, 0.0001):.1f}× suggests fanout regression."
+        f"t(1 branch)={t_1:.4f}s, t(50 branches)={t_50:.4f}s — "
+        f"ratio {ratio:.1f}× suggests fanout regression."
     )
 
 
