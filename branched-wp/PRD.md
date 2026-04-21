@@ -392,9 +392,13 @@ to the re-assigned `b{new_id}_wp_` on the fly.
   old overlay row's tombstone coverage vanished so the parent's
   row at `OLD.PK` re-emerged through the view. Post-Cluster-A the
   trigger body is:
-  1. Cross-layer UNIQUE guard (composite-PK-safe — `pk_tuple_p NOT IN
-     (SELECT pk_tuple FROM tombstones/overlay)` rather than the
-     single-column `$pk_cols[0]` form).
+  1. Cross-layer UNIQUE guard (Cluster-A #9 — composite-PK-safe:
+     `pk_tuple_p NOT IN (SELECT pk_tuple FROM tombstones/overlay)`
+     rather than the single-column `$pk_cols[0]` form. Pre-Cluster-A
+     a tombstone for composite PK `(1, 20)` made the guard skip
+     `(1, 10)` too because it filtered only on col 0, admitting a
+     UNIQUE collision for any row whose u-value matched the
+     inherited `(1, 10)`).
   2. If `NEW.PK ≠ OLD.PK`: `INSERT OR IGNORE` a tombstone for OLD.PK
      and DELETE the old overlay row at OLD.PK.
   3. DELETE any tombstone at NEW.PK.

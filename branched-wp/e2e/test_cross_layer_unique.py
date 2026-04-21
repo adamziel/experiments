@@ -136,3 +136,91 @@ def test_source_guard_for_unique_helper():
         "cow_trigger_sql must emit RAISE(ABORT, …) for cross-layer "
         "UNIQUE collisions (TODO3 #10)."
     )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Cluster-A #9 — composite-PK cross-layer UNIQUE guard.
+# ═════════════════════════════════════════════════════════════════════════════
+#
+# Pre-Cluster-A the guard's NOT-IN subquery used only $pk_cols[0]. On a
+# 2-col-PK table, a tombstone for (1, 20) made the guard think (1, 10)
+# was also deleted → admitted a UNIQUE collision. Rigorous tests live
+# here (alongside the other UNIQUE-guard invariants) so the
+# test_cross_layer_unique suite exercises BOTH single- and composite-PK.
+# ═════════════════════════════════════════════════════════════════════════════
+
+
+def test_composite_pk_guard_tombstone_filter_uses_tuple(tmp_path):
+    """With PRIMARY KEY (a, b) and a non-PK UNIQUE u column, tombstoning
+    (1,20) must not make the guard ignore (1,10). An INSERT of a new row
+    whose u matches the inherited (1,10)'s u must be rejected."""
+    work, site_fp = make_fresh_site("uniq_cpk_t_")
+    try:
+        sqlite_exec(site_fp,
+            "CREATE TABLE b1_wp_cmpu_t ("
+            "  a INTEGER NOT NULL, "
+            "  b INTEGER NOT NULL, "
+            "  u TEXT UNIQUE, "
+            "  PRIMARY KEY (a, b)"
+            ")")
+        sqlite_exec(site_fp,
+            "INSERT INTO b1_wp_cmpu_t VALUES (1, 10, 'v10'), (1, 20, 'v20')")
+        fid = create_branch(site_fp, "cpk_tomb")
+
+        sqlite_exec(site_fp,
+            f"DELETE FROM b{fid}_wp_cmpu_t WHERE a=1 AND b=20")
+
+        db = sqlite3.connect(str(site_fp))
+        try:
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(
+                    f"INSERT INTO b{fid}_wp_cmpu_t (a, b, u) VALUES (2, 99, 'v10')"
+                )
+                db.commit()
+            db.rollback()
+        finally:
+            db.close()
+
+        rows = sqlite_q(site_fp,
+            f"SELECT a, b, u FROM b{fid}_wp_cmpu_t WHERE u='v10' ORDER BY a, b")
+        assert len(rows) == 1
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+def test_composite_pk_guard_overlay_filter_uses_tuple(tmp_path):
+    """Same idea for the overlay NOT-IN check. Branch INSERTs (1,50) into
+    the overlay — that overlay row must not mask the inherited (1,10)
+    from the guard's check."""
+    work, site_fp = make_fresh_site("uniq_cpk_o_")
+    try:
+        sqlite_exec(site_fp,
+            "CREATE TABLE b1_wp_cmpu_o ("
+            "  a INTEGER NOT NULL, "
+            "  b INTEGER NOT NULL, "
+            "  u TEXT UNIQUE, "
+            "  PRIMARY KEY (a, b)"
+            ")")
+        sqlite_exec(site_fp,
+            "INSERT INTO b1_wp_cmpu_o VALUES (1, 10, 'v10')")
+        fid = create_branch(site_fp, "cpk_over")
+
+        # Populate the branch overlay with a row sharing col 'a' with parent.
+        sqlite_exec(site_fp,
+            f"INSERT INTO b{fid}_wp_cmpu_o (a, b, u) VALUES (1, 50, 'v50')")
+
+        db = sqlite3.connect(str(site_fp))
+        try:
+            # Now insert a row with u='v10' — must be rejected because
+            # (1, 10) is inherited. The overlay row at (1, 50) must not
+            # confuse the guard.
+            with pytest.raises(sqlite3.IntegrityError):
+                db.execute(
+                    f"INSERT INTO b{fid}_wp_cmpu_o (a, b, u) VALUES (2, 99, 'v10')"
+                )
+                db.commit()
+            db.rollback()
+        finally:
+            db.close()
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
