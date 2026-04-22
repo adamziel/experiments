@@ -15,7 +15,8 @@
  * --strategy=ours             -- target wins on conflict
  * --strategy=theirs           -- source wins on conflict
  *
- * Note: database merge is not implemented (Dolt has been removed).
+ * Phase 1 (file 3-way merge) and Phase 2 (DB 3-way merge — see PRD F9)
+ * both run inside this script.
  *
  * Usage: php merge.php {source-branch} {target-branch} [db-path] [--strategy=...]
  */

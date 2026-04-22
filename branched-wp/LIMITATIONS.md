@@ -1,13 +1,14 @@
 # Known Limitations
 
 This project is a working prototype of branch-scoped preview + version
-control for a WordPress site using [Dolt](https://www.dolthub.com/) for
-the database and a custom PHP extension + SQLite file for the whole
-WordPress tree. It boots, serves, and round-trips real WP pages, and has
-an 181-assertion unit suite plus four end-to-end suites covering branch
-workflow, git smart-HTTP, the homepage canary, and live-stack finding
-assertions. The list below is the list of things it **does not** handle
-yet — not bugs, but deliberately-deferred scope.
+control for a WordPress site, backed by a single SQLite `.fp` file that
+holds both the WordPress filesystem (via the branchfs PHP extension)
+and every `wp_*` table (via copy-on-write views + overlay + tombstones).
+It boots, serves, and round-trips real WP pages, and is exercised by a
+~440-test pytest suite covering invariants, COW semantics, merge,
+auth/audit, crash safety, hot backup, and the git smart-HTTP path. The
+list below is the list of things it **does not** handle yet — not bugs,
+but deliberately-deferred scope.
 
 ## Performance
 
@@ -21,7 +22,7 @@ sqlite-database-integration plugin + 3300 WP files via the toolkit).
 Fine for individual deploys, **not a CI hot path**. The cache dir is
 per-request (random suffix) so parallel operations don't collide, but
 each one still pays the full rebuild cost. There's a per-request cache
-of the exported `.ht.sqlite` keyed by `(branch, dolt_hash)` so the two
+of the exported `.ht.sqlite` keyed by `(branch, fs_commit)` so the two
 HTTP calls of a single `git clone` see byte-identical bytes, but the
 WP file tree and the git commit chain are still rebuilt each time.
 Future work: memoize the full tree between requests, invalidate on
@@ -54,9 +55,9 @@ runs `branchctl gc`. No automatic garbage collection on branch delete.
 
 The branchfs overlay tracks per-branch copy-on-write at the path level,
 but there's no tool that shows "what files changed between these two
-branches." `bin/branchctl diff` only shows row-count diffs for Dolt
-tables and total file counts for branchfs overlays — not per-file
-differences. Mitigation: use `git clone` + `git diff` on two branches
+branches." `branchctl diff` shows per-table row-count deltas for the
+COW database tables and total file counts for branchfs overlays — not
+per-file differences. Mitigation: use `git clone` + `git diff` on two branches
 for a true per-file view.
 
 ### File merge is "fork-point or ours|theirs"
@@ -82,54 +83,40 @@ concurrency (many simultaneous pushes or plugin installs), you'll see
 `database is locked` errors after the 5 s busy-timeout. No fix other
 than serializing writers or moving to a real DB for the file store.
 
-## Database layer (Dolt)
+## Database layer (COW SQLite)
 
-### Schema changes must travel with rows
+### Schema-merge is column-diff + index-diff only
 
-If a push changes `schema.sql` (adds a column, etc.) AND changes rows in
-the same commit, the `ALTER TABLE` runs before the row diffs. Dropping
-a column that's referenced by new rows in the same commit will fail.
+`branchctl merge` runs a per-column 3-way merge (added / dropped /
+modified) and a per-index 3-way merge alongside the row-level diff.
+What's NOT covered: column renames, type narrowing that requires data
+coercion, FK constraint changes, view/trigger merges. ADD + DROP of the
+same column shape in one merge is rejected as ambiguous.
 
-### No transient filter on arbitrary tables
+### Cross-layer UPSERT semantics are limited
 
-`wp_options` transient rows are filtered out of the exported SQLite
-file, but other potentially-noisy tables (e.g. `wp_actionscheduler_*`
-if the Action Scheduler plugin is used) are exported verbatim and
-every push will diff them. Future work: pluggable ignore list.
+The INSTEAD OF triggers on COW views enforce single-column UNIQUE
+constraints across overlay + parent layers (so a branch can't insert
+a value already present in the parent's inherited rows). Composite
+UNIQUE indexes and full SQL-92 UPSERT (`ON CONFLICT … DO UPDATE`) on a
+view are not supported — write directly to the overlay table for those
+cases.
 
-### SQLite-integration plugin version is pinned
+### AUTOINCREMENT bands
 
-The sqlite-database-integration plugin is vendored under
-`vendor/sqlite-database-integration/` (a snapshot of upstream, not a
-submodule). Upgrading pulls a new plugin set into every future clone;
-it does not migrate already-distributed clones. If the upstream plugin
-changes how it translates MySQL DDL to SQLite in a breaking way, old
-clones may fail to boot against the new server-exported SQLite file
-until re-cloned.
+Each non-main branch reserves a 1e9-wide AUTOINCREMENT band keyed on
+its branch_id (so `b2`, `b3`, … `bN` get disjoint ID space and a merge
+between siblings doesn't collide). Main branch uses its natural
+sequence. A sibling-merge of a 1e9+-row branch into main needs
+`--on-id-collision=renumber` to map back into main's gap. Tables
+outside the renumber-eligible map (`wp_options.option_id`, plugin
+custom tables) still surface conflicts on collision.
 
-### Schema migrations are column-diff only
+### No multisite
 
-The push path emits `ALTER TABLE ADD/DROP COLUMN` on Dolt when the
-pushed SQLite file has extra or missing columns relative to the Dolt
-table. If BOTH added AND dropped columns appear in the same push it
-refuses (renames and complex type-narrowing changes require explicit
-server-side migration).
-
-### BLOB round-trip via UTF-8 sniffing
-
-`LONGBLOB`-typed columns that happen to hold binary bytes get stored
-as SQLite `BLOB` (detected by a UTF-8 validity sniff); text-shaped
-blobs go in as `TEXT`. Mixed-content columns where some rows are
-binary and others text will work, but the classification is per-row.
-Columns that hold exactly `4 GiB − 1 B` or larger individual values
-exceed what we currently attempt to stream through PHP memory — no
-hard limit enforced, but memory will be the wall.
-
-### No multi-DB / multisite
-
-Everything assumes a single Dolt database named `wordpress`. WordPress
-multisite installs use `wp_<N>_*` tables and cross-table references
-that the exporter doesn't understand.
+Everything assumes single-site `wp_*` table layout. Multisite
+installs use `wp_<N>_*` tables and cross-table references the COW
+view layer doesn't currently model.
 
 ## Git protocol
 
@@ -196,8 +183,8 @@ source is bind-mounted.
 ### OPcache regression canary is live-stack only
 
 `e2e/test_homepage_renders.sh` is the regression test that catches
-"site renders blank." It needs a live dev stack to run (Dolt +
-php -S + WP install). There isn't a unit-test level equivalent —
+"site renders blank." It needs a live dev stack to run (forkpress
+serving + WP install). There isn't a unit-test level equivalent —
 testing that bytes actually flow through the stream-wrapper + Zend
 engine requires running the engine.
 
@@ -232,9 +219,10 @@ outside the file (no built-in support yet).
 - Webhooks on push / commit (useful for deploy triggers).
 - Preview banner / admin-bar hint that you're on a non-main branch
   (the response does carry `X-BranchFS-Branch:` for debugging).
-- Automated Dolt remote push (branchctl doesn't `push` to a Dolt remote;
-  Dolt backups are a separate concern).
-- Background job for periodic `branchctl gc` / Dolt housekeeping.
+- Automated remote replication (`branchctl backup` + `forkpress backup`
+  produce a single-file snapshot suitable for off-host copy, but
+  there's no built-in cron / push-to-remote loop).
+- Background job for periodic `branchctl gc` housekeeping.
 - Schema migrations tooling (if you alter `fs_commits` schema, existing
   stores need a migration; today the extension just auto-creates tables
   if missing but won't migrate columns).
@@ -251,8 +239,9 @@ outside the file (no built-in support yet).
 
 ### Each push causes the remote's git commit hash to rotate
 
-Server-generated commits embed `Dolt-Commit: <hash>` in the message,
-so after a successful push the server's `main` hash advances — even
+Server-generated commits embed `Fs-Commit: <hash>` in the message
+(referencing the paired `fs_commits` row in the `.fp` store), so after
+a successful push the server's `main` hash advances — even
 though the underlying tree is equivalent to what the client just
 pushed. A second push from the same clone without an intervening
 `git pull --rebase` will be rejected as non-fast-forward. Clone, edit,

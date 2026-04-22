@@ -110,10 +110,6 @@ struct SharedPaths {
 
     #[arg(long)]
     php_bin: Option<PathBuf>,
-
-    // Deprecated: Dolt has been removed. Accepted but ignored.
-    #[arg(long, hide = true, default_value_t = 13306)]
-    dolt_port: u16,
 }
 
 #[derive(Args, Debug, Clone)]
@@ -159,10 +155,6 @@ struct StartArgs {
     /// disable. Inline GC on branch delete still runs regardless.
     #[arg(long)]
     gc_interval: Option<String>,
-
-    // Deprecated: Dolt has been removed. Accepted but ignored.
-    #[arg(long, hide = true, default_value = "127.0.0.1")]
-    dolt_bind: String,
 }
 
 /// Parse a duration string in one of `<N>s`, `<N>m`, `<N>h`. Returns `None`

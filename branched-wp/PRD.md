@@ -157,7 +157,6 @@ forkpress start my-blog.fp
   [--mysql-port 3306]
   [--workers N]            # PHP HTTP worker count (default: min(8, num_cpus*2))
   [--gc-interval <dur>]    # background branchctl gc cadence; off by default
-  [--dolt-bind 0.0.0.0]    # deprecated no-op, kept for compat
   [--no-fileserver]
   [--logs ./my-blog.logs]
 ```

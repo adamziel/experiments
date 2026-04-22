@@ -578,7 +578,7 @@ function fs_last_commit(SQLite3 $db, int $branch_id): ?array {
     return $row ?: null;
 }
 
-/* Without Dolt, the "current" commit is simply the most recent one. */
+/* The "current" commit on a branch is its most recent fs_commits row. */
 function fs_current_commit(SQLite3 $db, int $branch_id): ?array {
     return fs_last_commit($db, $branch_id);
 }
