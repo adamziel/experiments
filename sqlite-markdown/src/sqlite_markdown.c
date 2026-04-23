@@ -917,6 +917,28 @@ static char *slugify_title(const char *title) {
     return buffer.data;
 }
 
+static bool is_valid_post_name(const char *slug) {
+    const unsigned char *cursor;
+
+    if (slug == NULL || *slug == '\0') {
+        return false;
+    }
+    if (strcmp(slug, ".") == 0 || strcmp(slug, "..") == 0) {
+        return false;
+    }
+
+    for (cursor = (const unsigned char *)slug; *cursor != '\0'; cursor++) {
+        if (*cursor == '/' || *cursor == '\\') {
+            return false;
+        }
+        if (*cursor < 32) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
 static int write_post_record(const char *root, const PostRecord *post, const char *old_path) {
     TextBuffer buffer = {0};
     char number[32];
@@ -931,6 +953,10 @@ static int write_post_record(const char *root, const PostRecord *post, const cha
         : slugify_title(post->post_title);
     if (slug == NULL) {
         return SQLITE_NOMEM;
+    }
+    if (!is_valid_post_name(slug)) {
+        free(slug);
+        return SQLITE_CONSTRAINT;
     }
     filename = build_post_filename(post->id, slug);
     if (filename == NULL) {
