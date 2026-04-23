@@ -10,12 +10,12 @@
     <div class="page-shell">
       <header class="hero">
         <div class="hero-copy">
-          <p class="eyebrow">GitHub Pages Demo</p>
-          <h1>Snapshotting filesystem logic, running entirely in Wasm.</h1>
+          <p class="eyebrow">Browser Demo</p>
+          <h1>ZFS-flavored snapshots running inside Wasm.</h1>
           <p class="hero-text">
-            This experiment exposes a browser UI for a copy-on-write filesystem with
-            snapshots, rollbacks, and branch clones. Everything here runs client-side
-            against the WebAssembly module in this directory.
+            This demo talks directly to the browser host wrapper. Create directories,
+            write files, branch from snapshots, roll back mutations, and inspect the
+            in-memory filesystem without leaving the page.
           </p>
           <div class="hero-actions">
             <button id="seed-demo" class="primary">Load Scenario</button>
@@ -68,7 +68,7 @@
               </label>
               <label>
                 Contents
-                <textarea name="contents" rows="4">hello from github pages</textarea>
+                <textarea name="contents" rows="4">hello from wasm</textarea>
               </label>
               <button type="submit">Write File</button>
             </form>
@@ -140,6 +140,22 @@
           </div>
 
           <div class="inspector-grid">
+            <div class="viewer-card viewer-tree">
+              <div class="viewer-head viewer-head-stack">
+                <div>
+                  <h3>File Tree</h3>
+                  <p class="viewer-subtitle">Arrow keys navigate. Enter opens. Left and right collapse or expand.</p>
+                </div>
+                <div class="tree-toolbar">
+                  <button id="tree-new-file" class="small-button" type="button">New File</button>
+                  <button id="tree-new-dir" class="small-button" type="button">New Folder</button>
+                  <button id="tree-refresh" class="small-button" type="button">Refresh Tree</button>
+                </div>
+              </div>
+              <div id="tree-selection" class="badge">Selected: /</div>
+              <div id="tree-view" class="tree-view" role="tree" aria-label="Filesystem tree"></div>
+            </div>
+
             <div class="viewer-card">
               <div class="viewer-head">
                 <h3>Directory View</h3>

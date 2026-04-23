@@ -8,6 +8,7 @@
   --accent: #0f766e;
   --accent-strong: #115e59;
   --accent-soft: rgba(15, 118, 110, 0.14);
+  --warn: #8f3d2c;
   --shadow: 0 20px 60px rgba(80, 52, 30, 0.14);
 }
 
@@ -124,7 +125,7 @@ textarea {
 .hero h1 {
   font-size: clamp(2.4rem, 4vw, 4.5rem);
   line-height: 0.95;
-  max-width: 12ch;
+  max-width: 11ch;
 }
 
 .hero-text {
@@ -244,6 +245,22 @@ textarea {
   margin-bottom: 14px;
 }
 
+.viewer-head-stack {
+  align-items: flex-start;
+}
+
+.viewer-subtitle {
+  margin: 0.4rem 0 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.tree-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
 .inline-form {
   display: flex;
   gap: 10px;
@@ -255,6 +272,7 @@ textarea {
 }
 
 .listing,
+.tree-view,
 .code-view,
 .log-view {
   min-height: 220px;
@@ -273,6 +291,79 @@ textarea {
   word-break: break-word;
 }
 
+.viewer-tree {
+  grid-column: 1 / -1;
+}
+
+.tree-view {
+  display: grid;
+  gap: 2px;
+}
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 0.45rem 0.65rem;
+  border-radius: 12px;
+  background: transparent;
+  color: #f7f0e5;
+  border: 1px solid transparent;
+  text-align: left;
+  font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+}
+
+.tree-row:hover,
+.tree-row:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.tree-row.selected {
+  background: rgba(15, 118, 110, 0.24);
+  border-color: rgba(140, 224, 216, 0.34);
+}
+
+.tree-row-inner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  width: 100%;
+}
+
+.tree-row-indent {
+  width: calc(var(--depth, 0) * 18px);
+  flex: 0 0 calc(var(--depth, 0) * 18px);
+}
+
+.tree-chevron {
+  width: 1rem;
+  text-align: center;
+  color: #cbb398;
+}
+
+.tree-icon {
+  width: 1.1rem;
+  text-align: center;
+}
+
+.tree-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-meta {
+  margin-left: auto;
+  color: #8ce0d8;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .pill-list {
   display: flex;
   flex-wrap: wrap;
@@ -288,11 +379,6 @@ textarea {
   background: var(--accent-soft);
   border: 1px solid rgba(15, 118, 110, 0.18);
   font-family: "Avenir Next Condensed", "Arial Narrow", sans-serif;
-}
-
-.pill-list li.empty-pill {
-  background: rgba(255, 255, 255, 0.55);
-  color: var(--muted);
 }
 
 .pill-list li.current {
@@ -399,7 +485,8 @@ textarea {
 
   .inline-form,
   .hero-actions,
-  .viewer-head {
+  .viewer-head,
+  .tree-toolbar {
     flex-direction: column;
     align-items: stretch;
   }
