@@ -348,6 +348,53 @@ Seeded body.
             "meta_value": "A \\ B ' C",
         })
 
+    def test_reads_preseeded_readable_meta_blocks_and_triple_dash_frontmatter(self) -> None:
+        (self.root / "10-readable.md").write_text(
+            """---
+post_title = "Readable"
+post_name = "readable"
+post_status = "publish"
+post_type = "post"
+post_date_gmt = "2026-04-23T00:00:00Z"
+post_modified_gmt = "2026-04-23T00:00:00Z"
+[[meta]]
+template = "homepage"
+meta_id = 11
+[[meta]]
+"seo:title" = "Welcome"
+meta_id = 12
+---
+Readable body.
+""",
+            encoding="utf-8",
+        )
+
+        rows = [
+            dict(row)
+            for row in self.connection.execute(
+                """
+                SELECT meta_id, post_id, meta_key, meta_value
+                FROM wp_postmeta
+                ORDER BY meta_id
+                """
+            )
+        ]
+
+        self.assertEqual(rows, [
+            {
+                "meta_id": 11,
+                "post_id": 10,
+                "meta_key": "template",
+                "meta_value": "homepage",
+            },
+            {
+                "meta_id": 12,
+                "post_id": 10,
+                "meta_key": "seo:title",
+                "meta_value": "Welcome",
+            },
+        ])
+
     def test_hostile_cte_and_subquery_dml_round_trips_posts_and_meta(self) -> None:
         self.insert_post(title='Title "one"', name="slug-one", content="Body 1.\n", post_id=1)
         self.insert_post(title="Title two", name="slug-two", content="Body 2.\n", post_id=2)
@@ -594,6 +641,12 @@ def encode_frontmatter_value(value: str, quote_style: str) -> str:
     return "".join(encoded)
 
 
+def encode_frontmatter_key(key: str) -> str:
+    if key and all(character.isalnum() or character in "_-" for character in key):
+        return key
+    return encode_frontmatter_value(key, "double")
+
+
 def build_seeded_markdown(
     *,
     title: str,
@@ -722,6 +775,19 @@ def assert_post_file(
     )
     case.assertTrue(text.endswith(content))
     return text
+
+
+def assert_meta_entry_present(
+    case: MarkdownStorageCrudTests,
+    *,
+    text: str,
+    meta_id: int,
+    meta_key: str,
+    meta_value: str,
+) -> None:
+    case.assertIn("[[meta]]", text)
+    case.assertIn(f"{encode_frontmatter_key(meta_key)} = {encode_frontmatter_value(meta_value, 'double')}", text)
+    case.assertIn(f"meta_id = {meta_id}", text)
 
 
 TITLE_CASES = [
@@ -1149,16 +1215,30 @@ for (
 
         left_text = (self.root / "1-left-post.md").read_text(encoding="utf-8")
         right_text = (self.root / "2-right-post.md").read_text(encoding="utf-8")
-        encoded_key = encode_frontmatter_value(new_meta_key, "double")
-        encoded_value = encode_frontmatter_value(new_meta_value, "double")
         if target_post_id == 1:
-            self.assertIn(f"meta_key = {encoded_key}", left_text)
-            self.assertIn(f"meta_value = {encoded_value}", left_text)
-            self.assertNotIn(f"meta_key = {encoded_key}", right_text)
+            assert_meta_entry_present(
+                self,
+                text=left_text,
+                meta_id=new_meta_id,
+                meta_key=new_meta_key,
+                meta_value=new_meta_value,
+            )
+            self.assertNotIn(
+                f"{encode_frontmatter_key(new_meta_key)} = {encode_frontmatter_value(new_meta_value, 'double')}",
+                right_text,
+            )
         else:
-            self.assertNotIn(f"meta_key = {encoded_key}", left_text)
-            self.assertIn(f"meta_key = {encoded_key}", right_text)
-            self.assertIn(f"meta_value = {encoded_value}", right_text)
+            self.assertNotIn(
+                f"{encode_frontmatter_key(new_meta_key)} = {encode_frontmatter_value(new_meta_value, 'double')}",
+                left_text,
+            )
+            assert_meta_entry_present(
+                self,
+                text=right_text,
+                meta_id=new_meta_id,
+                meta_key=new_meta_key,
+                meta_value=new_meta_value,
+            )
 
     add_generated_test(method_name, test_meta_case)
 
@@ -1728,8 +1808,13 @@ for template_index, key_style, value_style in itertools.product(
             modified_gmt="2026-04-23T00:00:00Z",
             content="meta body\n",
         )
-        self.assertIn(f"meta_key = {encode_frontmatter_value(meta_key, 'double')}", text)
-        self.assertIn(f"meta_value = {encode_frontmatter_value(meta_value, 'double')}", text)
+        assert_meta_entry_present(
+            self,
+            text=text,
+            meta_id=1,
+            meta_key=meta_key,
+            meta_value=meta_value,
+        )
 
     add_query_test(method_name, test_query_insert_meta)
 
@@ -1798,16 +1883,30 @@ for template_index, key_style, (move_label, target_post_id, target_meta_id) in i
         }])
         left_text = (self.root / "1-left-post.md").read_text(encoding="utf-8")
         right_text = (self.root / "2-right-post.md").read_text(encoding="utf-8")
-        encoded_key = encode_frontmatter_value(new_meta_key, "double")
-        encoded_value = encode_frontmatter_value(new_meta_value, "double")
         if target_post_id == 1:
-            self.assertIn(f"meta_key = {encoded_key}", left_text)
-            self.assertIn(f"meta_value = {encoded_value}", left_text)
-            self.assertNotIn(f"meta_key = {encoded_key}", right_text)
+            assert_meta_entry_present(
+                self,
+                text=left_text,
+                meta_id=target_meta_id,
+                meta_key=new_meta_key,
+                meta_value=new_meta_value,
+            )
+            self.assertNotIn(
+                f"{encode_frontmatter_key(new_meta_key)} = {encode_frontmatter_value(new_meta_value, 'double')}",
+                right_text,
+            )
         else:
-            self.assertNotIn(f"meta_key = {encoded_key}", left_text)
-            self.assertIn(f"meta_key = {encoded_key}", right_text)
-            self.assertIn(f"meta_value = {encoded_value}", right_text)
+            self.assertNotIn(
+                f"{encode_frontmatter_key(new_meta_key)} = {encode_frontmatter_value(new_meta_value, 'double')}",
+                left_text,
+            )
+            assert_meta_entry_present(
+                self,
+                text=right_text,
+                meta_id=target_meta_id,
+                meta_key=new_meta_key,
+                meta_value=new_meta_value,
+            )
 
     add_query_test(method_name, test_query_update_meta)
 

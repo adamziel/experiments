@@ -488,9 +488,28 @@ static int decode_quoted_value(const char *value, char **output) {
     return SQLITE_ERROR;
 }
 
+static int decode_assignment_key(const char *key, char **output) {
+    char quote;
+
+    *output = NULL;
+    if (key == NULL || key[0] == '\0') {
+        return SQLITE_ERROR;
+    }
+
+    quote = key[0];
+    if ((quote == '"' || quote == '\'') && strlen(key) >= 2) {
+        return decode_quoted_value(key, output);
+    }
+
+    *output = duplicate_string(key);
+    return *output == NULL ? SQLITE_NOMEM : SQLITE_OK;
+}
+
 static int parse_assignment(const char *line, char **key, char **value) {
     const char *cursor;
-    const char *equals;
+    const char *scan;
+    const char *equals = NULL;
+    char quote = '\0';
 
     *key = NULL;
     *value = NULL;
@@ -499,7 +518,25 @@ static int parse_assignment(const char *line, char **key, char **value) {
     while (*cursor != '\0' && isspace((unsigned char)*cursor)) {
         cursor++;
     }
-    equals = strchr(cursor, '=');
+    scan = cursor;
+    while (*scan != '\0') {
+        if (quote != '\0') {
+            if (*scan == '\\') {
+                scan++;
+                if (*scan == '\0') {
+                    return SQLITE_ERROR;
+                }
+            } else if (*scan == quote) {
+                quote = '\0';
+            }
+        } else if (*scan == '"' || *scan == '\'') {
+            quote = *scan;
+        } else if (*scan == '=') {
+            equals = scan;
+            break;
+        }
+        scan++;
+    }
     if (equals == NULL) {
         return SQLITE_ERROR;
     }
@@ -573,6 +610,7 @@ static int set_post_field(PostRecord *post, const char *key, const char *value) 
 static int set_meta_field(MetaEntry *meta, const char *key, const char *value) {
     int rc;
     char *decoded = NULL;
+    char *decoded_key = NULL;
     char *end_ptr;
 
     if (strcmp(key, "meta_id") == 0) {
@@ -595,8 +633,18 @@ static int set_meta_field(MetaEntry *meta, const char *key, const char *value) {
         free(meta->meta_value);
         meta->meta_value = decoded;
     } else {
-        free(decoded);
-        return SQLITE_ERROR;
+        rc = decode_assignment_key(key, &decoded_key);
+        if (rc != SQLITE_OK) {
+            free(decoded);
+            return rc;
+        }
+        if (meta->meta_key != NULL || meta->meta_value != NULL) {
+            free(decoded);
+            free(decoded_key);
+            return SQLITE_ERROR;
+        }
+        meta->meta_key = decoded_key;
+        meta->meta_value = decoded;
     }
     return SQLITE_OK;
 }
@@ -606,6 +654,7 @@ static int parse_markdown_post(const char *path, sqlite3_int64 id, const char *s
     size_t length = 0;
     const char *cursor;
     const char *end;
+    const char *frontmatter_delimiter = NULL;
     int rc;
     MetaEntry *current_meta = NULL;
 
@@ -630,7 +679,15 @@ static int parse_markdown_post(const char *path, sqlite3_int64 id, const char *s
         while (line_end < end && *line_end != '\n' && *line_end != '\r') {
             line_end++;
         }
-        if ((size_t)(line_end - cursor) != 3 || strncmp(cursor, "+++", 3) != 0) {
+        if ((size_t)(line_end - cursor) != 3) {
+            free(text);
+            return SQLITE_ERROR;
+        }
+        if (strncmp(cursor, "+++", 3) == 0) {
+            frontmatter_delimiter = "+++";
+        } else if (strncmp(cursor, "---", 3) == 0) {
+            frontmatter_delimiter = "---";
+        } else {
             free(text);
             return SQLITE_ERROR;
         }
@@ -656,7 +713,7 @@ static int parse_markdown_post(const char *path, sqlite3_int64 id, const char *s
         }
         cursor = line_end;
 
-        if (strcmp(line, "+++") == 0) {
+        if (strcmp(line, frontmatter_delimiter) == 0) {
             free(line);
             break;
         }
@@ -700,6 +757,16 @@ static int parse_markdown_post(const char *path, sqlite3_int64 id, const char *s
     free(text);
     if (post->post_content == NULL) {
         return SQLITE_NOMEM;
+    }
+    {
+        int index;
+        for (index = 0; index < post->meta_count; index++) {
+            if (post->meta_entries[index].meta_id <= 0 ||
+                post->meta_entries[index].meta_key == NULL ||
+                post->meta_entries[index].meta_value == NULL) {
+                return SQLITE_ERROR;
+            }
+        }
     }
     return SQLITE_OK;
 }
@@ -828,6 +895,41 @@ static int append_key_value(TextBuffer *buffer, const char *key, const char *val
     int rc;
 
     rc = text_buffer_append(buffer, key);
+    if (rc == SQLITE_OK) {
+        rc = text_buffer_append(buffer, " = ");
+    }
+    if (rc == SQLITE_OK) {
+        rc = encode_string(buffer, value);
+    }
+    if (rc == SQLITE_OK) {
+        rc = text_buffer_append_char(buffer, '\n');
+    }
+    return rc;
+}
+
+static bool meta_key_requires_quotes(const char *key) {
+    const unsigned char *cursor;
+
+    if (key == NULL || *key == '\0') {
+        return true;
+    }
+
+    for (cursor = (const unsigned char *)key; *cursor != '\0'; cursor++) {
+        if (!isalnum(*cursor) && *cursor != '_' && *cursor != '-') {
+            return true;
+        }
+    }
+    return false;
+}
+
+static int append_meta_key_value(TextBuffer *buffer, const char *key, const char *value) {
+    int rc;
+
+    if (meta_key_requires_quotes(key)) {
+        rc = encode_string(buffer, key);
+    } else {
+        rc = text_buffer_append(buffer, key);
+    }
     if (rc == SQLITE_OK) {
         rc = text_buffer_append(buffer, " = ");
     }
@@ -970,7 +1072,7 @@ static int write_post_record(const char *root, const PostRecord *post, const cha
         return SQLITE_NOMEM;
     }
 
-    rc = text_buffer_append(&buffer, "+++\n");
+    rc = text_buffer_append(&buffer, "---\n");
     if (rc == SQLITE_OK) {
         rc = append_key_value(&buffer, "post_title", post->post_title);
     }
@@ -994,6 +1096,14 @@ static int write_post_record(const char *root, const PostRecord *post, const cha
         if (rc != SQLITE_OK) {
             break;
         }
+        rc = append_meta_key_value(
+            &buffer,
+            post->meta_entries[index].meta_key,
+            post->meta_entries[index].meta_value
+        );
+        if (rc != SQLITE_OK) {
+            break;
+        }
         snprintf(number, sizeof(number), "%lld", (long long)post->meta_entries[index].meta_id);
         rc = text_buffer_append(&buffer, "meta_id = ");
         if (rc == SQLITE_OK) {
@@ -1002,15 +1112,9 @@ static int write_post_record(const char *root, const PostRecord *post, const cha
         if (rc == SQLITE_OK) {
             rc = text_buffer_append_char(&buffer, '\n');
         }
-        if (rc == SQLITE_OK) {
-            rc = append_key_value(&buffer, "meta_key", post->meta_entries[index].meta_key);
-        }
-        if (rc == SQLITE_OK) {
-            rc = append_key_value(&buffer, "meta_value", post->meta_entries[index].meta_value);
-        }
     }
     if (rc == SQLITE_OK) {
-        rc = text_buffer_append(&buffer, "+++\n");
+        rc = text_buffer_append(&buffer, "---\n");
     }
     if (rc == SQLITE_OK) {
         rc = text_buffer_append(&buffer, post->post_content == NULL ? "" : post->post_content);

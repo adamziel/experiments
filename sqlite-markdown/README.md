@@ -40,7 +40,7 @@ content/1-hello-world.md
 The file format looks like this:
 
 ```text
-+++
+---
 post_title = "Hello world"
 post_name = "hello-world"
 post_status = "publish"
@@ -48,16 +48,17 @@ post_type = "post"
 post_date_gmt = "2026-04-23T00:00:00Z"
 post_modified_gmt = "2026-04-23T00:00:00Z"
 [[meta]]
+template = "landing"
 meta_id = 1
-meta_key = "template"
-meta_value = "landing"
-+++
+---
 # Heading
 
 Body copy.
 ```
 
-The parser is handwritten C code. It does not use regex-based parsing.
+Each `[[meta]]` block stores one `wp_postmeta` row. Readable keys stay readable on disk, and keys that need quoting are emitted as quoted keys. The parser is handwritten C code. It does not use regex-based parsing.
+
+For backward compatibility, the parser also accepts the older `+++` delimiter and the more verbose `meta_key` / `meta_value` meta blocks.
 
 ## Build
 
