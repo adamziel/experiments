@@ -626,6 +626,104 @@ def build_seeded_markdown(
     return line_ending.join(lines) + line_ending + body
 
 
+def split_sql_value(value: str) -> tuple[str, str]:
+    midpoint = max(1, len(value) // 2)
+    return value[:midpoint], value[midpoint:]
+
+
+def build_sql_text_expr(style: str, value: str, tag: str) -> str:
+    left, right = split_sql_value(value)
+    marker = f"@@{tag}@@"
+
+    if style == "literal":
+        return sql_quote(value)
+    if style == "concat":
+        return f"{sql_quote(left)} || {sql_quote(right)}"
+    if style == "printf":
+        return f"printf('%s%s', {sql_quote(left)}, {sql_quote(right)})"
+    if style == "replace":
+        return (
+            f"replace({sql_quote(left + marker + right)}, "
+            f"{sql_quote(marker)}, '')"
+        )
+    if style == "case":
+        return f"CASE WHEN 1 = 1 THEN {sql_quote(value)} ELSE 'unreachable' END"
+    raise ValueError(style)
+
+
+def build_sql_body_expr(style: str, value: str, tag: str) -> str:
+    newline_marker = f"@@N{tag}@@"
+    tab_marker = f"@@T{tag}@@"
+    carriage_marker = f"@@R{tag}@@"
+    encoded = (
+        value
+        .replace("\n", newline_marker)
+        .replace("\t", tab_marker)
+        .replace("\r", carriage_marker)
+    )
+
+    if style == "literal":
+        return sql_quote(value)
+    if style == "concat":
+        left, right = split_sql_value(value)
+        return f"{sql_quote(left)} || {sql_quote(right)}"
+    if style == "printf":
+        return f"printf('%s', {sql_quote(value)})"
+    if style == "replace_controls":
+        return (
+            "replace(replace(replace("
+            f"{sql_quote(encoded)}, "
+            f"{sql_quote(newline_marker)}, char(10)), "
+            f"{sql_quote(tab_marker)}, char(9)), "
+            f"{sql_quote(carriage_marker)}, char(13))"
+        )
+    raise ValueError(style)
+
+
+def assert_post_file(
+    case: MarkdownStorageCrudTests,
+    *,
+    post_id: int,
+    post_name: str,
+    title: str,
+    status: str,
+    post_type: str,
+    date_gmt: str,
+    modified_gmt: str,
+    content: str,
+) -> str:
+    expected_filename = f"{post_id}-{post_name}.md"
+    file_names = sorted(file.name for file in case.root.glob("*.md"))
+    case.assertIn(expected_filename, file_names)
+    text = (case.root / expected_filename).read_text(encoding="utf-8")
+    case.assertIn(
+        f"post_title = {encode_frontmatter_value(title, 'double')}",
+        text,
+    )
+    case.assertIn(
+        f"post_name = {encode_frontmatter_value(post_name, 'double')}",
+        text,
+    )
+    case.assertIn(
+        f"post_status = {encode_frontmatter_value(status, 'double')}",
+        text,
+    )
+    case.assertIn(
+        f"post_type = {encode_frontmatter_value(post_type, 'double')}",
+        text,
+    )
+    case.assertIn(
+        f"post_date_gmt = {encode_frontmatter_value(date_gmt, 'double')}",
+        text,
+    )
+    case.assertIn(
+        f"post_modified_gmt = {encode_frontmatter_value(modified_gmt, 'double')}",
+        text,
+    )
+    case.assertTrue(text.endswith(content))
+    return text
+
+
 TITLE_CASES = [
     ("plain", "Plain Title"),
     ("double_quote", 'Title "quoted"'),
@@ -1145,7 +1243,712 @@ for prefix, tail in itertools.product(INVALID_PREFIXES, INVALID_TAILS):
     add_generated_test(method_name, test_invalid_slug_case)
 
 
+QUERY_TEXT_STYLES = ["literal", "concat", "printf", "replace", "case"]
+QUERY_BODY_STYLES = ["literal", "concat", "printf", "replace_controls"]
+QUERY_COUNT = 0
+
+
+def add_query_test(name: str, fn) -> None:
+    global QUERY_COUNT
+    setattr(MarkdownStorageCrudTests, name, fn)
+    QUERY_COUNT += 1
+
+
+def make_insert_post_sql(template_index: int, *, title_expr: str, name_expr: str, body_expr: str) -> str:
+    common_columns = """
+        post_title,
+        post_name,
+        post_status,
+        post_type,
+        post_date_gmt,
+        post_modified_gmt,
+        post_content
+    """
+    if template_index == 0:
+        return f"""
+        INSERT INTO wp_posts ({common_columns})
+        VALUES (
+            {title_expr},
+            {name_expr},
+            'publish',
+            'post',
+            '2026-04-23T00:00:00Z',
+            '2026-04-23T00:00:00Z',
+            {body_expr}
+        )
+        """
+    if template_index == 1:
+        return f"""
+        WITH seed(title, slug, body) AS (
+            VALUES ({title_expr}, {name_expr}, {body_expr})
+        )
+        INSERT INTO wp_posts ({common_columns})
+        SELECT
+            title,
+            slug,
+            'publish',
+            'post',
+            '2026-04-23T00:00:00Z',
+            '2026-04-23T00:00:00Z',
+            body
+        FROM seed
+        """
+    if template_index == 2:
+        return f"""
+        INSERT INTO wp_posts ({common_columns})
+        SELECT
+            title,
+            slug,
+            'publish',
+            'post',
+            '2026-04-23T00:00:00Z',
+            '2026-04-23T00:00:00Z',
+            body
+        FROM (
+            SELECT
+                {title_expr} AS title,
+                {name_expr} AS slug,
+                {body_expr} AS body
+        )
+        """
+    if template_index == 3:
+        return f"""
+        WITH RECURSIVE one(step) AS (
+            SELECT 1
+            UNION ALL
+            SELECT step + 1 FROM one WHERE step < 1
+        )
+        INSERT INTO wp_posts ({common_columns})
+        SELECT
+            {title_expr},
+            {name_expr},
+            'publish',
+            'post',
+            '2026-04-23T00:00:00Z',
+            '2026-04-23T00:00:00Z',
+            {body_expr}
+        FROM one
+        """
+    return f"""
+    INSERT INTO wp_posts ({common_columns})
+    SELECT * FROM (
+        SELECT
+            {title_expr},
+            {name_expr},
+            'publish',
+            'post',
+            '2026-04-23T00:00:00Z',
+            '2026-04-23T00:00:00Z',
+            {body_expr}
+        UNION ALL
+        SELECT
+            'discard',
+            'discard',
+            'draft',
+            'post',
+            'x',
+            'x',
+            'discard'
+    )
+    LIMIT 1
+    """
+
+
+def make_update_post_sql(
+    template_index: int,
+    *,
+    new_id: int,
+    title_expr: str,
+    name_expr: str,
+    body_expr: str,
+) -> str:
+    set_clause = f"""
+        ID = {new_id},
+        post_title = {title_expr},
+        post_name = {name_expr},
+        post_status = 'publish',
+        post_type = 'page',
+        post_date_gmt = '2026-04-23T00:00:00Z',
+        post_modified_gmt = '2026-04-23T05:00:00Z',
+        post_content = {body_expr}
+    """
+    if template_index == 0:
+        return f"UPDATE wp_posts SET {set_clause} WHERE ID = 1"
+    if template_index == 1:
+        return f"""
+        UPDATE wp_posts
+        SET {set_clause}
+        WHERE rowid = (SELECT rowid FROM wp_posts WHERE ID = 1)
+        """
+    if template_index == 2:
+        return f"""
+        WITH target(rid) AS (
+            SELECT rowid FROM wp_posts WHERE ID = 1
+        )
+        UPDATE wp_posts
+        SET {set_clause}
+        WHERE rowid = (SELECT rid FROM target)
+        """
+    if template_index == 3:
+        return f"""
+        UPDATE wp_posts
+        SET {set_clause}
+        WHERE EXISTS (
+            SELECT 1
+            FROM wp_posts AS probe
+            WHERE probe.ID = 1
+              AND probe.rowid = wp_posts.rowid
+        )
+        """
+    return f"""
+    WITH RECURSIVE target(rid) AS (
+        SELECT rowid FROM wp_posts WHERE ID = 1
+        UNION ALL
+        SELECT rid FROM target WHERE 0
+    )
+    UPDATE wp_posts
+    SET {set_clause}
+    WHERE rowid IN (SELECT rid FROM target)
+    """
+
+
+def make_insert_meta_sql(template_index: int, *, post_id: int, key_expr: str, value_expr: str) -> str:
+    if template_index == 0:
+        return f"""
+        INSERT INTO wp_postmeta (post_id, meta_key, meta_value)
+        VALUES ({post_id}, {key_expr}, {value_expr})
+        """
+    if template_index == 1:
+        return f"""
+        WITH seed(pid, k, v) AS (
+            VALUES ({post_id}, {key_expr}, {value_expr})
+        )
+        INSERT INTO wp_postmeta (post_id, meta_key, meta_value)
+        SELECT pid, k, v FROM seed
+        """
+    if template_index == 2:
+        return f"""
+        INSERT INTO wp_postmeta (post_id, meta_key, meta_value)
+        SELECT pid, k, v
+        FROM (
+            SELECT {post_id} AS pid, {key_expr} AS k, {value_expr} AS v
+        )
+        """
+    if template_index == 3:
+        return f"""
+        WITH RECURSIVE seed(step) AS (
+            SELECT 1
+            UNION ALL
+            SELECT step + 1 FROM seed WHERE step < 1
+        )
+        INSERT INTO wp_postmeta (post_id, meta_key, meta_value)
+        SELECT {post_id}, {key_expr}, {value_expr}
+        FROM seed
+        """
+    return f"""
+    INSERT INTO wp_postmeta (post_id, meta_key, meta_value)
+    SELECT * FROM (
+        SELECT {post_id}, {key_expr}, {value_expr}
+        UNION ALL
+        SELECT 999, 'discard', 'discard'
+    )
+    LIMIT 1
+    """
+
+
+def make_update_meta_sql(
+    template_index: int,
+    *,
+    new_post_id: int,
+    new_meta_id: int,
+    key_expr: str,
+    value_expr: str,
+) -> str:
+    set_clause = f"""
+        post_id = {new_post_id},
+        meta_id = {new_meta_id},
+        meta_key = {key_expr},
+        meta_value = {value_expr}
+    """
+    if template_index == 0:
+        return f"UPDATE wp_postmeta SET {set_clause} WHERE meta_id = 1"
+    if template_index == 1:
+        return f"""
+        UPDATE wp_postmeta
+        SET {set_clause}
+        WHERE rowid = (SELECT rowid FROM wp_postmeta WHERE meta_id = 1)
+        """
+    if template_index == 2:
+        return f"""
+        WITH target(mid) AS (
+            SELECT meta_id FROM wp_postmeta WHERE meta_id = 1
+        )
+        UPDATE wp_postmeta
+        SET {set_clause}
+        WHERE meta_id = (SELECT mid FROM target)
+        """
+    if template_index == 3:
+        return f"""
+        UPDATE wp_postmeta
+        SET {set_clause}
+        WHERE EXISTS (
+            SELECT 1
+            FROM wp_postmeta AS probe
+            WHERE probe.meta_id = 1
+              AND probe.rowid = wp_postmeta.rowid
+        )
+        """
+    return f"""
+    WITH RECURSIVE target(mid) AS (
+        SELECT meta_id FROM wp_postmeta WHERE meta_id = 1
+        UNION ALL
+        SELECT mid FROM target WHERE 0
+    )
+    UPDATE wp_postmeta
+    SET {set_clause}
+    WHERE meta_id IN (SELECT mid FROM target)
+    """
+
+
+def make_delete_sql(
+    template_index: int,
+    *,
+    table: str,
+    id_column: str,
+    target_id: int,
+) -> str:
+    if template_index == 0:
+        return f"DELETE FROM {table} WHERE {id_column} = {target_id}"
+    if template_index == 1:
+        return f"""
+        DELETE FROM {table}
+        WHERE {id_column} IN (SELECT {target_id})
+        """
+    if template_index == 2:
+        return f"""
+        DELETE FROM {table}
+        WHERE rowid = (
+            SELECT rowid FROM {table} WHERE {id_column} = {target_id}
+        )
+        """
+    if template_index == 3:
+        return f"""
+        DELETE FROM {table}
+        WHERE EXISTS (
+            SELECT 1
+            FROM {table} AS probe
+            WHERE probe.{id_column} = {target_id}
+              AND probe.rowid = {table}.rowid
+        )
+        """
+    return f"""
+    WITH target(v) AS (VALUES ({target_id}))
+    DELETE FROM {table}
+    WHERE {id_column} = (SELECT v FROM target)
+    """
+
+
+for template_index, title_style, body_style in itertools.product(
+    range(5),
+    QUERY_TEXT_STYLES,
+    QUERY_BODY_STYLES,
+):
+    case_number = QUERY_COUNT + 1
+    title = f'Query insert title {case_number} "{title_style}"'
+    post_name = f"query-insert-{template_index}-{title_style}-{body_style}-{case_number}"
+    body = f"insert body {case_number}\nstyle={body_style}\n"
+    sql = make_insert_post_sql(
+        template_index,
+        title_expr=build_sql_text_expr(title_style, title, f"ins-title-{case_number}"),
+        name_expr=sql_quote(post_name),
+        body_expr=build_sql_body_expr(body_style, body, f"ins-body-{case_number}"),
+    )
+    method_name = f"test_query_insert_post_{case_number:03d}"
+
+    def test_query_insert_post(
+        self,
+        *,
+        sql=sql,
+        title=title,
+        post_name=post_name,
+        body=body,
+    ) -> None:
+        self.connection.execute(sql)
+        row = self.connection.execute(
+            """
+            SELECT ID, post_title, post_name, post_status, post_type, post_content
+            FROM wp_posts
+            """
+        ).fetchone()
+        self.assertEqual(dict(row), {
+            "ID": 1,
+            "post_title": title,
+            "post_name": post_name,
+            "post_status": "publish",
+            "post_type": "post",
+            "post_content": body,
+        })
+        assert_post_file(
+            self,
+            post_id=1,
+            post_name=post_name,
+            title=title,
+            status="publish",
+            post_type="post",
+            date_gmt="2026-04-23T00:00:00Z",
+            modified_gmt="2026-04-23T00:00:00Z",
+            content=body,
+        )
+
+    add_query_test(method_name, test_query_insert_post)
+
+
+UPDATE_MODES = [
+    ("same-explicit", 1, "updated-slug-explicit"),
+    ("shifted-explicit", 11, "updated-slug-shifted"),
+    ("same-null", 1, None),
+    ("shifted-empty", 31, ""),
+]
+
+for template_index, title_style, (mode_label, new_id, raw_name) in itertools.product(
+    range(5),
+    QUERY_TEXT_STYLES,
+    UPDATE_MODES,
+):
+    case_number = QUERY_COUNT + 1
+    updated_title = f'Query update title {case_number} "{title_style}"'
+    updated_body = f"updated body {case_number}\nmode={mode_label}\n"
+    name_expr = "NULL" if raw_name is None else sql_quote(raw_name)
+    sql = make_update_post_sql(
+        template_index,
+        new_id=new_id,
+        title_expr=build_sql_text_expr(title_style, updated_title, f"upd-title-{case_number}"),
+        name_expr=name_expr,
+        body_expr=build_sql_body_expr(
+            QUERY_BODY_STYLES[template_index % len(QUERY_BODY_STYLES)],
+            updated_body,
+            f"upd-body-{case_number}",
+        ),
+    )
+    expected_name = expected_post_name(updated_title, raw_name)
+    method_name = f"test_query_update_post_{case_number:03d}"
+
+    def test_query_update_post(
+        self,
+        *,
+        sql=sql,
+        new_id=new_id,
+        updated_title=updated_title,
+        raw_name=raw_name,
+        expected_name=expected_name,
+        updated_body=updated_body,
+    ) -> None:
+        self.insert_post(title="Seed", name="seed-post", content="seed body\n", post_id=1)
+        self.connection.execute(sql)
+        row = self.connection.execute(
+            """
+            SELECT ID, post_title, post_name, post_status, post_type, post_content
+            FROM wp_posts
+            WHERE ID = ?
+            """,
+            (new_id,),
+        ).fetchone()
+        self.assertEqual(dict(row), {
+            "ID": new_id,
+            "post_title": updated_title,
+            "post_name": expected_name,
+            "post_status": "publish",
+            "post_type": "page",
+            "post_content": updated_body,
+        })
+        self.assertEqual(
+            sorted(file.name for file in self.root.glob("*.md")),
+            [f"{new_id}-{expected_name}.md"],
+        )
+        assert_post_file(
+            self,
+            post_id=new_id,
+            post_name=expected_name,
+            title=updated_title,
+            status="publish",
+            post_type="page",
+            date_gmt="2026-04-23T00:00:00Z",
+            modified_gmt="2026-04-23T05:00:00Z",
+            content=updated_body,
+        )
+
+    add_query_test(method_name, test_query_update_post)
+
+
+for template_index, key_style, value_style in itertools.product(
+    range(5),
+    QUERY_TEXT_STYLES,
+    QUERY_BODY_STYLES,
+):
+    case_number = QUERY_COUNT + 1
+    meta_key = f'meta-key-{case_number}-"{key_style}"'
+    meta_value = f"meta value {case_number}\nstyle={value_style}\n"
+    sql = make_insert_meta_sql(
+        template_index,
+        post_id=1,
+        key_expr=build_sql_text_expr(key_style, meta_key, f"meta-key-{case_number}"),
+        value_expr=build_sql_body_expr(value_style, meta_value, f"meta-value-{case_number}"),
+    )
+    method_name = f"test_query_insert_meta_{case_number:03d}"
+
+    def test_query_insert_meta(
+        self,
+        *,
+        sql=sql,
+        meta_key=meta_key,
+        meta_value=meta_value,
+    ) -> None:
+        self.insert_post(title="Meta seed", name="meta-seed", content="meta body\n", post_id=1)
+        self.connection.execute(sql)
+        row = self.connection.execute(
+            """
+            SELECT meta_id, post_id, meta_key, meta_value
+            FROM wp_postmeta
+            """
+        ).fetchone()
+        self.assertEqual(dict(row), {
+            "meta_id": 1,
+            "post_id": 1,
+            "meta_key": meta_key,
+            "meta_value": meta_value,
+        })
+        text = assert_post_file(
+            self,
+            post_id=1,
+            post_name="meta-seed",
+            title="Meta seed",
+            status="draft",
+            post_type="post",
+            date_gmt="2026-04-23T00:00:00Z",
+            modified_gmt="2026-04-23T00:00:00Z",
+            content="meta body\n",
+        )
+        self.assertIn(f"meta_key = {encode_frontmatter_value(meta_key, 'double')}", text)
+        self.assertIn(f"meta_value = {encode_frontmatter_value(meta_value, 'double')}", text)
+
+    add_query_test(method_name, test_query_insert_meta)
+
+
+META_MOVE_MODES = [
+    ("same-same", 1, 1),
+    ("same-shifted", 1, 201),
+    ("other-same", 2, 1),
+    ("other-shifted", 2, 201),
+]
+
+for template_index, key_style, (move_label, target_post_id, target_meta_id) in itertools.product(
+    range(5),
+    QUERY_TEXT_STYLES,
+    META_MOVE_MODES,
+):
+    case_number = QUERY_COUNT + 1
+    new_meta_key = f'query-meta-update-{case_number}-"{key_style}"'
+    new_meta_value = f"query meta update value {case_number}\nmode={move_label}\n"
+    sql = make_update_meta_sql(
+        template_index,
+        new_post_id=target_post_id,
+        new_meta_id=target_meta_id,
+        key_expr=build_sql_text_expr(key_style, new_meta_key, f"meta-upd-key-{case_number}"),
+        value_expr=build_sql_body_expr(
+            QUERY_BODY_STYLES[template_index % len(QUERY_BODY_STYLES)],
+            new_meta_value,
+            f"meta-upd-value-{case_number}",
+        ),
+    )
+    method_name = f"test_query_update_meta_{case_number:03d}"
+
+    def test_query_update_meta(
+        self,
+        *,
+        sql=sql,
+        target_post_id=target_post_id,
+        target_meta_id=target_meta_id,
+        new_meta_key=new_meta_key,
+        new_meta_value=new_meta_value,
+    ) -> None:
+        self.insert_post(title="Left", name="left-post", content="left body\n", post_id=1)
+        self.insert_post(title="Right", name="right-post", content="right body\n", post_id=2)
+        self.connection.execute(
+            """
+            INSERT INTO wp_postmeta (meta_id, post_id, meta_key, meta_value)
+            VALUES (1, 1, 'seed-key', 'seed-value')
+            """
+        )
+        self.connection.execute(sql)
+        rows = [
+            dict(row)
+            for row in self.connection.execute(
+                """
+                SELECT meta_id, post_id, meta_key, meta_value
+                FROM wp_postmeta
+                ORDER BY meta_id
+                """
+            )
+        ]
+        self.assertEqual(rows, [{
+            "meta_id": target_meta_id,
+            "post_id": target_post_id,
+            "meta_key": new_meta_key,
+            "meta_value": new_meta_value,
+        }])
+        left_text = (self.root / "1-left-post.md").read_text(encoding="utf-8")
+        right_text = (self.root / "2-right-post.md").read_text(encoding="utf-8")
+        encoded_key = encode_frontmatter_value(new_meta_key, "double")
+        encoded_value = encode_frontmatter_value(new_meta_value, "double")
+        if target_post_id == 1:
+            self.assertIn(f"meta_key = {encoded_key}", left_text)
+            self.assertIn(f"meta_value = {encoded_value}", left_text)
+            self.assertNotIn(f"meta_key = {encoded_key}", right_text)
+        else:
+            self.assertNotIn(f"meta_key = {encoded_key}", left_text)
+            self.assertIn(f"meta_key = {encoded_key}", right_text)
+            self.assertIn(f"meta_value = {encoded_value}", right_text)
+
+    add_query_test(method_name, test_query_update_meta)
+
+
+DELETE_SETUP_VARIANTS = [0, 1, 2, 3, 4]
+DELETE_MODES = ["meta-left", "meta-right", "post-left", "post-right"]
+
+for template_index, delete_variant, delete_mode in itertools.product(
+    range(5),
+    DELETE_SETUP_VARIANTS,
+    DELETE_MODES,
+):
+    case_number = QUERY_COUNT + 1
+    left_post_id = delete_variant * 10 + 1
+    right_post_id = delete_variant * 10 + 2
+    left_meta_id = delete_variant * 10 + 1
+    right_meta_id = delete_variant * 10 + 2
+    if delete_mode == "meta-left":
+        table = "wp_postmeta"
+        id_column = "meta_id"
+        target_id = left_meta_id
+    elif delete_mode == "meta-right":
+        table = "wp_postmeta"
+        id_column = "meta_id"
+        target_id = right_meta_id
+    elif delete_mode == "post-left":
+        table = "wp_posts"
+        id_column = "ID"
+        target_id = left_post_id
+    else:
+        table = "wp_posts"
+        id_column = "ID"
+        target_id = right_post_id
+    sql = make_delete_sql(
+        template_index,
+        table=table,
+        id_column=id_column,
+        target_id=target_id,
+    )
+    method_name = f"test_query_delete_{case_number:03d}"
+
+    def test_query_delete(
+        self,
+        *,
+        sql=sql,
+        delete_mode=delete_mode,
+        left_post_id=left_post_id,
+        right_post_id=right_post_id,
+        left_meta_id=left_meta_id,
+        right_meta_id=right_meta_id,
+    ) -> None:
+        self.insert_post(
+            title=f"Left delete {left_post_id}",
+            name=f"left-delete-{left_post_id}",
+            content=f"left body {left_post_id}\n",
+            post_id=left_post_id,
+        )
+        self.insert_post(
+            title=f"Right delete {right_post_id}",
+            name=f"right-delete-{right_post_id}",
+            content=f"right body {right_post_id}\n",
+            post_id=right_post_id,
+        )
+        self.connection.execute(
+            f"""
+            INSERT INTO wp_postmeta (meta_id, post_id, meta_key, meta_value)
+            VALUES ({left_meta_id}, {left_post_id}, 'left-key-{left_meta_id}', 'left-value-{left_meta_id}')
+            """
+        )
+        self.connection.execute(
+            f"""
+            INSERT INTO wp_postmeta (meta_id, post_id, meta_key, meta_value)
+            VALUES ({right_meta_id}, {right_post_id}, 'right-key-{right_meta_id}', 'right-value-{right_meta_id}')
+            """
+        )
+
+        self.connection.execute(sql)
+
+        file_names = sorted(file.name for file in self.root.glob("*.md"))
+        if delete_mode == "meta-left":
+            self.assertEqual(
+                [dict(row) for row in self.connection.execute("SELECT meta_id FROM wp_postmeta ORDER BY meta_id")],
+                [{"meta_id": right_meta_id}],
+            )
+            self.assertEqual(
+                file_names,
+                [f"{left_post_id}-left-delete-{left_post_id}.md", f"{right_post_id}-right-delete-{right_post_id}.md"],
+            )
+            left_text = (self.root / f"{left_post_id}-left-delete-{left_post_id}.md").read_text(encoding="utf-8")
+            right_text = (self.root / f"{right_post_id}-right-delete-{right_post_id}.md").read_text(encoding="utf-8")
+            self.assertNotIn(f"left-key-{left_meta_id}", left_text)
+            self.assertIn(f"right-key-{right_meta_id}", right_text)
+        elif delete_mode == "meta-right":
+            self.assertEqual(
+                [dict(row) for row in self.connection.execute("SELECT meta_id FROM wp_postmeta ORDER BY meta_id")],
+                [{"meta_id": left_meta_id}],
+            )
+            self.assertEqual(
+                file_names,
+                [f"{left_post_id}-left-delete-{left_post_id}.md", f"{right_post_id}-right-delete-{right_post_id}.md"],
+            )
+            left_text = (self.root / f"{left_post_id}-left-delete-{left_post_id}.md").read_text(encoding="utf-8")
+            right_text = (self.root / f"{right_post_id}-right-delete-{right_post_id}.md").read_text(encoding="utf-8")
+            self.assertIn(f"left-key-{left_meta_id}", left_text)
+            self.assertNotIn(f"right-key-{right_meta_id}", right_text)
+        elif delete_mode == "post-left":
+            self.assertEqual(
+                file_names,
+                [f"{right_post_id}-right-delete-{right_post_id}.md"],
+            )
+            self.assertEqual(
+                self.connection.execute("SELECT COUNT(*) FROM wp_posts").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                self.connection.execute("SELECT COUNT(*) FROM wp_postmeta").fetchone()[0],
+                1,
+            )
+            right_text = (self.root / f"{right_post_id}-right-delete-{right_post_id}.md").read_text(encoding="utf-8")
+            self.assertIn(f"right-key-{right_meta_id}", right_text)
+        else:
+            self.assertEqual(
+                file_names,
+                [f"{left_post_id}-left-delete-{left_post_id}.md"],
+            )
+            self.assertEqual(
+                self.connection.execute("SELECT COUNT(*) FROM wp_posts").fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                self.connection.execute("SELECT COUNT(*) FROM wp_postmeta").fetchone()[0],
+                1,
+            )
+            left_text = (self.root / f"{left_post_id}-left-delete-{left_post_id}.md").read_text(encoding="utf-8")
+            self.assertIn(f"left-key-{left_meta_id}", left_text)
+
+    add_query_test(method_name, test_query_delete)
+
+
 assert GENERATED_TEST_COUNT >= 500, GENERATED_TEST_COUNT
+assert QUERY_COUNT == 500, QUERY_COUNT
 
 
 if __name__ == "__main__":
