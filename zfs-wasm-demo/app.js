@@ -16,6 +16,7 @@ const state = {
   pendingInlineFocus: null,
   pendingEditorFocus: false,
   autosaveTimerId: null,
+  autoRefreshTimerId: null,
   editorDraftPath: null,
   editorDraftValue: "",
   logEntries: [],
@@ -468,8 +469,14 @@ function renderPreview() {
 
   elements["directory-summary"].innerHTML = '<div class="empty-state">Editing file contents.</div>';
   elements["file-editor"].readOnly = false;
-  const nextValue = state.fs.readText(state.selectedPath);
-  elements["file-editor"].value = nextValue;
+  const preserveEditorValue =
+    document.activeElement === elements["file-editor"] && state.editorDraftPath === state.selectedPath;
+  const nextValue = preserveEditorValue
+    ? elements["file-editor"].value
+    : state.fs.readText(state.selectedPath);
+  if (!preserveEditorValue) {
+    elements["file-editor"].value = nextValue;
+  }
   state.editorDraftPath = state.selectedPath;
   state.editorDraftValue = nextValue;
   if (state.pendingEditorFocus) {
@@ -517,19 +524,24 @@ function flushEditorAutosave() {
   if (!path || isDirectory(path)) {
     return;
   }
-  if (!state.fs.exists(path)) {
+  try {
+    if (!state.fs.exists(path)) {
+      state.editorDraftPath = null;
+      state.editorDraftValue = "";
+      return;
+    }
+
+    const nextValue = state.editorDraftValue;
+    if (state.fs.readText(path) === nextValue) {
+      return;
+    }
+
+    state.fs.writeText(path, nextValue);
+    syncStats();
+  } catch {
     state.editorDraftPath = null;
     state.editorDraftValue = "";
-    return;
   }
-
-  const nextValue = state.editorDraftValue;
-  if (state.fs.readText(path) === nextValue) {
-    return;
-  }
-
-  state.fs.writeText(path, nextValue);
-  syncStats();
 }
 
 function scheduleEditorAutosave() {
@@ -579,6 +591,34 @@ function refreshAll() {
   renderFileTree();
   renderBranchTree();
   renderPreview();
+}
+
+function refreshForPolling() {
+  const activeElement = document.activeElement;
+  if (activeElement?.classList?.contains("tree-draft-input")) {
+    return;
+  }
+
+  flushEditorAutosave();
+  refreshMetadata();
+  ensureSelectionsAreValid();
+  syncStats();
+  renderFileTree();
+  renderBranchTree();
+
+  if (activeElement !== elements["file-editor"]) {
+    renderPreview();
+  }
+}
+
+function startAutoRefreshLoop() {
+  if (state.autoRefreshTimerId !== null) {
+    return;
+  }
+
+  state.autoRefreshTimerId = window.setInterval(() => {
+    refreshForPolling();
+  }, 1000);
 }
 
 function focusTreeIndex(nodes, index, kind) {
@@ -851,11 +891,6 @@ function attachFileTreeHandlers() {
     startFileDraft("directory");
   });
 
-  document.getElementById("tree-refresh").addEventListener("click", () => {
-    refreshAll();
-    pushLog("tree-refresh", "refreshed filesystem tree");
-  });
-
   document.getElementById("tree-delete").addEventListener("click", () => {
     deleteSelectedPath();
   });
@@ -977,10 +1012,6 @@ function attachBranchTreeHandlers() {
     startBranchDraft("branch");
   });
 
-  document.getElementById("branch-refresh").addEventListener("click", () => {
-    refreshAll();
-    pushLog("branch-refresh", "refreshed branch tree");
-  });
 }
 
 function attachPreviewHandlers() {
@@ -999,10 +1030,6 @@ function attachPreviewHandlers() {
     }
   });
 
-  document.getElementById("preview-refresh").addEventListener("click", () => {
-    refreshAll();
-    pushLog("preview-refresh", `refreshed ${state.selectedPath}`);
-  });
 }
 
 function attachGlobalButtons() {
@@ -1021,11 +1048,6 @@ function attachGlobalButtons() {
       state.selectedBranchNode = "branch:feature-ui";
       pushLog("scenario", "loaded demo scenario with snapshot seed and branch feature-ui");
     });
-  });
-
-  document.getElementById("refresh-all").addEventListener("click", () => {
-    refreshAll();
-    pushLog("refresh", "refreshed all views");
   });
 
   document.getElementById("reset-fs").addEventListener("click", async () => {
@@ -1056,6 +1078,7 @@ async function boot() {
   attachBranchTreeHandlers();
   attachPreviewHandlers();
   attachGlobalButtons();
+  startAutoRefreshLoop();
   renderLog();
   refreshAll();
   pushLog("boot", "browser demo ready");
