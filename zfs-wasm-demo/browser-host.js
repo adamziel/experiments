@@ -89,8 +89,16 @@ export class BrowserSnapshotFsHost {
     return JSON.parse(this.inner.branch_names_json());
   }
 
+  branchInfo() {
+    return JSON.parse(this.inner.branch_info_json());
+  }
+
   snapshotNames() {
     return JSON.parse(this.inner.snapshot_names_json());
+  }
+
+  snapshotInfo() {
+    return JSON.parse(this.inner.snapshot_info_json());
   }
 
   stats() {

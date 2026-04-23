@@ -276,6 +276,45 @@ textarea {
   line-height: 1.2;
 }
 
+.tree-draft {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0.2rem 0.45rem 0.2rem calc(0.45rem + (var(--depth, 0) * 14px));
+  border-radius: 8px;
+  border: 1px dashed rgba(140, 224, 216, 0.24);
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tree-draft-input {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  padding: 0.18rem 0.45rem;
+  background: rgba(255, 255, 255, 0.08);
+  color: #f7f0e5;
+  font: inherit;
+}
+
+.tree-draft-input::placeholder {
+  color: #c8b39f;
+}
+
+.tree-mini-button {
+  padding: 0.2rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(140, 224, 216, 0.18);
+  color: #f7f0e5;
+  border: 1px solid rgba(140, 224, 216, 0.2);
+  font-size: 0.72rem;
+}
+
+.tree-mini-button.ghosty {
+  background: rgba(255, 255, 255, 0.08);
+}
+
 .tree-row:hover,
 .tree-row:focus-visible {
   outline: none;

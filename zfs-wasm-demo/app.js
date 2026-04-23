@@ -7,8 +7,13 @@ const state = {
   expandedDirs: new Set(["/"]),
   fileTreeNodes: [],
   branchTreeNodes: [],
+  branchInfo: [],
+  snapshotInfo: [],
+  fileDraft: null,
+  branchDraft: null,
   pendingFileFocusPath: "/",
   pendingBranchFocusKey: "branch:main",
+  pendingInlineFocus: null,
   logEntries: [],
 };
 
@@ -81,6 +86,14 @@ function selectedDirectoryForCreate() {
   return isDirectory(state.selectedPath) ? state.selectedPath : parentPath(state.selectedPath);
 }
 
+function branchInfoByName(name) {
+  return state.branchInfo.find((branch) => branch.name === name) ?? null;
+}
+
+function snapshotInfoByName(name) {
+  return state.snapshotInfo.find((snapshot) => snapshot.name === name) ?? null;
+}
+
 function pushLog(action, message, ok = true) {
   state.logEntries.unshift({ action, message, ok, time: nowLabel() });
   state.logEntries = state.logEntries.slice(0, 50);
@@ -108,14 +121,23 @@ function renderLog() {
     .join("");
 }
 
+function refreshMetadata() {
+  state.branchInfo = state.fs.branchInfo();
+  state.snapshotInfo = state.fs.snapshotInfo();
+}
+
 function ensureSelectionsAreValid() {
   if (state.selectedPath !== "/" && !state.fs.exists(state.selectedPath)) {
     state.selectedPath = parentPath(state.selectedPath);
   }
 
-  const branchNames = state.fs.branchNames();
-  const snapshotNames = state.fs.snapshotNames();
-  if (!branchNames.includes(state.selectedBranchNode.replace(/^branch:/, ""))) {
+  const branchKeys = new Set(state.branchInfo.map((branch) => `branch:${branch.name}`));
+  const snapshotKeys = new Set(state.snapshotInfo.map((snapshot) => `snapshot:${snapshot.name}`));
+
+  if (
+    !branchKeys.has(state.selectedBranchNode) &&
+    !snapshotKeys.has(state.selectedBranchNode)
+  ) {
     state.selectedBranchNode = `branch:${state.fs.currentBranch()}`;
   }
 
@@ -125,8 +147,15 @@ function ensureSelectionsAreValid() {
     }
   }
 
-  for (const key of [...snapshotNames]) {
-    void key;
+  if (state.fileDraft && !isDirectory(state.fileDraft.parentPath)) {
+    state.fileDraft = null;
+  }
+
+  if (
+    state.branchDraft &&
+    !state.branchInfo.some((branch) => branch.name === state.branchDraft.parentBranch)
+  ) {
+    state.branchDraft = null;
   }
 }
 
@@ -139,10 +168,23 @@ function buildFileTreeNodes(path = "/", depth = 0, nodes = []) {
     kind: "Directory",
     depth,
     expanded: state.expandedDirs.has(path),
+    meta: path === "/" ? "root" : "dir",
   });
 
   if (!state.expandedDirs.has(path)) {
     return nodes;
+  }
+
+  if (state.fileDraft?.parentPath === path) {
+    nodes.push({
+      key: `draft:${state.fileDraft.kind}:${path}`,
+      label: state.fileDraft.name,
+      path,
+      kind: state.fileDraft.kind === "file" ? "DraftFile" : "DraftDirectory",
+      depth: depth + 1,
+      expanded: false,
+      meta: state.fileDraft.kind === "file" ? "new file" : "new folder",
+    });
   }
 
   for (const entry of children) {
@@ -157,6 +199,7 @@ function buildFileTreeNodes(path = "/", depth = 0, nodes = []) {
         kind: "File",
         depth: depth + 1,
         expanded: false,
+        meta: "file",
       });
     }
   }
@@ -164,50 +207,139 @@ function buildFileTreeNodes(path = "/", depth = 0, nodes = []) {
   return nodes;
 }
 
-function buildBranchTreeNodes() {
-  const nodes = [
-    {
-      key: "group:branches",
-      label: "Branches",
-      kind: "Group",
-      depth: 0,
-      expanded: true,
-    },
-  ];
-
-  for (const branch of state.fs.branchNames()) {
-    nodes.push({
-      key: `branch:${branch}`,
-      label: branch,
-      kind: "Branch",
-      depth: 1,
-      expanded: false,
-    });
-  }
-
+function appendBranchNodes(branchName, depth, nodes, childBranches, snapshotsByBranch) {
+  const branch = branchInfoByName(branchName);
   nodes.push({
-    key: "group:snapshots",
-    label: "Snapshots",
-    kind: "Group",
-    depth: 0,
+    key: `branch:${branchName}`,
+    label: branchName,
+    kind: "Branch",
+    depth,
     expanded: true,
+    meta:
+      branchName === state.fs.currentBranch()
+        ? "current"
+        : branch?.source_snapshot
+          ? `from ${branch.source_snapshot}`
+          : "root",
   });
 
-  for (const snapshot of state.fs.snapshotNames()) {
+  if (state.branchDraft?.kind === "snapshot" && state.branchDraft.parentBranch === branchName) {
     nodes.push({
-      key: `snapshot:${snapshot}`,
-      label: snapshot,
-      kind: "Snapshot",
-      depth: 1,
+      key: `draft:snapshot:${branchName}`,
+      label: state.branchDraft.name,
+      kind: "DraftSnapshot",
+      depth: depth + 1,
       expanded: false,
+      meta: "new snapshot",
     });
   }
 
+  for (const snapshot of snapshotsByBranch.get(branchName) ?? []) {
+    nodes.push({
+      key: `snapshot:${snapshot.name}`,
+      label: snapshot.name,
+      kind: "Snapshot",
+      depth: depth + 1,
+      expanded: false,
+      meta: "restore",
+    });
+  }
+
+  if (state.branchDraft?.kind === "branch" && state.branchDraft.parentBranch === branchName) {
+    nodes.push({
+      key: `draft:branch:${branchName}`,
+      label: state.branchDraft.name,
+      kind: "DraftBranch",
+      depth: depth + 1,
+      expanded: false,
+      meta: state.branchDraft.sourceSnapshot
+        ? `from ${state.branchDraft.sourceSnapshot}`
+        : "auto snapshot",
+    });
+  }
+
+  for (const childBranch of childBranches.get(branchName) ?? []) {
+    appendBranchNodes(childBranch, depth + 1, nodes, childBranches, snapshotsByBranch);
+  }
+}
+
+function buildBranchTreeNodes() {
+  const childBranches = new Map();
+  for (const branch of state.branchInfo) {
+    const key = branch.parent_branch ?? "";
+    if (!childBranches.has(key)) {
+      childBranches.set(key, []);
+    }
+    childBranches.get(key).push(branch.name);
+  }
+
+  for (const names of childBranches.values()) {
+    names.sort((left, right) => left.localeCompare(right));
+  }
+
+  const snapshotsByBranch = new Map();
+  for (const snapshot of state.snapshotInfo) {
+    if (!snapshotsByBranch.has(snapshot.source_branch)) {
+      snapshotsByBranch.set(snapshot.source_branch, []);
+    }
+    snapshotsByBranch.get(snapshot.source_branch).push(snapshot);
+  }
+
+  for (const snapshots of snapshotsByBranch.values()) {
+    snapshots.sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  const nodes = [];
+  for (const rootBranch of childBranches.get("") ?? []) {
+    appendBranchNodes(rootBranch, 0, nodes, childBranches, snapshotsByBranch);
+  }
   return nodes;
 }
 
+function treeDraftMarkup(node) {
+  const scope = node.kind === "DraftFile" || node.kind === "DraftDirectory" ? "file" : "branch";
+  const icon =
+    node.kind === "DraftFile"
+      ? "＋"
+      : node.kind === "DraftDirectory"
+        ? "＋"
+        : node.kind === "DraftSnapshot"
+          ? "＋"
+          : "＋";
+  const placeholder =
+    node.kind === "DraftFile"
+      ? "untitled.txt"
+      : node.kind === "DraftDirectory"
+        ? "new-folder"
+        : node.kind === "DraftSnapshot"
+          ? `${state.fs.currentBranch()}-snapshot`
+          : "feature";
+
+  return `
+    <div class="tree-draft" style="--depth:${node.depth}" data-draft-scope="${scope}">
+      <span class="tree-row-indent" aria-hidden="true"></span>
+      <span class="tree-chevron" aria-hidden="true"></span>
+      <span class="tree-icon" aria-hidden="true">${icon}</span>
+      <input
+        class="tree-draft-input"
+        data-draft-scope="${scope}"
+        type="text"
+        value="${escapeHtml(node.label)}"
+        placeholder="${escapeHtml(placeholder)}"
+        aria-label="${escapeHtml(node.meta)}"
+      />
+      <span class="tree-meta">${escapeHtml(node.meta)}</span>
+      <button type="button" class="tree-mini-button" data-draft-action="commit" data-draft-scope="${scope}">Save</button>
+      <button type="button" class="tree-mini-button ghosty" data-draft-action="cancel" data-draft-scope="${scope}">Cancel</button>
+    </div>
+  `;
+}
+
 function treeRowMarkup(node, index, selectedKey) {
-  const expandable = node.kind === "Directory" || node.kind === "Group";
+  if (node.kind.startsWith("Draft")) {
+    return treeDraftMarkup(node);
+  }
+
   const selected = node.key === selectedKey;
   const icon =
     node.kind === "Directory"
@@ -216,41 +348,42 @@ function treeRowMarkup(node, index, selectedKey) {
         ? "📄"
         : node.kind === "Branch"
           ? "🌿"
-          : node.kind === "Snapshot"
-            ? "📸"
-            : "▤";
-  const meta =
-    node.kind === "Branch"
-      ? (node.label === state.fs.currentBranch() ? "current" : "branch")
-      : node.kind === "Snapshot"
-        ? "snapshot"
-        : node.kind === "Directory"
-          ? "dir"
-          : node.kind === "File"
-            ? "file"
-            : "group";
+          : "📸";
+
   return `
     <button
       type="button"
       class="tree-row ${selected ? "selected" : ""}"
       role="treeitem"
       aria-level="${node.depth + 1}"
-      ${expandable ? `aria-expanded="${node.expanded}"` : ""}
       aria-selected="${selected}"
       tabindex="${selected ? "0" : "-1"}"
       data-index="${index}"
       data-key="${escapeHtml(node.key)}"
       data-kind="${node.kind}"
+      title="${escapeHtml(node.kind === "Snapshot" ? "Click to restore the current branch to this snapshot." : node.kind === "Branch" ? "Click to switch to this branch." : node.label)}"
     >
       <span class="tree-row-inner">
         <span class="tree-row-indent" style="--depth:${node.depth}"></span>
         <span class="tree-chevron">${node.kind === "Directory" ? (node.expanded ? "▾" : "▸") : ""}</span>
         <span class="tree-icon" aria-hidden="true">${icon}</span>
         <span class="tree-label">${escapeHtml(node.label)}</span>
-        <span class="tree-meta">${escapeHtml(meta)}</span>
+        <span class="tree-meta">${escapeHtml(node.meta)}</span>
       </span>
     </button>
   `;
+}
+
+function focusPendingDraftInput(scope, root) {
+  if (state.pendingInlineFocus !== scope) {
+    return;
+  }
+  const input = root.querySelector(`.tree-draft-input[data-draft-scope="${scope}"]`);
+  if (input) {
+    input.focus();
+    input.select();
+  }
+  state.pendingInlineFocus = null;
 }
 
 function renderFileTree() {
@@ -260,6 +393,7 @@ function renderFileTree() {
     .map((node, index) => treeRowMarkup(node, index, state.selectedPath))
     .join("");
   focusPendingFileTreeNode();
+  focusPendingDraftInput("file", elements["tree-view"]);
 }
 
 function renderBranchTree() {
@@ -270,6 +404,7 @@ function renderBranchTree() {
     .map((node, index) => treeRowMarkup(node, index, state.selectedBranchNode))
     .join("");
   focusPendingBranchTreeNode();
+  focusPendingDraftInput("branch", elements["branch-tree-view"]);
 }
 
 function focusPendingFileTreeNode() {
@@ -349,7 +484,7 @@ function withAction(action, fn) {
     return result;
   } catch (error) {
     pushLog(action, String(error), false);
-    throw error;
+    return null;
   }
 }
 
@@ -368,6 +503,7 @@ function deleteSelectedPath() {
 }
 
 function refreshAll() {
+  refreshMetadata();
   ensureSelectionsAreValid();
   syncStats();
   renderFileTree();
@@ -377,9 +513,10 @@ function refreshAll() {
 
 function focusTreeIndex(nodes, index, kind) {
   const node = nodes[index];
-  if (!node) {
+  if (!node || node.kind.startsWith("Draft")) {
     return;
   }
+
   if (kind === "file") {
     selectFilePath(node.key);
   } else {
@@ -389,12 +526,187 @@ function focusTreeIndex(nodes, index, kind) {
   refreshAll();
 }
 
+function startFileDraft(kind) {
+  const parentPathForDraft = selectedDirectoryForCreate();
+  state.expandedDirs.add(parentPathForDraft);
+  state.fileDraft = { kind, parentPath: parentPathForDraft, name: "" };
+  state.pendingInlineFocus = "file";
+  refreshAll();
+}
+
+function updateFileDraft(name) {
+  if (state.fileDraft) {
+    state.fileDraft.name = name;
+  }
+}
+
+function cancelFileDraft() {
+  state.fileDraft = null;
+  refreshAll();
+}
+
+function commitFileDraft() {
+  const draft = state.fileDraft;
+  if (!draft) {
+    return;
+  }
+
+  const name = draft.name.trim();
+  if (!name) {
+    pushLog(draft.kind === "file" ? "new-file" : "new-dir", "name cannot be empty", false);
+    return;
+  }
+  if (name.includes("/")) {
+    pushLog(draft.kind === "file" ? "new-file" : "new-dir", "use a single name, not a full path", false);
+    return;
+  }
+
+  const targetPath = joinPath(draft.parentPath, name);
+  withAction(draft.kind === "file" ? "new-file" : "new-dir", () => {
+    if (draft.kind === "file") {
+      state.fs.writeText(targetPath, "");
+    } else {
+      state.fs.createDir(targetPath);
+    }
+    state.fileDraft = null;
+    selectFilePath(targetPath);
+    pushLog(draft.kind === "file" ? "new-file" : "new-dir", `created ${targetPath}`);
+  });
+}
+
+function startBranchDraft(kind) {
+  if (kind === "snapshot") {
+    state.branchDraft = {
+      kind,
+      parentBranch: state.fs.currentBranch(),
+      sourceSnapshot: null,
+      name: "",
+    };
+  } else {
+    const selectedSnapshot = state.selectedBranchNode.startsWith("snapshot:")
+      ? state.selectedBranchNode.replace(/^snapshot:/, "")
+      : null;
+    const selectedBranch = state.selectedBranchNode.startsWith("branch:")
+      ? state.selectedBranchNode.replace(/^branch:/, "")
+      : state.fs.currentBranch();
+    state.branchDraft = {
+      kind,
+      parentBranch: selectedSnapshot
+        ? (snapshotInfoByName(selectedSnapshot)?.source_branch ?? state.fs.currentBranch())
+        : selectedBranch,
+      sourceSnapshot: selectedSnapshot,
+      name: "",
+    };
+  }
+
+  state.pendingInlineFocus = "branch";
+  refreshAll();
+}
+
+function updateBranchDraft(name) {
+  if (state.branchDraft) {
+    state.branchDraft.name = name;
+  }
+}
+
+function cancelBranchDraft() {
+  state.branchDraft = null;
+  refreshAll();
+}
+
+function commitBranchDraft() {
+  const draft = state.branchDraft;
+  if (!draft) {
+    return;
+  }
+
+  const name = draft.name.trim();
+  if (!name) {
+    pushLog(draft.kind === "snapshot" ? "snapshot" : "new-branch", "name cannot be empty", false);
+    return;
+  }
+  if (name.includes("/")) {
+    pushLog(draft.kind === "snapshot" ? "snapshot" : "new-branch", "name cannot contain slashes", false);
+    return;
+  }
+
+  if (draft.kind === "snapshot") {
+    withAction("snapshot", () => {
+      state.fs.snapshot(name);
+      state.branchDraft = null;
+      state.selectedBranchNode = `snapshot:${name}`;
+      state.pendingBranchFocusKey = `snapshot:${name}`;
+      pushLog("snapshot", `captured ${name} on ${state.fs.currentBranch()}`);
+    });
+    return;
+  }
+
+  withAction("new-branch", () => {
+    let snapshotName = draft.sourceSnapshot;
+    if (!snapshotName) {
+      snapshotName = `${draft.parentBranch}-base-${Date.now()}`;
+      if (state.fs.currentBranch() !== draft.parentBranch) {
+        state.fs.checkoutBranch(draft.parentBranch);
+      }
+      state.fs.snapshot(snapshotName);
+    }
+    state.fs.cloneSnapshot(snapshotName, name);
+    state.fs.checkoutBranch(name);
+    state.branchDraft = null;
+    state.selectedBranchNode = `branch:${name}`;
+    state.pendingBranchFocusKey = `branch:${name}`;
+    pushLog("new-branch", `created branch ${name} from ${snapshotName}`);
+  });
+}
+
+function handleDraftKeydown(event, scope) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    if (scope === "file") {
+      commitFileDraft();
+    } else {
+      commitBranchDraft();
+    }
+  } else if (event.key === "Escape") {
+    event.preventDefault();
+    if (scope === "file") {
+      cancelFileDraft();
+    } else {
+      cancelBranchDraft();
+    }
+  }
+}
+
 function attachFileTreeHandlers() {
+  elements["tree-view"].addEventListener("input", (event) => {
+    const input = event.target.closest('.tree-draft-input[data-draft-scope="file"]');
+    if (!input) {
+      return;
+    }
+    updateFileDraft(input.value);
+  });
+
   elements["tree-view"].addEventListener("click", (event) => {
+    const draftAction = event.target.closest('[data-draft-scope="file"][data-draft-action]');
+    if (draftAction) {
+      event.preventDefault();
+      if (draftAction.dataset.draftAction === "commit") {
+        commitFileDraft();
+      } else {
+        cancelFileDraft();
+      }
+      return;
+    }
+
+    if (event.target.closest(".tree-draft")) {
+      return;
+    }
+
     const row = event.target.closest(".tree-row");
     if (!row) {
       return;
     }
+
     const path = row.dataset.key;
     const kind = row.dataset.kind;
     selectFilePath(path);
@@ -405,6 +717,12 @@ function attachFileTreeHandlers() {
   });
 
   elements["tree-view"].addEventListener("keydown", (event) => {
+    const draftInput = event.target.closest('.tree-draft-input[data-draft-scope="file"]');
+    if (draftInput) {
+      handleDraftKeydown(event, "file");
+      return;
+    }
+
     const row = event.target.closest(".tree-row");
     if (!row) {
       return;
@@ -454,27 +772,11 @@ function attachFileTreeHandlers() {
   });
 
   document.getElementById("tree-new-file").addEventListener("click", () => {
-    const candidate = prompt("New file path", joinPath(selectedDirectoryForCreate(), "untitled.txt"));
-    if (!candidate) {
-      return;
-    }
-    withAction("new-file", () => {
-      state.fs.writeText(candidate, "");
-      selectFilePath(candidate);
-      pushLog("new-file", `created ${candidate}`);
-    });
+    startFileDraft("file");
   });
 
   document.getElementById("tree-new-dir").addEventListener("click", () => {
-    const candidate = prompt("New folder path", joinPath(selectedDirectoryForCreate(), "new-folder"));
-    if (!candidate) {
-      return;
-    }
-    withAction("new-dir", () => {
-      state.fs.createDir(candidate);
-      selectFilePath(candidate);
-      pushLog("new-dir", `created ${candidate}`);
-    });
+    startFileDraft("directory");
   });
 
   document.getElementById("tree-refresh").addEventListener("click", () => {
@@ -488,11 +790,35 @@ function attachFileTreeHandlers() {
 }
 
 function attachBranchTreeHandlers() {
+  elements["branch-tree-view"].addEventListener("input", (event) => {
+    const input = event.target.closest('.tree-draft-input[data-draft-scope="branch"]');
+    if (!input) {
+      return;
+    }
+    updateBranchDraft(input.value);
+  });
+
   elements["branch-tree-view"].addEventListener("click", (event) => {
+    const draftAction = event.target.closest('[data-draft-scope="branch"][data-draft-action]');
+    if (draftAction) {
+      event.preventDefault();
+      if (draftAction.dataset.draftAction === "commit") {
+        commitBranchDraft();
+      } else {
+        cancelBranchDraft();
+      }
+      return;
+    }
+
+    if (event.target.closest(".tree-draft")) {
+      return;
+    }
+
     const row = event.target.closest(".tree-row");
     if (!row) {
       return;
     }
+
     const key = row.dataset.key;
     const kind = row.dataset.kind;
     state.selectedBranchNode = key;
@@ -500,8 +826,18 @@ function attachBranchTreeHandlers() {
 
     if (kind === "Branch") {
       withAction("checkout", () => {
-        state.fs.checkoutBranch(key.replace(/^branch:/, ""));
-        pushLog("checkout", `switched to ${key.replace(/^branch:/, "")}`);
+        const branchName = key.replace(/^branch:/, "");
+        state.fs.checkoutBranch(branchName);
+        pushLog("checkout", `switched to ${branchName}`);
+      });
+      return;
+    }
+
+    if (kind === "Snapshot") {
+      withAction("rollback", () => {
+        const snapshotName = key.replace(/^snapshot:/, "");
+        state.fs.rollback(snapshotName);
+        pushLog("rollback", `restored ${state.fs.currentBranch()} to ${snapshotName}`);
       });
       return;
     }
@@ -510,15 +846,30 @@ function attachBranchTreeHandlers() {
   });
 
   elements["branch-tree-view"].addEventListener("keydown", (event) => {
+    const draftInput = event.target.closest('.tree-draft-input[data-draft-scope="branch"]');
+    if (draftInput) {
+      handleDraftKeydown(event, "branch");
+      return;
+    }
+
     const row = event.target.closest(".tree-row");
     if (!row) {
       return;
     }
     const index = Number(row.dataset.index);
+    const node = state.branchTreeNodes[index];
+    if (!node) {
+      return;
+    }
+
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
-        focusTreeIndex(state.branchTreeNodes, Math.min(index + 1, state.branchTreeNodes.length - 1), "branch");
+        focusTreeIndex(
+          state.branchTreeNodes,
+          Math.min(index + 1, state.branchTreeNodes.length - 1),
+          "branch",
+        );
         break;
       case "ArrowUp":
         event.preventDefault();
@@ -527,11 +878,19 @@ function attachBranchTreeHandlers() {
       case "Enter":
       case " ":
         event.preventDefault();
-        if (row.dataset.kind === "Branch") {
+        if (node.kind === "Branch") {
           withAction("checkout", () => {
-            state.fs.checkoutBranch(row.dataset.key.replace(/^branch:/, ""));
-            state.selectedBranchNode = row.dataset.key;
-            pushLog("checkout", `switched to ${row.dataset.key.replace(/^branch:/, "")}`);
+            const branchName = node.key.replace(/^branch:/, "");
+            state.fs.checkoutBranch(branchName);
+            state.selectedBranchNode = node.key;
+            pushLog("checkout", `switched to ${branchName}`);
+          });
+        } else if (node.kind === "Snapshot") {
+          withAction("rollback", () => {
+            const snapshotName = node.key.replace(/^snapshot:/, "");
+            state.fs.rollback(snapshotName);
+            state.selectedBranchNode = node.key;
+            pushLog("rollback", `restored ${state.fs.currentBranch()} to ${snapshotName}`);
           });
         }
         break;
@@ -539,50 +898,11 @@ function attachBranchTreeHandlers() {
   });
 
   document.getElementById("branch-new-snapshot").addEventListener("click", () => {
-    const candidate = prompt("Snapshot name", `${state.fs.currentBranch()}-${Date.now()}`);
-    if (!candidate) {
-      return;
-    }
-    withAction("snapshot", () => {
-      state.fs.snapshot(candidate);
-      state.selectedBranchNode = `snapshot:${candidate}`;
-      pushLog("snapshot", `captured ${candidate}`);
-    });
+    startBranchDraft("snapshot");
   });
 
   document.getElementById("branch-new-branch").addEventListener("click", () => {
-    const branchName = prompt("New branch name", "feature");
-    if (!branchName) {
-      return;
-    }
-
-    let snapshotName = state.selectedBranchNode.startsWith("snapshot:")
-      ? state.selectedBranchNode.replace(/^snapshot:/, "")
-      : null;
-
-    withAction("new-branch", () => {
-      if (!snapshotName) {
-        snapshotName = `${state.fs.currentBranch()}-base-${Date.now()}`;
-        state.fs.snapshot(snapshotName);
-      }
-      state.fs.cloneSnapshot(snapshotName, branchName);
-      state.selectedBranchNode = `branch:${branchName}`;
-      state.fs.checkoutBranch(branchName);
-      pushLog("new-branch", `created branch ${branchName} from ${snapshotName}`);
-    });
-  });
-
-  document.getElementById("branch-rollback").addEventListener("click", () => {
-    const snapshotName = state.selectedBranchNode.startsWith("snapshot:")
-      ? state.selectedBranchNode.replace(/^snapshot:/, "")
-      : prompt("Rollback to snapshot", state.fs.snapshotNames().at(-1) ?? "");
-    if (!snapshotName) {
-      return;
-    }
-    withAction("rollback", () => {
-      state.fs.rollback(snapshotName);
-      pushLog("rollback", `rolled back to ${snapshotName}`);
-    });
+    startBranchDraft("branch");
   });
 
   document.getElementById("branch-refresh").addEventListener("click", () => {
@@ -637,6 +957,9 @@ function attachGlobalButtons() {
     state.selectedPath = "/";
     state.selectedBranchNode = "branch:main";
     state.expandedDirs = new Set(["/"]);
+    state.fileDraft = null;
+    state.branchDraft = null;
+    state.pendingInlineFocus = null;
     refreshAll();
     pushLog("reset", "replaced the in-memory filesystem with a fresh instance");
   });
