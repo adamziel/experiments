@@ -2,38 +2,34 @@ import { createSnapshotFs } from "./browser-host.js";
 
 const state = {
   fs: null,
-  currentListPath: "/",
   selectedPath: "/",
+  selectedBranchNode: "branch:main",
   expandedDirs: new Set(["/"]),
-  visibleTreeNodes: [],
-  pendingFocusPath: "/",
+  fileTreeNodes: [],
+  branchTreeNodes: [],
+  pendingFileFocusPath: "/",
+  pendingBranchFocusKey: "branch:main",
   logEntries: [],
 };
 
 const elements = {};
 
-function bindElement(id) {
-  elements[id] = document.getElementById(id);
-}
-
-[
+for (const id of [
   "metric-branch",
   "metric-snapshots",
   "metric-branches",
   "metric-bytes",
-  "directory-view",
-  "file-view",
+  "tree-selection",
+  "tree-view",
+  "branch-selection",
+  "branch-tree-view",
   "read-target",
-  "branch-list",
-  "snapshot-list",
+  "directory-summary",
+  "file-editor",
   "stats-view",
   "log-view",
-  "tree-view",
-  "tree-selection",
-].forEach(bindElement);
-
-function formatJson(value) {
-  return JSON.stringify(value, null, 2);
+]) {
+  elements[id] = document.getElementById(id);
 }
 
 function nowLabel() {
@@ -81,23 +77,13 @@ function isDirectory(path) {
   return listDirSafe(path) !== null;
 }
 
-function ensureTreeSelectionIsValid() {
-  if (state.selectedPath !== "/" && !state.fs.exists(state.selectedPath)) {
-    state.selectedPath = parentPath(state.selectedPath);
-  }
-  if (!isDirectory(state.currentListPath)) {
-    state.currentListPath = isDirectory(state.selectedPath) ? state.selectedPath : "/";
-  }
+function selectedDirectoryForCreate() {
+  return isDirectory(state.selectedPath) ? state.selectedPath : parentPath(state.selectedPath);
 }
 
 function pushLog(action, message, ok = true) {
-  state.logEntries.unshift({
-    action,
-    message,
-    ok,
-    time: nowLabel(),
-  });
-  state.logEntries = state.logEntries.slice(0, 40);
+  state.logEntries.unshift({ action, message, ok, time: nowLabel() });
+  state.logEntries = state.logEntries.slice(0, 50);
   renderLog();
 }
 
@@ -112,8 +98,8 @@ function renderLog() {
       (entry) => `
         <article class="log-entry">
           <div class="log-meta">
-            <strong>${entry.action}</strong>
-            <span class="${entry.ok ? "log-status-ok" : "log-status-error"}">${entry.ok ? "ok" : "error"} · ${entry.time}</span>
+            <strong>${escapeHtml(entry.action)}</strong>
+            <span class="${entry.ok ? "log-status-ok" : "log-status-error"}">${entry.ok ? "ok" : "error"} · ${escapeHtml(entry.time)}</span>
           </div>
           <div class="log-message">${escapeHtml(entry.message)}</div>
         </article>
@@ -122,74 +108,55 @@ function renderLog() {
     .join("");
 }
 
-function renderDirectory(entries, path) {
-  if (entries.length === 0) {
-    elements["directory-view"].innerHTML = `<div class="empty-state">${escapeHtml(path)} is empty.</div>`;
-    return;
+function ensureSelectionsAreValid() {
+  if (state.selectedPath !== "/" && !state.fs.exists(state.selectedPath)) {
+    state.selectedPath = parentPath(state.selectedPath);
   }
 
-  elements["directory-view"].innerHTML = entries
-    .map(
-      (entry) => `
-        <div class="entry">
-          <div class="entry-name">${escapeHtml(entry.name)}</div>
-          <div class="entry-kind">${escapeHtml(entry.kind)}</div>
-        </div>
-      `,
-    )
-    .join("");
+  const branchNames = state.fs.branchNames();
+  const snapshotNames = state.fs.snapshotNames();
+  if (!branchNames.includes(state.selectedBranchNode.replace(/^branch:/, ""))) {
+    state.selectedBranchNode = `branch:${state.fs.currentBranch()}`;
+  }
+
+  for (const path of [...state.expandedDirs]) {
+    if (path !== "/" && !isDirectory(path)) {
+      state.expandedDirs.delete(path);
+    }
+  }
+
+  for (const key of [...snapshotNames]) {
+    void key;
+  }
 }
 
-function renderBranches(branches, currentBranch) {
-  elements["branch-list"].innerHTML = branches
-    .map(
-      (branch) => `<li class="${branch === currentBranch ? "current" : ""}">${escapeHtml(branch)}</li>`,
-    )
-    .join("");
-}
-
-function renderSnapshots(snapshots) {
-  elements["snapshot-list"].innerHTML = snapshots.length
-    ? snapshots.map((snapshot) => `<li>${escapeHtml(snapshot)}</li>`).join("")
-    : '<li class="empty-pill">none</li>';
-}
-
-function syncStats(stats) {
-  elements["metric-branch"].textContent = stats.current_branch;
-  elements["metric-snapshots"].textContent = String(stats.snapshot_count);
-  elements["metric-branches"].textContent = String(stats.branch_count);
-  elements["metric-bytes"].textContent = String(stats.current_logical_bytes);
-  elements["stats-view"].textContent = formatJson(stats);
-}
-
-function buildVisibleTreeNodes(path = "/", depth = 0, nodes = []) {
+function buildFileTreeNodes(path = "/", depth = 0, nodes = []) {
   const children = listDirSafe(path) ?? [];
-  const node = {
+  nodes.push({
+    key: path,
+    label: basename(path),
     path,
-    depth,
     kind: "Directory",
-    name: basename(path),
+    depth,
     expanded: state.expandedDirs.has(path),
-    childrenCount: children.length,
-  };
-  nodes.push(node);
+  });
 
-  if (!node.expanded) {
+  if (!state.expandedDirs.has(path)) {
     return nodes;
   }
 
   for (const entry of children) {
     const childPath = joinPath(path, entry.name);
     if (entry.kind === "Directory") {
-      buildVisibleTreeNodes(childPath, depth + 1, nodes);
+      buildFileTreeNodes(childPath, depth + 1, nodes);
     } else {
       nodes.push({
+        key: childPath,
+        label: entry.name,
         path: childPath,
-        depth: depth + 1,
         kind: "File",
-        name: entry.name,
+        depth: depth + 1,
         expanded: false,
-        childrenCount: 0,
       });
     }
   }
@@ -197,188 +164,188 @@ function buildVisibleTreeNodes(path = "/", depth = 0, nodes = []) {
   return nodes;
 }
 
-function renderTree() {
-  state.visibleTreeNodes = buildVisibleTreeNodes();
-  elements["tree-selection"].textContent = `Selected: ${state.selectedPath}`;
+function buildBranchTreeNodes() {
+  const nodes = [
+    {
+      key: "group:branches",
+      label: "Branches",
+      kind: "Group",
+      depth: 0,
+      expanded: true,
+    },
+  ];
 
-  elements["tree-view"].innerHTML = state.visibleTreeNodes
-    .map((node, index) => {
-      const selected = node.path === state.selectedPath;
-      const expandable = node.kind === "Directory";
-      const chevron = expandable ? (node.expanded ? "▾" : "▸") : "";
-      const icon = node.kind === "Directory" ? "📁" : "📄";
-      const kindLabel = node.kind === "Directory" ? "dir" : "file";
-      const ariaExpanded = expandable ? `aria-expanded="${node.expanded}"` : "";
-      return `
-        <button
-          type="button"
-          class="tree-row ${selected ? "selected" : ""}"
-          role="treeitem"
-          aria-level="${node.depth + 1}"
-          ${ariaExpanded}
-          aria-selected="${selected}"
-          tabindex="${selected ? "0" : "-1"}"
-          data-index="${index}"
-          data-path="${escapeHtml(node.path)}"
-          data-kind="${node.kind}"
-        >
-          <span class="tree-row-inner">
-            <span class="tree-row-indent" style="--depth:${node.depth}"></span>
-            <span class="tree-chevron">${chevron}</span>
-            <span class="tree-icon" aria-hidden="true">${icon}</span>
-            <span class="tree-label">${escapeHtml(node.name)}</span>
-            <span class="tree-meta">${kindLabel}</span>
-          </span>
-        </button>
-      `;
-    })
-    .join("");
+  for (const branch of state.fs.branchNames()) {
+    nodes.push({
+      key: `branch:${branch}`,
+      label: branch,
+      kind: "Branch",
+      depth: 1,
+      expanded: false,
+    });
+  }
 
-  focusPendingTreeNode();
+  nodes.push({
+    key: "group:snapshots",
+    label: "Snapshots",
+    kind: "Group",
+    depth: 0,
+    expanded: true,
+  });
+
+  for (const snapshot of state.fs.snapshotNames()) {
+    nodes.push({
+      key: `snapshot:${snapshot}`,
+      label: snapshot,
+      kind: "Snapshot",
+      depth: 1,
+      expanded: false,
+    });
+  }
+
+  return nodes;
 }
 
-function focusPendingTreeNode() {
-  const path = state.pendingFocusPath ?? state.selectedPath;
-  const row = elements["tree-view"].querySelector(`[data-path="${CSS.escape(path)}"]`);
+function treeRowMarkup(node, index, selectedKey) {
+  const expandable = node.kind === "Directory" || node.kind === "Group";
+  const selected = node.key === selectedKey;
+  const icon =
+    node.kind === "Directory"
+      ? "📁"
+      : node.kind === "File"
+        ? "📄"
+        : node.kind === "Branch"
+          ? "🌿"
+          : node.kind === "Snapshot"
+            ? "📸"
+            : "▤";
+  const meta =
+    node.kind === "Branch"
+      ? (node.label === state.fs.currentBranch() ? "current" : "branch")
+      : node.kind === "Snapshot"
+        ? "snapshot"
+        : node.kind === "Directory"
+          ? "dir"
+          : node.kind === "File"
+            ? "file"
+            : "group";
+  return `
+    <button
+      type="button"
+      class="tree-row ${selected ? "selected" : ""}"
+      role="treeitem"
+      aria-level="${node.depth + 1}"
+      ${expandable ? `aria-expanded="${node.expanded}"` : ""}
+      aria-selected="${selected}"
+      tabindex="${selected ? "0" : "-1"}"
+      data-index="${index}"
+      data-key="${escapeHtml(node.key)}"
+      data-kind="${node.kind}"
+    >
+      <span class="tree-row-inner">
+        <span class="tree-row-indent" style="--depth:${node.depth}"></span>
+        <span class="tree-chevron">${node.kind === "Directory" ? (node.expanded ? "▾" : "▸") : ""}</span>
+        <span class="tree-icon" aria-hidden="true">${icon}</span>
+        <span class="tree-label">${escapeHtml(node.label)}</span>
+        <span class="tree-meta">${escapeHtml(meta)}</span>
+      </span>
+    </button>
+  `;
+}
+
+function renderFileTree() {
+  state.fileTreeNodes = buildFileTreeNodes();
+  elements["tree-selection"].textContent = `Selected: ${state.selectedPath}`;
+  elements["tree-view"].innerHTML = state.fileTreeNodes
+    .map((node, index) => treeRowMarkup(node, index, state.selectedPath))
+    .join("");
+  focusPendingFileTreeNode();
+}
+
+function renderBranchTree() {
+  state.branchTreeNodes = buildBranchTreeNodes();
+  const selectedLabel = state.selectedBranchNode.replace(/^[^:]+:/, "");
+  elements["branch-selection"].textContent = `Selected: ${selectedLabel}`;
+  elements["branch-tree-view"].innerHTML = state.branchTreeNodes
+    .map((node, index) => treeRowMarkup(node, index, state.selectedBranchNode))
+    .join("");
+  focusPendingBranchTreeNode();
+}
+
+function focusPendingFileTreeNode() {
+  const key = state.pendingFileFocusPath ?? state.selectedPath;
+  const row = elements["tree-view"].querySelector(`[data-key="${CSS.escape(key)}"]`);
   if (row) {
     row.focus();
   }
-  state.pendingFocusPath = null;
+  state.pendingFileFocusPath = null;
 }
 
-function setSelection(path) {
-  state.selectedPath = path;
-  state.pendingFocusPath = path;
+function focusPendingBranchTreeNode() {
+  const key = state.pendingBranchFocusKey ?? state.selectedBranchNode;
+  const row = elements["branch-tree-view"].querySelector(`[data-key="${CSS.escape(key)}"]`);
+  if (row) {
+    row.focus();
+  }
+  state.pendingBranchFocusKey = null;
+}
 
-  if (isDirectory(path)) {
-    state.currentListPath = path;
-    renderDirectory(state.fs.listDir(path), path);
-    elements["read-target"].textContent = path;
-  } else {
-    const contents = state.fs.readText(path);
-    elements["file-view"].textContent = contents || "(empty file)";
-    elements["read-target"].textContent = path;
-    state.currentListPath = parentPath(path);
-    renderDirectory(state.fs.listDir(state.currentListPath), state.currentListPath);
+function renderPreview() {
+  elements["read-target"].textContent = state.selectedPath;
+  if (isDirectory(state.selectedPath)) {
+    const entries = state.fs.listDir(state.selectedPath);
+    elements["directory-summary"].innerHTML = entries.length
+      ? entries
+          .map(
+            (entry) => `
+              <div class="directory-entry">
+                <span>${escapeHtml(entry.name)}</span>
+                <span class="directory-entry-kind">${escapeHtml(entry.kind)}</span>
+              </div>
+            `,
+          )
+          .join("")
+      : '<div class="empty-state">Directory is empty.</div>';
+    elements["file-editor"].value = "";
+    elements["file-editor"].disabled = true;
+    return;
+  }
+
+  elements["directory-summary"].innerHTML = '<div class="empty-state">Editing file contents.</div>';
+  elements["file-editor"].disabled = false;
+  elements["file-editor"].value = state.fs.readText(state.selectedPath);
+}
+
+function syncStats() {
+  const stats = state.fs.stats();
+  elements["metric-branch"].textContent = stats.current_branch;
+  elements["metric-snapshots"].textContent = String(stats.snapshot_count);
+  elements["metric-branches"].textContent = String(stats.branch_count);
+  elements["metric-bytes"].textContent = String(stats.current_logical_bytes);
+  elements["stats-view"].textContent = JSON.stringify(stats, null, 2);
+}
+
+function selectFilePath(path) {
+  state.selectedPath = path;
+  state.pendingFileFocusPath = path;
+  if (!isDirectory(path)) {
+    state.expandedDirs.add(parentPath(path));
   }
 }
 
 function toggleDirectory(path, expand = null) {
-  if (!isDirectory(path)) {
-    return;
-  }
-
-  const nextExpanded = expand ?? !state.expandedDirs.has(path);
-  if (nextExpanded) {
+  const next = expand ?? !state.expandedDirs.has(path);
+  if (next) {
     state.expandedDirs.add(path);
   } else if (path !== "/") {
     state.expandedDirs.delete(path);
   }
-  state.pendingFocusPath = path;
 }
 
-function treeNodeByIndex(index) {
-  return state.visibleTreeNodes[index] ?? null;
-}
-
-function focusTreeIndex(index) {
-  const node = treeNodeByIndex(index);
-  if (!node) {
-    return;
-  }
-  setSelection(node.path);
-  renderTree();
-}
-
-function handleTreeKeyboard(event) {
-  const row = event.target.closest(".tree-row");
-  if (!row) {
-    return;
-  }
-
-  const index = Number(row.dataset.index);
-  const node = treeNodeByIndex(index);
-  if (!node) {
-    return;
-  }
-
-  switch (event.key) {
-    case "ArrowDown":
-      event.preventDefault();
-      focusTreeIndex(Math.min(index + 1, state.visibleTreeNodes.length - 1));
-      break;
-    case "ArrowUp":
-      event.preventDefault();
-      focusTreeIndex(Math.max(index - 1, 0));
-      break;
-    case "ArrowRight":
-      event.preventDefault();
-      if (node.kind === "Directory" && !node.expanded) {
-        toggleDirectory(node.path, true);
-        refreshAll();
-      } else if (node.kind === "Directory") {
-        const nextNode = treeNodeByIndex(index + 1);
-        if (nextNode && parentPath(nextNode.path) === node.path) {
-          focusTreeIndex(index + 1);
-        }
-      }
-      break;
-    case "ArrowLeft":
-      event.preventDefault();
-      if (node.kind === "Directory" && node.expanded && node.path !== "/") {
-        toggleDirectory(node.path, false);
-        refreshAll();
-      } else if (node.path !== "/") {
-        focusTreeIndex(state.visibleTreeNodes.findIndex((item) => item.path === parentPath(node.path)));
-      }
-      break;
-    case "Home":
-      event.preventDefault();
-      focusTreeIndex(0);
-      break;
-    case "End":
-      event.preventDefault();
-      focusTreeIndex(state.visibleTreeNodes.length - 1);
-      break;
-    case "Enter":
-    case " ":
-      event.preventDefault();
-      setSelection(node.path);
-      if (node.kind === "Directory" && event.key === " ") {
-        toggleDirectory(node.path);
-      }
-      refreshAll();
-      break;
-  }
-}
-
-function selectedDirectoryForCreate() {
-  if (isDirectory(state.selectedPath)) {
-    return state.selectedPath;
-  }
-  return parentPath(state.selectedPath);
-}
-
-async function refreshAll() {
-  ensureTreeSelectionIsValid();
-  const stats = state.fs.stats();
-  syncStats(stats);
-  renderBranches(state.fs.branchNames(), state.fs.currentBranch());
-  renderSnapshots(state.fs.snapshotNames());
-  renderTree();
-
+function withAction(action, fn) {
   try {
-    renderDirectory(state.fs.listDir(state.currentListPath), state.currentListPath);
-  } catch {
-    state.currentListPath = "/";
-    renderDirectory(state.fs.listDir("/"), "/");
-  }
-}
-
-async function withAction(action, fn) {
-  try {
-    const result = await fn();
-    await refreshAll();
+    const result = fn();
+    refreshAll();
     return result;
   } catch (error) {
     pushLog(action, String(error), false);
@@ -386,159 +353,260 @@ async function withAction(action, fn) {
   }
 }
 
-function formValue(form, name) {
-  return new FormData(form).get(name)?.toString().trim() ?? "";
+function refreshAll() {
+  ensureSelectionsAreValid();
+  syncStats();
+  renderFileTree();
+  renderBranchTree();
+  renderPreview();
 }
 
-function attachTreeHandlers() {
-  elements["tree-view"].addEventListener("click", async (event) => {
+function focusTreeIndex(nodes, index, kind) {
+  const node = nodes[index];
+  if (!node) {
+    return;
+  }
+  if (kind === "file") {
+    selectFilePath(node.key);
+  } else {
+    state.selectedBranchNode = node.key;
+    state.pendingBranchFocusKey = node.key;
+  }
+  refreshAll();
+}
+
+function attachFileTreeHandlers() {
+  elements["tree-view"].addEventListener("click", (event) => {
     const row = event.target.closest(".tree-row");
     if (!row) {
       return;
     }
-    const path = row.dataset.path;
+    const path = row.dataset.key;
     const kind = row.dataset.kind;
-    setSelection(path);
+    selectFilePath(path);
     if (kind === "Directory") {
       toggleDirectory(path);
     }
-    await refreshAll();
+    refreshAll();
   });
 
-  elements["tree-view"].addEventListener("keydown", handleTreeKeyboard);
+  elements["tree-view"].addEventListener("keydown", (event) => {
+    const row = event.target.closest(".tree-row");
+    if (!row) {
+      return;
+    }
+    const index = Number(row.dataset.index);
+    const node = state.fileTreeNodes[index];
+    if (!node) {
+      return;
+    }
 
-  document.getElementById("tree-new-file").addEventListener("click", async () => {
-    const base = selectedDirectoryForCreate();
-    const candidate = prompt("New file path", joinPath(base, "untitled.txt"));
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        focusTreeIndex(state.fileTreeNodes, Math.min(index + 1, state.fileTreeNodes.length - 1), "file");
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        focusTreeIndex(state.fileTreeNodes, Math.max(index - 1, 0), "file");
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        if (node.kind === "Directory" && !node.expanded) {
+          toggleDirectory(node.path, true);
+          refreshAll();
+        }
+        break;
+      case "ArrowLeft":
+        event.preventDefault();
+        if (node.kind === "Directory" && node.expanded && node.path !== "/") {
+          toggleDirectory(node.path, false);
+          refreshAll();
+        } else if (node.path !== "/") {
+          selectFilePath(parentPath(node.path));
+          refreshAll();
+        }
+        break;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        if (node.kind === "Directory") {
+          toggleDirectory(node.path);
+        }
+        selectFilePath(node.path);
+        refreshAll();
+        break;
+    }
+  });
+
+  document.getElementById("tree-new-file").addEventListener("click", () => {
+    const candidate = prompt("New file path", joinPath(selectedDirectoryForCreate(), "untitled.txt"));
     if (!candidate) {
       return;
     }
-    await withAction("new-file", () => {
+    withAction("new-file", () => {
       state.fs.writeText(candidate, "");
-      setSelection(candidate);
-      state.expandedDirs.add(parentPath(candidate));
+      selectFilePath(candidate);
       pushLog("new-file", `created ${candidate}`);
     });
   });
 
-  document.getElementById("tree-new-dir").addEventListener("click", async () => {
-    const base = selectedDirectoryForCreate();
-    const candidate = prompt("New folder path", joinPath(base, "new-folder"));
+  document.getElementById("tree-new-dir").addEventListener("click", () => {
+    const candidate = prompt("New folder path", joinPath(selectedDirectoryForCreate(), "new-folder"));
     if (!candidate) {
       return;
     }
-    await withAction("new-dir", () => {
+    withAction("new-dir", () => {
       state.fs.createDir(candidate);
-      setSelection(candidate);
-      state.expandedDirs.add(parentPath(candidate));
+      selectFilePath(candidate);
       pushLog("new-dir", `created ${candidate}`);
     });
   });
 
-  document.getElementById("tree-refresh").addEventListener("click", async () => {
-    await refreshAll();
-    pushLog("tree-refresh", "refreshed tree view");
+  document.getElementById("tree-refresh").addEventListener("click", () => {
+    refreshAll();
+    pushLog("tree-refresh", "refreshed filesystem tree");
   });
 }
 
-function attachFormHandlers() {
-  document.getElementById("mkdir-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const path = formValue(event.currentTarget, "path");
-    await withAction("mkdir", () => {
-      state.fs.createDir(path);
-      setSelection(path);
-      state.expandedDirs.add(parentPath(path));
-      pushLog("mkdir", `created ${path}`);
+function attachBranchTreeHandlers() {
+  elements["branch-tree-view"].addEventListener("click", (event) => {
+    const row = event.target.closest(".tree-row");
+    if (!row) {
+      return;
+    }
+    const key = row.dataset.key;
+    const kind = row.dataset.kind;
+    state.selectedBranchNode = key;
+    state.pendingBranchFocusKey = key;
+
+    if (kind === "Branch") {
+      withAction("checkout", () => {
+        state.fs.checkoutBranch(key.replace(/^branch:/, ""));
+        pushLog("checkout", `switched to ${key.replace(/^branch:/, "")}`);
+      });
+      return;
+    }
+
+    refreshAll();
+  });
+
+  elements["branch-tree-view"].addEventListener("keydown", (event) => {
+    const row = event.target.closest(".tree-row");
+    if (!row) {
+      return;
+    }
+    const index = Number(row.dataset.index);
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        focusTreeIndex(state.branchTreeNodes, Math.min(index + 1, state.branchTreeNodes.length - 1), "branch");
+        break;
+      case "ArrowUp":
+        event.preventDefault();
+        focusTreeIndex(state.branchTreeNodes, Math.max(index - 1, 0), "branch");
+        break;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        if (row.dataset.kind === "Branch") {
+          withAction("checkout", () => {
+            state.fs.checkoutBranch(row.dataset.key.replace(/^branch:/, ""));
+            state.selectedBranchNode = row.dataset.key;
+            pushLog("checkout", `switched to ${row.dataset.key.replace(/^branch:/, "")}`);
+          });
+        }
+        break;
+    }
+  });
+
+  document.getElementById("branch-new-snapshot").addEventListener("click", () => {
+    const candidate = prompt("Snapshot name", `${state.fs.currentBranch()}-${Date.now()}`);
+    if (!candidate) {
+      return;
+    }
+    withAction("snapshot", () => {
+      state.fs.snapshot(candidate);
+      state.selectedBranchNode = `snapshot:${candidate}`;
+      pushLog("snapshot", `captured ${candidate}`);
     });
   });
 
-  document.getElementById("write-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const path = formValue(event.currentTarget, "path");
-    const contents = formValue(event.currentTarget, "contents");
-    await withAction("write", () => {
-      state.fs.writeText(path, contents);
-      setSelection(path);
-      state.expandedDirs.add(parentPath(path));
-      pushLog("write", `wrote ${path}\n${contents}`);
+  document.getElementById("branch-new-branch").addEventListener("click", () => {
+    const branchName = prompt("New branch name", "feature");
+    if (!branchName) {
+      return;
+    }
+
+    let snapshotName = state.selectedBranchNode.startsWith("snapshot:")
+      ? state.selectedBranchNode.replace(/^snapshot:/, "")
+      : null;
+
+    withAction("new-branch", () => {
+      if (!snapshotName) {
+        snapshotName = `${state.fs.currentBranch()}-base-${Date.now()}`;
+        state.fs.snapshot(snapshotName);
+      }
+      state.fs.cloneSnapshot(snapshotName, branchName);
+      state.selectedBranchNode = `branch:${branchName}`;
+      state.fs.checkoutBranch(branchName);
+      pushLog("new-branch", `created branch ${branchName} from ${snapshotName}`);
     });
   });
 
-  document.getElementById("read-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const path = formValue(event.currentTarget, "path");
-    await withAction("read", () => {
-      setSelection(path);
-      pushLog("read", `read ${path}`);
+  document.getElementById("branch-rollback").addEventListener("click", () => {
+    const snapshotName = state.selectedBranchNode.startsWith("snapshot:")
+      ? state.selectedBranchNode.replace(/^snapshot:/, "")
+      : prompt("Rollback to snapshot", state.fs.snapshotNames().at(-1) ?? "");
+    if (!snapshotName) {
+      return;
+    }
+    withAction("rollback", () => {
+      state.fs.rollback(snapshotName);
+      pushLog("rollback", `rolled back to ${snapshotName}`);
     });
   });
 
-  document.getElementById("delete-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const path = formValue(event.currentTarget, "path");
-    await withAction("delete", () => {
-      state.fs.delete(path);
-      state.selectedPath = parentPath(path);
-      state.pendingFocusPath = state.selectedPath;
-      pushLog("delete", `deleted ${path}`);
-    });
-  });
-
-  document.getElementById("snapshot-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const name = formValue(event.currentTarget, "name");
-    await withAction("snapshot", () => {
-      state.fs.snapshot(name);
-      pushLog("snapshot", `captured ${name}`);
-    });
-  });
-
-  document.getElementById("rollback-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const name = formValue(event.currentTarget, "name");
-    await withAction("rollback", () => {
-      state.fs.rollback(name);
-      pushLog("rollback", `rolled back to ${name}`);
-    });
-  });
-
-  document.getElementById("clone-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const snapshot = formValue(event.currentTarget, "snapshot");
-    const branch = formValue(event.currentTarget, "branch");
-    await withAction("clone", () => {
-      state.fs.cloneSnapshot(snapshot, branch);
-      pushLog("clone", `created branch ${branch} from ${snapshot}`);
-    });
-  });
-
-  document.getElementById("checkout-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const branch = formValue(event.currentTarget, "branch");
-    await withAction("checkout", () => {
-      state.fs.checkoutBranch(branch);
-      pushLog("checkout", `switched to ${branch}`);
-    });
-  });
-
-  document.getElementById("list-form").addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const path = formValue(event.currentTarget, "path") || "/";
-    state.currentListPath = path;
-    state.selectedPath = path;
-    state.pendingFocusPath = path;
-    await withAction("list", () => {
-      const entries = state.fs.listDir(path);
-      renderDirectory(entries, path);
-      pushLog("list", `listed ${path}`);
-    });
+  document.getElementById("branch-refresh").addEventListener("click", () => {
+    refreshAll();
+    pushLog("branch-refresh", "refreshed branch tree");
   });
 }
 
-function attachButtons() {
-  document.getElementById("seed-demo").addEventListener("click", async () => {
-    await withAction("scenario", () => {
+function attachPreviewHandlers() {
+  document.getElementById("preview-save").addEventListener("click", () => {
+    if (isDirectory(state.selectedPath)) {
+      pushLog("save", "selected node is a directory", false);
+      return;
+    }
+    withAction("save", () => {
+      state.fs.writeText(state.selectedPath, elements["file-editor"].value);
+      pushLog("save", `saved ${state.selectedPath}`);
+    });
+  });
+
+  document.getElementById("preview-delete").addEventListener("click", () => {
+    if (state.selectedPath === "/") {
+      pushLog("delete", "cannot delete root", false);
+      return;
+    }
+    withAction("delete", () => {
+      const target = state.selectedPath;
+      state.fs.delete(target);
+      state.selectedPath = parentPath(target);
+      pushLog("delete", `deleted ${target}`);
+    });
+  });
+
+  document.getElementById("preview-refresh").addEventListener("click", () => {
+    refreshAll();
+    pushLog("preview-refresh", `refreshed ${state.selectedPath}`);
+  });
+}
+
+function attachGlobalButtons() {
+  document.getElementById("seed-demo").addEventListener("click", () => {
+    withAction("scenario", () => {
       state.fs.writeText("/projects/demo/readme.txt", "main branch draft");
       state.fs.writeText("/projects/demo/plan.md", "1. snapshot\n2. branch\n3. mutate");
       state.fs.snapshot("seed");
@@ -548,31 +616,26 @@ function attachButtons() {
       state.fs.writeText("/projects/demo/branch-only.txt", "only on feature-ui");
       state.expandedDirs.add("/projects");
       state.expandedDirs.add("/projects/demo");
-      setSelection("/projects/demo");
+      state.selectedPath = "/projects/demo/readme.txt";
+      state.selectedBranchNode = "branch:feature-ui";
       pushLog("scenario", "loaded demo scenario with snapshot seed and branch feature-ui");
     });
   });
 
-  document.getElementById("refresh-all").addEventListener("click", async () => {
-    await refreshAll();
-    pushLog("refresh", `refreshed views for ${state.currentListPath}`);
+  document.getElementById("refresh-all").addEventListener("click", () => {
+    refreshAll();
+    pushLog("refresh", "refreshed all views");
   });
 
   document.getElementById("reset-fs").addEventListener("click", async () => {
     state.fs = await createSnapshotFs();
-    state.currentListPath = "/";
     state.selectedPath = "/";
+    state.selectedBranchNode = "branch:main";
     state.expandedDirs = new Set(["/"]);
-    state.pendingFocusPath = "/";
-    elements["file-view"].textContent = "Read a file to inspect its contents.";
-    elements["read-target"].textContent = "No file selected";
-    await refreshAll();
+    refreshAll();
     pushLog("reset", "replaced the in-memory filesystem with a fresh instance");
   });
 
-  document.getElementById("refresh-branches").addEventListener("click", refreshAll);
-  document.getElementById("refresh-snapshots").addEventListener("click", refreshAll);
-  document.getElementById("refresh-stats").addEventListener("click", refreshAll);
   document.getElementById("clear-log").addEventListener("click", () => {
     state.logEntries = [];
     renderLog();
@@ -581,15 +644,16 @@ function attachButtons() {
 
 async function boot() {
   state.fs = await createSnapshotFs();
-  attachFormHandlers();
-  attachButtons();
-  attachTreeHandlers();
+  attachFileTreeHandlers();
+  attachBranchTreeHandlers();
+  attachPreviewHandlers();
+  attachGlobalButtons();
   renderLog();
-  await refreshAll();
+  refreshAll();
   pushLog("boot", "browser demo ready");
 }
 
 boot().catch((error) => {
-  elements["file-view"].textContent = `Boot failed:\n${String(error)}`;
+  elements["file-editor"].value = `Boot failed:\n${String(error)}`;
   pushLog("boot", String(error), false);
 });

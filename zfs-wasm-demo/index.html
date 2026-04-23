@@ -13,9 +13,10 @@
           <p class="eyebrow">Browser Demo</p>
           <h1>ZFS-flavored snapshots running inside Wasm.</h1>
           <p class="hero-text">
-            This demo talks directly to the browser host wrapper. Create directories,
-            write files, branch from snapshots, roll back mutations, and inspect the
-            in-memory filesystem without leaving the page.
+            Two tree views drive this demo now: one for the filesystem and one for
+            branches and snapshots. Select a file to preview or edit it, select a
+            branch to switch instantly, and create new files or folders directly from
+            the explorer.
           </p>
           <div class="hero-actions">
             <button id="seed-demo" class="primary">Load Scenario</button>
@@ -43,170 +44,68 @@
         </div>
       </header>
 
-      <main class="workspace">
-        <section class="panel panel-actions">
+      <main class="studio-grid">
+        <section class="panel tree-panel">
           <div class="panel-heading">
-            <p class="eyebrow">Mutations</p>
-            <h2>Filesystem controls</h2>
+            <p class="eyebrow">Filesystem</p>
+            <h2>File Tree</h2>
+            <p class="panel-subtitle">Arrow keys navigate. Enter opens. Left and right collapse or expand.</p>
           </div>
-
-          <div class="control-grid">
-            <form id="mkdir-form" class="control-card">
-              <h3>Create Directory</h3>
-              <label>
-                Path
-                <input name="path" type="text" value="/projects/demo" required />
-              </label>
-              <button type="submit">Make Directory</button>
-            </form>
-
-            <form id="write-form" class="control-card">
-              <h3>Write File</h3>
-              <label>
-                Path
-                <input name="path" type="text" value="/projects/demo/readme.txt" required />
-              </label>
-              <label>
-                Contents
-                <textarea name="contents" rows="4">hello from wasm</textarea>
-              </label>
-              <button type="submit">Write File</button>
-            </form>
-
-            <form id="read-form" class="control-card">
-              <h3>Read File</h3>
-              <label>
-                Path
-                <input name="path" type="text" value="/projects/demo/readme.txt" required />
-              </label>
-              <button type="submit">Read File</button>
-            </form>
-
-            <form id="delete-form" class="control-card">
-              <h3>Delete Path</h3>
-              <label>
-                Path
-                <input name="path" type="text" value="/projects/demo/readme.txt" required />
-              </label>
-              <button type="submit">Delete</button>
-            </form>
-
-            <form id="snapshot-form" class="control-card">
-              <h3>Create Snapshot</h3>
-              <label>
-                Snapshot name
-                <input name="name" type="text" value="seed" required />
-              </label>
-              <button type="submit">Snapshot</button>
-            </form>
-
-            <form id="rollback-form" class="control-card">
-              <h3>Rollback</h3>
-              <label>
-                Snapshot name
-                <input name="name" type="text" value="seed" required />
-              </label>
-              <button type="submit">Rollback</button>
-            </form>
-
-            <form id="clone-form" class="control-card">
-              <h3>Clone Snapshot</h3>
-              <label>
-                Snapshot name
-                <input name="snapshot" type="text" value="seed" required />
-              </label>
-              <label>
-                Branch name
-                <input name="branch" type="text" value="feature" required />
-              </label>
-              <button type="submit">Clone Branch</button>
-            </form>
-
-            <form id="checkout-form" class="control-card">
-              <h3>Checkout Branch</h3>
-              <label>
-                Branch name
-                <input name="branch" type="text" value="main" required />
-              </label>
-              <button type="submit">Checkout</button>
-            </form>
+          <div class="toolbar">
+            <button id="tree-new-file" class="small-button" type="button">New File</button>
+            <button id="tree-new-dir" class="small-button" type="button">New Folder</button>
+            <button id="tree-refresh" class="small-button" type="button">Refresh Tree</button>
           </div>
+          <div id="tree-selection" class="badge">Selected: /</div>
+          <div id="tree-view" class="tree-view" role="tree" aria-label="Filesystem tree"></div>
         </section>
 
-        <section class="panel panel-inspector">
+        <section class="panel tree-panel">
           <div class="panel-heading">
-            <p class="eyebrow">Inspector</p>
-            <h2>State and contents</h2>
+            <p class="eyebrow">Versioning</p>
+            <h2>Branch Tree</h2>
+            <p class="panel-subtitle">Click a branch to switch filesystems. Snapshots can be used for rollback or new branches.</p>
+          </div>
+          <div class="toolbar">
+            <button id="branch-new-snapshot" class="small-button" type="button">Snapshot</button>
+            <button id="branch-new-branch" class="small-button" type="button">New Branch</button>
+            <button id="branch-rollback" class="small-button" type="button">Rollback</button>
+            <button id="branch-refresh" class="small-button" type="button">Refresh Tree</button>
+          </div>
+          <div id="branch-selection" class="badge">Selected: branch main</div>
+          <div id="branch-tree-view" class="tree-view" role="tree" aria-label="Branch tree"></div>
+        </section>
+
+        <section class="panel preview-panel">
+          <div class="panel-heading">
+            <p class="eyebrow">Preview</p>
+            <h2>File Previewer</h2>
+            <p class="panel-subtitle">Select a file from the tree to inspect or edit it. Select a directory to see its contents.</p>
           </div>
 
-          <div class="inspector-grid">
-            <div class="viewer-card viewer-tree">
-              <div class="viewer-head viewer-head-stack">
-                <div>
-                  <h3>File Tree</h3>
-                  <p class="viewer-subtitle">Arrow keys navigate. Enter opens. Left and right collapse or expand.</p>
-                </div>
-                <div class="tree-toolbar">
-                  <button id="tree-new-file" class="small-button" type="button">New File</button>
-                  <button id="tree-new-dir" class="small-button" type="button">New Folder</button>
-                  <button id="tree-refresh" class="small-button" type="button">Refresh Tree</button>
-                </div>
-              </div>
-              <div id="tree-selection" class="badge">Selected: /</div>
-              <div id="tree-view" class="tree-view" role="tree" aria-label="Filesystem tree"></div>
-            </div>
-
-            <div class="viewer-card">
-              <div class="viewer-head">
-                <h3>Directory View</h3>
-                <form id="list-form" class="inline-form">
-                  <input name="path" type="text" value="/" required />
-                  <button type="submit">List</button>
-                </form>
-              </div>
-              <div id="directory-view" class="listing"></div>
-            </div>
-
-            <div class="viewer-card">
-              <div class="viewer-head">
-                <h3>File Reader</h3>
-                <span id="read-target" class="badge">No file selected</span>
-              </div>
-              <pre id="file-view" class="code-view">Read a file to inspect its contents.</pre>
-            </div>
-
-            <div class="viewer-card">
-              <div class="viewer-head">
-                <h3>Branches</h3>
-                <button id="refresh-branches" class="small-button" type="button">Refresh</button>
-              </div>
-              <ul id="branch-list" class="pill-list"></ul>
-            </div>
-
-            <div class="viewer-card">
-              <div class="viewer-head">
-                <h3>Snapshots</h3>
-                <button id="refresh-snapshots" class="small-button" type="button">Refresh</button>
-              </div>
-              <ul id="snapshot-list" class="pill-list"></ul>
-            </div>
-
-            <div class="viewer-card">
-              <div class="viewer-head">
-                <h3>Stats</h3>
-                <button id="refresh-stats" class="small-button" type="button">Refresh</button>
-              </div>
-              <pre id="stats-view" class="code-view"></pre>
-            </div>
-
-            <div class="viewer-card viewer-log">
-              <div class="viewer-head">
-                <h3>Journal</h3>
-                <button id="clear-log" class="small-button" type="button">Clear</button>
-              </div>
-              <div id="log-view" class="log-view"></div>
+          <div class="preview-toolbar">
+            <span id="read-target" class="badge">No file selected</span>
+            <div class="toolbar">
+              <button id="preview-save" class="small-button" type="button">Save File</button>
+              <button id="preview-delete" class="small-button" type="button">Delete Selected</button>
+              <button id="preview-refresh" class="small-button" type="button">Refresh Preview</button>
             </div>
           </div>
+
+          <div id="directory-summary" class="directory-summary"></div>
+          <textarea id="file-editor" class="file-editor" spellcheck="false">Select a file to edit its contents.</textarea>
+          <pre id="stats-view" class="code-view"></pre>
+        </section>
+
+        <section class="panel panel-log">
+          <div class="panel-heading">
+            <p class="eyebrow">Audit</p>
+            <h2>Journal</h2>
+          </div>
+          <div class="toolbar">
+            <button id="clear-log" class="small-button" type="button">Clear</button>
+          </div>
+          <div id="log-view" class="log-view"></div>
         </section>
       </main>
     </div>

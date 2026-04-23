@@ -1,14 +1,11 @@
 :root {
-  --bg: #f4efe5;
-  --panel: rgba(255, 250, 242, 0.78);
-  --panel-strong: rgba(255, 248, 236, 0.92);
+  --panel: rgba(255, 250, 242, 0.82);
+  --panel-strong: rgba(255, 248, 236, 0.94);
   --line: rgba(96, 64, 36, 0.18);
   --ink: #1f1712;
   --muted: #6a5649;
   --accent: #0f766e;
-  --accent-strong: #115e59;
   --accent-soft: rgba(15, 118, 110, 0.14);
-  --warn: #8f3d2c;
   --shadow: 0 20px 60px rgba(80, 52, 30, 0.14);
 }
 
@@ -33,7 +30,6 @@ body {
 }
 
 button,
-input,
 textarea {
   font: inherit;
 }
@@ -54,22 +50,18 @@ button:active {
   transform: translateY(0);
 }
 
-input,
 textarea {
   width: 100%;
   border: 1px solid var(--line);
   border-radius: 14px;
-  padding: 0.8rem 0.9rem;
+  padding: 0.85rem 1rem;
   background: rgba(255, 255, 255, 0.72);
   color: var(--ink);
-}
-
-textarea {
   resize: vertical;
 }
 
 .page-shell {
-  max-width: 1400px;
+  max-width: 1480px;
   margin: 0 auto;
 }
 
@@ -101,8 +93,7 @@ textarea {
   display: grid;
   gap: 16px;
   align-content: start;
-  background:
-    linear-gradient(160deg, rgba(255, 248, 236, 0.95), rgba(230, 245, 241, 0.9));
+  background: linear-gradient(160deg, rgba(255, 248, 236, 0.95), rgba(230, 245, 241, 0.9));
 }
 
 .eyebrow {
@@ -110,13 +101,12 @@ textarea {
   text-transform: uppercase;
   letter-spacing: 0.18em;
   font-size: 0.72rem;
-  color: var(--accent-strong);
+  color: #115e59;
   font-family: "Avenir Next Condensed", "Arial Narrow", sans-serif;
 }
 
 .hero h1,
 .panel h2,
-.control-card h3,
 .viewer-head h3 {
   margin: 0;
   font-weight: 700;
@@ -128,15 +118,21 @@ textarea {
   max-width: 11ch;
 }
 
+.hero-text,
+.panel-subtitle {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .hero-text {
   max-width: 65ch;
-  color: var(--muted);
   font-size: 1.05rem;
-  line-height: 1.55;
   margin: 18px 0 24px;
 }
 
-.hero-actions {
+.hero-actions,
+.toolbar,
+.preview-toolbar {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
@@ -181,9 +177,9 @@ textarea {
   font-size: 1.75rem;
 }
 
-.workspace {
+.studio-grid {
   display: grid;
-  grid-template-columns: minmax(320px, 460px) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 0.85fr) minmax(280px, 0.85fr) minmax(420px, 1.3fr);
   gap: 24px;
 }
 
@@ -193,88 +189,25 @@ textarea {
 }
 
 .panel-heading {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
-.control-grid {
-  display: grid;
-  gap: 14px;
-}
-
-.control-card,
-.viewer-card {
-  background: var(--panel-strong);
-  border-radius: 22px;
-  border: 1px solid rgba(96, 64, 36, 0.11);
-  padding: 16px;
-}
-
-.control-card {
-  display: grid;
-  gap: 12px;
-}
-
-.control-card label {
-  display: grid;
-  gap: 8px;
-  color: var(--muted);
-  font-size: 0.95rem;
-}
-
-.control-card button,
-.inline-form button {
-  background: #111827;
-  color: white;
-}
-
-.inspector-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.viewer-log {
+.panel-log {
   grid-column: 1 / -1;
 }
 
-.viewer-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+.tree-panel,
+.preview-panel {
+  display: grid;
+  align-content: start;
+  gap: 14px;
 }
 
-.viewer-head-stack {
-  align-items: flex-start;
-}
-
-.viewer-subtitle {
-  margin: 0.4rem 0 0;
-  color: var(--muted);
-  font-size: 0.92rem;
-}
-
-.tree-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.inline-form {
-  display: flex;
-  gap: 10px;
-  width: min(100%, 360px);
-}
-
-.inline-form input {
-  min-width: 0;
-}
-
-.listing,
 .tree-view,
 .code-view,
-.log-view {
+.log-view,
+.directory-summary,
+.file-editor {
   min-height: 220px;
   background: rgba(30, 24, 18, 0.92);
   color: #f8efe1;
@@ -286,18 +219,36 @@ textarea {
   line-height: 1.5;
 }
 
+.tree-view {
+  display: grid;
+  gap: 2px;
+}
+
+.file-editor {
+  min-height: 420px;
+  resize: vertical;
+  white-space: pre;
+}
+
+.file-editor:disabled {
+  opacity: 0.62;
+}
+
 .code-view {
   white-space: pre-wrap;
   word-break: break-word;
 }
 
-.viewer-tree {
-  grid-column: 1 / -1;
-}
-
-.tree-view {
-  display: grid;
-  gap: 2px;
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.58);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 0.85rem;
 }
 
 .tree-row {
@@ -356,7 +307,8 @@ textarea {
   white-space: nowrap;
 }
 
-.tree-meta {
+.tree-meta,
+.directory-entry-kind {
   margin-left: auto;
   color: #8ce0d8;
   font-size: 0.74rem;
@@ -364,63 +316,15 @@ textarea {
   letter-spacing: 0.08em;
 }
 
-.pill-list {
+.directory-entry {
   display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  list-style: none;
-  padding: 0;
-  margin: 0;
-}
-
-.pill-list li {
-  padding: 0.5rem 0.8rem;
-  border-radius: 999px;
-  background: var(--accent-soft);
-  border: 1px solid rgba(15, 118, 110, 0.18);
-  font-family: "Avenir Next Condensed", "Arial Narrow", sans-serif;
-}
-
-.pill-list li.current {
-  background: var(--accent);
-  color: white;
-}
-
-.badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.35rem 0.75rem;
-  border-radius: 999px;
-  background: rgba(255, 255, 255, 0.58);
-  border: 1px solid var(--line);
-  color: var(--muted);
-  font-size: 0.85rem;
-}
-
-.entry {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
   gap: 12px;
-  padding: 0.75rem 0;
+  padding: 0.5rem 0;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
 }
 
-.entry:last-child {
+.directory-entry:last-child {
   border-bottom: 0;
-}
-
-.entry-kind {
-  color: #8ce0d8;
-  text-transform: uppercase;
-  letter-spacing: 0.12em;
-  font-size: 0.76rem;
-}
-
-.entry-name {
-  color: #f6dcc1;
-  word-break: break-word;
 }
 
 .empty-state {
@@ -459,15 +363,19 @@ textarea {
   word-break: break-word;
 }
 
-@media (max-width: 1080px) {
-  .hero,
-  .workspace,
-  .inspector-grid {
+@media (max-width: 1240px) {
+  .studio-grid {
     grid-template-columns: 1fr;
   }
 
-  .viewer-log {
+  .panel-log {
     grid-column: auto;
+  }
+}
+
+@media (max-width: 900px) {
+  .hero {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -483,10 +391,9 @@ textarea {
     padding: 18px;
   }
 
-  .inline-form,
   .hero-actions,
-  .viewer-head,
-  .tree-toolbar {
+  .toolbar,
+  .preview-toolbar {
     flex-direction: column;
     align-items: stretch;
   }
