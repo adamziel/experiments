@@ -1,4 +1,4 @@
-name: zfs-wasm-demo-pages
+name: zfs-wasm-pages
 
 on:
   push:
@@ -6,7 +6,10 @@ on:
       - main
     paths:
       - ".github/workflows/zfs-wasm-demo-pages.yml"
-      - "zfs-wasm-demo/**"
+      - ".nojekyll"
+      - "index.html"
+      - "README.md"
+      - "zfs-wasm/**"
   workflow_dispatch:
 
 permissions:
@@ -15,7 +18,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: zfs-wasm-demo-pages
+  group: zfs-wasm-pages
   cancel-in-progress: true
 
 jobs:
@@ -31,10 +34,18 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
+      - name: Stage site
+        run: |
+          rm -rf _site
+          mkdir -p _site/zfs-wasm
+          cp index.html _site/index.html
+          cp .nojekyll _site/.nojekyll
+          cp -R zfs-wasm/. _site/zfs-wasm/
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: ./zfs-wasm-demo
+          path: ./_site
 
       - name: Deploy to GitHub Pages
         id: deployment
