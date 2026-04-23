@@ -1,0 +1,32 @@
+name: sqlite-markdown
+
+on:
+  pull_request:
+    paths:
+      - 'sqlite-markdown/**'
+      - '.github/workflows/sqlite-markdown.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'sqlite-markdown/**'
+      - '.github/workflows/sqlite-markdown.yml'
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Build and test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sqlite-markdown
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain
+        run: |
+          gcc --version
+          make --version
+          python3 --version
+
+      - name: Run test suite
+        run: make test
