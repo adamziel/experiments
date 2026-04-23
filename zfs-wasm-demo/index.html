@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ZFS Wasm Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">GitHub Pages Demo</p>
+          <h1>Snapshotting filesystem logic, running entirely in Wasm.</h1>
+          <p class="hero-text">
+            This experiment exposes a browser UI for a copy-on-write filesystem with
+            snapshots, rollbacks, and branch clones. Everything here runs client-side
+            against the WebAssembly module in this directory.
+          </p>
+          <div class="hero-actions">
+            <button id="seed-demo" class="primary">Load Scenario</button>
+            <button id="refresh-all" class="secondary">Refresh Views</button>
+            <button id="reset-fs" class="ghost">Reset Filesystem</button>
+          </div>
+        </div>
+        <div class="hero-card">
+          <div class="metric">
+            <span class="metric-label">Current Branch</span>
+            <strong id="metric-branch">main</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Snapshots</span>
+            <strong id="metric-snapshots">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Branches</span>
+            <strong id="metric-branches">1</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Logical Bytes</span>
+            <strong id="metric-bytes">0</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="panel panel-actions">
+          <div class="panel-heading">
+            <p class="eyebrow">Mutations</p>
+            <h2>Filesystem controls</h2>
+          </div>
+
+          <div class="control-grid">
+            <form id="mkdir-form" class="control-card">
+              <h3>Create Directory</h3>
+              <label>
+                Path
+                <input name="path" type="text" value="/projects/demo" required />
+              </label>
+              <button type="submit">Make Directory</button>
+            </form>
+
+            <form id="write-form" class="control-card">
+              <h3>Write File</h3>
+              <label>
+                Path
+                <input name="path" type="text" value="/projects/demo/readme.txt" required />
+              </label>
+              <label>
+                Contents
+                <textarea name="contents" rows="4">hello from github pages</textarea>
+              </label>
+              <button type="submit">Write File</button>
+            </form>
+
+            <form id="read-form" class="control-card">
+              <h3>Read File</h3>
+              <label>
+                Path
+                <input name="path" type="text" value="/projects/demo/readme.txt" required />
+              </label>
+              <button type="submit">Read File</button>
+            </form>
+
+            <form id="delete-form" class="control-card">
+              <h3>Delete Path</h3>
+              <label>
+                Path
+                <input name="path" type="text" value="/projects/demo/readme.txt" required />
+              </label>
+              <button type="submit">Delete</button>
+            </form>
+
+            <form id="snapshot-form" class="control-card">
+              <h3>Create Snapshot</h3>
+              <label>
+                Snapshot name
+                <input name="name" type="text" value="seed" required />
+              </label>
+              <button type="submit">Snapshot</button>
+            </form>
+
+            <form id="rollback-form" class="control-card">
+              <h3>Rollback</h3>
+              <label>
+                Snapshot name
+                <input name="name" type="text" value="seed" required />
+              </label>
+              <button type="submit">Rollback</button>
+            </form>
+
+            <form id="clone-form" class="control-card">
+              <h3>Clone Snapshot</h3>
+              <label>
+                Snapshot name
+                <input name="snapshot" type="text" value="seed" required />
+              </label>
+              <label>
+                Branch name
+                <input name="branch" type="text" value="feature" required />
+              </label>
+              <button type="submit">Clone Branch</button>
+            </form>
+
+            <form id="checkout-form" class="control-card">
+              <h3>Checkout Branch</h3>
+              <label>
+                Branch name
+                <input name="branch" type="text" value="main" required />
+              </label>
+              <button type="submit">Checkout</button>
+            </form>
+          </div>
+        </section>
+
+        <section class="panel panel-inspector">
+          <div class="panel-heading">
+            <p class="eyebrow">Inspector</p>
+            <h2>State and contents</h2>
+          </div>
+
+          <div class="inspector-grid">
+            <div class="viewer-card">
+              <div class="viewer-head">
+                <h3>Directory View</h3>
+                <form id="list-form" class="inline-form">
+                  <input name="path" type="text" value="/" required />
+                  <button type="submit">List</button>
+                </form>
+              </div>
+              <div id="directory-view" class="listing"></div>
+            </div>
+
+            <div class="viewer-card">
+              <div class="viewer-head">
+                <h3>File Reader</h3>
+                <span id="read-target" class="badge">No file selected</span>
+              </div>
+              <pre id="file-view" class="code-view">Read a file to inspect its contents.</pre>
+            </div>
+
+            <div class="viewer-card">
+              <div class="viewer-head">
+                <h3>Branches</h3>
+                <button id="refresh-branches" class="small-button" type="button">Refresh</button>
+              </div>
+              <ul id="branch-list" class="pill-list"></ul>
+            </div>
+
+            <div class="viewer-card">
+              <div class="viewer-head">
+                <h3>Snapshots</h3>
+                <button id="refresh-snapshots" class="small-button" type="button">Refresh</button>
+              </div>
+              <ul id="snapshot-list" class="pill-list"></ul>
+            </div>
+
+            <div class="viewer-card">
+              <div class="viewer-head">
+                <h3>Stats</h3>
+                <button id="refresh-stats" class="small-button" type="button">Refresh</button>
+              </div>
+              <pre id="stats-view" class="code-view"></pre>
+            </div>
+
+            <div class="viewer-card viewer-log">
+              <div class="viewer-head">
+                <h3>Journal</h3>
+                <button id="clear-log" class="small-button" type="button">Clear</button>
+              </div>
+              <div id="log-view" class="log-view"></div>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
