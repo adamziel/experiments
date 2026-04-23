@@ -14,6 +14,10 @@ const state = {
   pendingFileFocusPath: "/",
   pendingBranchFocusKey: "branch:main",
   pendingInlineFocus: null,
+  pendingEditorFocus: false,
+  autosaveTimerId: null,
+  editorDraftPath: null,
+  editorDraftValue: "",
   logEntries: [],
 };
 
@@ -428,6 +432,9 @@ function focusPendingBranchTreeNode() {
 function renderPreview() {
   elements["read-target"].textContent = state.selectedPath;
   if (isDirectory(state.selectedPath)) {
+    cancelEditorAutosave();
+    state.editorDraftPath = null;
+    state.editorDraftValue = "";
     const entries = state.fs.listDir(state.selectedPath);
     elements["directory-summary"].innerHTML = entries.length
       ? entries
@@ -448,7 +455,14 @@ function renderPreview() {
 
   elements["directory-summary"].innerHTML = '<div class="empty-state">Editing file contents.</div>';
   elements["file-editor"].readOnly = false;
-  elements["file-editor"].value = state.fs.readText(state.selectedPath);
+  const nextValue = state.fs.readText(state.selectedPath);
+  elements["file-editor"].value = nextValue;
+  state.editorDraftPath = state.selectedPath;
+  state.editorDraftValue = nextValue;
+  if (state.pendingEditorFocus) {
+    elements["file-editor"].focus();
+    state.pendingEditorFocus = false;
+  }
 }
 
 function syncStats() {
@@ -477,8 +491,45 @@ function toggleDirectory(path, expand = null) {
   }
 }
 
+function cancelEditorAutosave() {
+  if (state.autosaveTimerId !== null) {
+    window.clearTimeout(state.autosaveTimerId);
+    state.autosaveTimerId = null;
+  }
+}
+
+function flushEditorAutosave() {
+  cancelEditorAutosave();
+  const path = state.editorDraftPath;
+  if (!path || isDirectory(path)) {
+    return;
+  }
+
+  const nextValue = state.editorDraftValue;
+  if (state.fs.readText(path) === nextValue) {
+    return;
+  }
+
+  state.fs.writeText(path, nextValue);
+  syncStats();
+}
+
+function scheduleEditorAutosave() {
+  if (elements["file-editor"].readOnly || isDirectory(state.selectedPath)) {
+    return;
+  }
+
+  state.editorDraftPath = state.selectedPath;
+  state.editorDraftValue = elements["file-editor"].value;
+  cancelEditorAutosave();
+  state.autosaveTimerId = window.setTimeout(() => {
+    flushEditorAutosave();
+  }, 250);
+}
+
 function withAction(action, fn) {
   try {
+    flushEditorAutosave();
     const result = fn();
     refreshAll();
     return result;
@@ -503,6 +554,7 @@ function deleteSelectedPath() {
 }
 
 function refreshAll() {
+  flushEditorAutosave();
   refreshMetadata();
   ensureSelectionsAreValid();
   syncStats();
@@ -569,6 +621,7 @@ function commitFileDraft() {
       state.fs.createDir(targetPath);
     }
     state.fileDraft = null;
+    state.pendingEditorFocus = draft.kind === "file";
     selectFilePath(targetPath);
     pushLog(draft.kind === "file" ? "new-file" : "new-dir", `created ${targetPath}`);
   });
@@ -912,15 +965,19 @@ function attachBranchTreeHandlers() {
 }
 
 function attachPreviewHandlers() {
-  document.getElementById("preview-save").addEventListener("click", () => {
-    if (isDirectory(state.selectedPath)) {
-      pushLog("save", "selected node is a directory", false);
-      return;
+  elements["file-editor"].addEventListener("input", () => {
+    scheduleEditorAutosave();
+  });
+
+  elements["file-editor"].addEventListener("blur", () => {
+    flushEditorAutosave();
+  });
+
+  elements["file-editor"].addEventListener("keydown", (event) => {
+    if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+      event.preventDefault();
+      flushEditorAutosave();
     }
-    withAction("save", () => {
-      state.fs.writeText(state.selectedPath, elements["file-editor"].value);
-      pushLog("save", `saved ${state.selectedPath}`);
-    });
   });
 
   document.getElementById("preview-refresh").addEventListener("click", () => {
@@ -960,6 +1017,10 @@ function attachGlobalButtons() {
     state.fileDraft = null;
     state.branchDraft = null;
     state.pendingInlineFocus = null;
+    state.pendingEditorFocus = false;
+    cancelEditorAutosave();
+    state.editorDraftPath = null;
+    state.editorDraftValue = "";
     refreshAll();
     pushLog("reset", "replaced the in-memory filesystem with a fresh instance");
   });
