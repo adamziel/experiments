@@ -222,6 +222,11 @@ textarea {
 .tree-view {
   display: grid;
   gap: 2px;
+  height: 500px;
+  min-height: 500px;
+  max-height: 500px;
+  align-content: start;
+  align-items: start;
 }
 
 .file-editor {
