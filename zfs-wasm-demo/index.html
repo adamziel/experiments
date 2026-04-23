@@ -54,6 +54,7 @@
           <div class="toolbar">
             <button id="tree-new-file" class="small-button" type="button">New File</button>
             <button id="tree-new-dir" class="small-button" type="button">New Folder</button>
+            <button id="tree-delete" class="small-button" type="button">Delete</button>
             <button id="tree-refresh" class="small-button" type="button">Refresh Tree</button>
           </div>
           <div id="tree-selection" class="badge">Selected: /</div>
@@ -87,13 +88,12 @@
             <span id="read-target" class="badge">No file selected</span>
             <div class="toolbar">
               <button id="preview-save" class="small-button" type="button">Save File</button>
-              <button id="preview-delete" class="small-button" type="button">Delete Selected</button>
               <button id="preview-refresh" class="small-button" type="button">Refresh Preview</button>
             </div>
           </div>
 
           <div id="directory-summary" class="directory-summary"></div>
-          <textarea id="file-editor" class="file-editor" spellcheck="false">Select a file to edit its contents.</textarea>
+          <textarea id="file-editor" class="file-editor" spellcheck="false" placeholder="edit here"></textarea>
           <pre id="stats-view" class="code-view"></pre>
         </section>
 

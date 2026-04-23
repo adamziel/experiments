@@ -215,8 +215,8 @@ textarea {
   padding: 16px;
   overflow: auto;
   font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
-  font-size: 0.92rem;
-  line-height: 1.5;
+  font-size: 0.88rem;
+  line-height: 1.4;
 }
 
 .tree-view {
@@ -235,8 +235,12 @@ textarea {
   white-space: pre;
 }
 
-.file-editor:disabled {
+.file-editor[readonly] {
   opacity: 0.62;
+}
+
+.file-editor::placeholder {
+  color: #c8b39f;
 }
 
 .code-view {
@@ -259,15 +263,17 @@ textarea {
 .tree-row {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   width: 100%;
-  padding: 0.45rem 0.65rem;
-  border-radius: 12px;
+  padding: 0.2rem 0.45rem;
+  border-radius: 8px;
   background: transparent;
   color: #f7f0e5;
   border: 1px solid transparent;
   text-align: left;
   font-family: "SFMono-Regular", "Menlo", "Consolas", monospace;
+  font-size: 0.84rem;
+  line-height: 1.2;
 }
 
 .tree-row:hover,
@@ -285,24 +291,24 @@ textarea {
 .tree-row-inner {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
   width: 100%;
 }
 
 .tree-row-indent {
-  width: calc(var(--depth, 0) * 18px);
-  flex: 0 0 calc(var(--depth, 0) * 18px);
+  width: calc(var(--depth, 0) * 14px);
+  flex: 0 0 calc(var(--depth, 0) * 14px);
 }
 
 .tree-chevron {
-  width: 1rem;
+  width: 0.85rem;
   text-align: center;
   color: #cbb398;
 }
 
 .tree-icon {
-  width: 1.1rem;
+  width: 0.95rem;
   text-align: center;
 }
 
@@ -316,7 +322,7 @@ textarea {
 .directory-entry-kind {
   margin-left: auto;
   color: #8ce0d8;
-  font-size: 0.74rem;
+  font-size: 0.66rem;
   text-transform: uppercase;
   letter-spacing: 0.08em;
 }

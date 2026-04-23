@@ -307,12 +307,12 @@ function renderPreview() {
           .join("")
       : '<div class="empty-state">Directory is empty.</div>';
     elements["file-editor"].value = "";
-    elements["file-editor"].disabled = true;
+    elements["file-editor"].readOnly = true;
     return;
   }
 
   elements["directory-summary"].innerHTML = '<div class="empty-state">Editing file contents.</div>';
-  elements["file-editor"].disabled = false;
+  elements["file-editor"].readOnly = false;
   elements["file-editor"].value = state.fs.readText(state.selectedPath);
 }
 
@@ -351,6 +351,20 @@ function withAction(action, fn) {
     pushLog(action, String(error), false);
     throw error;
   }
+}
+
+function deleteSelectedPath() {
+  if (state.selectedPath === "/") {
+    pushLog("delete", "cannot delete root", false);
+    return;
+  }
+  withAction("delete", () => {
+    const target = state.selectedPath;
+    state.fs.delete(target);
+    state.selectedPath = parentPath(target);
+    state.pendingFileFocusPath = state.selectedPath;
+    pushLog("delete", `deleted ${target}`);
+  });
 }
 
 function refreshAll() {
@@ -466,6 +480,10 @@ function attachFileTreeHandlers() {
   document.getElementById("tree-refresh").addEventListener("click", () => {
     refreshAll();
     pushLog("tree-refresh", "refreshed filesystem tree");
+  });
+
+  document.getElementById("tree-delete").addEventListener("click", () => {
+    deleteSelectedPath();
   });
 }
 
@@ -585,19 +603,6 @@ function attachPreviewHandlers() {
     });
   });
 
-  document.getElementById("preview-delete").addEventListener("click", () => {
-    if (state.selectedPath === "/") {
-      pushLog("delete", "cannot delete root", false);
-      return;
-    }
-    withAction("delete", () => {
-      const target = state.selectedPath;
-      state.fs.delete(target);
-      state.selectedPath = parentPath(target);
-      pushLog("delete", `deleted ${target}`);
-    });
-  });
-
   document.getElementById("preview-refresh").addEventListener("click", () => {
     refreshAll();
     pushLog("preview-refresh", `refreshed ${state.selectedPath}`);
@@ -654,6 +659,7 @@ async function boot() {
 }
 
 boot().catch((error) => {
+  elements["file-editor"].readOnly = true;
   elements["file-editor"].value = `Boot failed:\n${String(error)}`;
   pushLog("boot", String(error), false);
 });
