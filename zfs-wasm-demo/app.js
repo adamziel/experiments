@@ -11,8 +11,8 @@ const state = {
   snapshotInfo: [],
   fileDraft: null,
   branchDraft: null,
-  pendingFileFocusPath: "/",
-  pendingBranchFocusKey: "branch:main",
+  pendingFileFocusPath: null,
+  pendingBranchFocusKey: null,
   pendingInlineFocus: null,
   pendingEditorFocus: false,
   autosaveTimerId: null,
@@ -47,6 +47,13 @@ function nowLabel() {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function timestampSlug() {
+  return new Date()
+    .toISOString()
+    .replaceAll(":", "")
+    .replaceAll(".", "-");
 }
 
 function escapeHtml(value) {
@@ -412,7 +419,10 @@ function renderBranchTree() {
 }
 
 function focusPendingFileTreeNode() {
-  const key = state.pendingFileFocusPath ?? state.selectedPath;
+  const key = state.pendingFileFocusPath;
+  if (!key) {
+    return;
+  }
   const row = elements["tree-view"].querySelector(`[data-key="${CSS.escape(key)}"]`);
   if (row) {
     row.focus();
@@ -421,7 +431,10 @@ function focusPendingFileTreeNode() {
 }
 
 function focusPendingBranchTreeNode() {
-  const key = state.pendingBranchFocusKey ?? state.selectedBranchNode;
+  const key = state.pendingBranchFocusKey;
+  if (!key) {
+    return;
+  }
   const row = elements["branch-tree-view"].querySelector(`[data-key="${CSS.escape(key)}"]`);
   if (row) {
     row.focus();
@@ -502,6 +515,11 @@ function flushEditorAutosave() {
   cancelEditorAutosave();
   const path = state.editorDraftPath;
   if (!path || isDirectory(path)) {
+    return;
+  }
+  if (!state.fs.exists(path)) {
+    state.editorDraftPath = null;
+    state.editorDraftValue = "";
     return;
   }
 
@@ -629,11 +647,12 @@ function commitFileDraft() {
 
 function startBranchDraft(kind) {
   if (kind === "snapshot") {
+    const sourceBranch = state.fs.currentBranch();
     state.branchDraft = {
       kind,
-      parentBranch: state.fs.currentBranch(),
+      parentBranch: sourceBranch,
       sourceSnapshot: null,
-      name: "",
+      name: `${sourceBranch}-${timestampSlug()}`,
     };
   } else {
     const selectedSnapshot = state.selectedBranchNode.startsWith("snapshot:")
