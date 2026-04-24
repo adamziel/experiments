@@ -12,9 +12,12 @@ export class WasmSnapshotFs {
     current_branch(): string;
     delete(path: string): void;
     exists(path: string): boolean;
+    exists_in_snapshot(snapshot_name: string, path: string): boolean;
+    list_dir_in_snapshot_json(snapshot_name: string, path: string): string;
     list_dir_json(path: string): string;
     constructor();
     read_file(path: string): Uint8Array;
+    read_file_in_snapshot(snapshot_name: string, path: string): Uint8Array;
     rollback(snapshot_name: string): void;
     snapshot(name: string): void;
     snapshot_info_json(): string;
@@ -36,9 +39,12 @@ export interface InitOutput {
     readonly wasmsnapshotfs_current_branch: (a: number) => [number, number];
     readonly wasmsnapshotfs_delete: (a: number, b: number, c: number) => [number, number];
     readonly wasmsnapshotfs_exists: (a: number, b: number, c: number) => number;
+    readonly wasmsnapshotfs_exists_in_snapshot: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+    readonly wasmsnapshotfs_list_dir_in_snapshot_json: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly wasmsnapshotfs_list_dir_json: (a: number, b: number, c: number) => [number, number, number, number];
     readonly wasmsnapshotfs_new: () => number;
     readonly wasmsnapshotfs_read_file: (a: number, b: number, c: number) => [number, number, number, number];
+    readonly wasmsnapshotfs_read_file_in_snapshot: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
     readonly wasmsnapshotfs_rollback: (a: number, b: number, c: number) => [number, number];
     readonly wasmsnapshotfs_snapshot: (a: number, b: number, c: number) => [number, number];
     readonly wasmsnapshotfs_snapshot_info_json: (a: number) => [number, number];

@@ -48,6 +48,14 @@ export class BrowserSnapshotFsHost {
     return decoder.decode(this.readFile(path));
   }
 
+  readFileInSnapshot(snapshotName, path) {
+    return this.inner.read_file_in_snapshot(snapshotName, path);
+  }
+
+  readTextInSnapshot(snapshotName, path) {
+    return decoder.decode(this.readFileInSnapshot(snapshotName, path));
+  }
+
   delete(path) {
     this.inner.delete(path);
     return this;
@@ -57,8 +65,16 @@ export class BrowserSnapshotFsHost {
     return this.inner.exists(path);
   }
 
+  existsInSnapshot(snapshotName, path) {
+    return this.inner.exists_in_snapshot(snapshotName, path);
+  }
+
   listDir(path) {
     return JSON.parse(this.inner.list_dir_json(path));
+  }
+
+  listDirInSnapshot(snapshotName, path) {
+    return JSON.parse(this.inner.list_dir_in_snapshot_json(snapshotName, path));
   }
 
   snapshot(name) {

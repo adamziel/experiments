@@ -9,6 +9,7 @@ const state = {
   branchTreeNodes: [],
   branchInfo: [],
   snapshotInfo: [],
+  detachedSnapshotName: null,
   fileDraft: null,
   branchDraft: null,
   pendingFileFocusPath: null,
@@ -34,6 +35,7 @@ for (const id of [
   "branch-selection",
   "branch-tree-view",
   "read-target",
+  "view-mode",
   "directory-summary",
   "file-editor",
   "stats-view",
@@ -82,9 +84,37 @@ function parentPath(path) {
   return parts.length ? `/${parts.join("/")}` : "/";
 }
 
+function isDetachedSnapshotView() {
+  return state.detachedSnapshotName !== null;
+}
+
+function currentViewLabel() {
+  return isDetachedSnapshotView()
+    ? `Snapshot ${state.detachedSnapshotName} (read-only)`
+    : `Branch ${state.fs.currentBranch()}`;
+}
+
+function viewExists(path) {
+  return isDetachedSnapshotView()
+    ? state.fs.existsInSnapshot(state.detachedSnapshotName, path)
+    : state.fs.exists(path);
+}
+
+function viewListDir(path) {
+  return isDetachedSnapshotView()
+    ? state.fs.listDirInSnapshot(state.detachedSnapshotName, path)
+    : state.fs.listDir(path);
+}
+
+function viewReadText(path) {
+  return isDetachedSnapshotView()
+    ? state.fs.readTextInSnapshot(state.detachedSnapshotName, path)
+    : state.fs.readText(path);
+}
+
 function listDirSafe(path) {
   try {
-    return state.fs.listDir(path);
+    return viewListDir(path);
   } catch {
     return null;
   }
@@ -139,7 +169,11 @@ function refreshMetadata() {
 }
 
 function ensureSelectionsAreValid() {
-  if (state.selectedPath !== "/" && !state.fs.exists(state.selectedPath)) {
+  if (isDetachedSnapshotView() && !state.snapshotInfo.some((snapshot) => snapshot.name === state.detachedSnapshotName)) {
+    state.detachedSnapshotName = null;
+  }
+
+  if (state.selectedPath !== "/" && !viewExists(state.selectedPath)) {
     state.selectedPath = parentPath(state.selectedPath);
   }
 
@@ -253,7 +287,7 @@ function appendBranchNodes(branchName, depth, nodes, childBranches, snapshotsByB
       kind: "Snapshot",
       depth: depth + 1,
       expanded: false,
-      meta: "restore",
+      meta: "read-only",
     });
   }
 
@@ -373,7 +407,7 @@ function treeRowMarkup(node, index, selectedKey) {
       data-index="${index}"
       data-key="${escapeHtml(node.key)}"
       data-kind="${node.kind}"
-      title="${escapeHtml(node.kind === "Snapshot" ? "Click to restore the current branch to this snapshot." : node.kind === "Branch" ? "Click to switch to this branch." : node.label)}"
+      title="${escapeHtml(node.kind === "Snapshot" ? "Click to open a detached read-only snapshot view." : node.kind === "Branch" ? "Click to switch to this branch." : node.label)}"
     >
       <span class="tree-row-inner">
         <span class="tree-row-indent" style="--depth:${node.depth}"></span>
@@ -400,7 +434,7 @@ function focusPendingDraftInput(scope, root) {
 
 function renderFileTree() {
   state.fileTreeNodes = buildFileTreeNodes();
-  elements["tree-selection"].textContent = `Selected: ${state.selectedPath}`;
+  elements["tree-selection"].textContent = `Selected: ${state.selectedPath} · ${currentViewLabel()}`;
   elements["tree-view"].innerHTML = state.fileTreeNodes
     .map((node, index) => treeRowMarkup(node, index, state.selectedPath))
     .join("");
@@ -410,7 +444,9 @@ function renderFileTree() {
 
 function renderBranchTree() {
   state.branchTreeNodes = buildBranchTreeNodes();
-  const selectedLabel = state.selectedBranchNode.replace(/^[^:]+:/, "");
+  const selectedLabel = isDetachedSnapshotView()
+    ? `snapshot ${state.detachedSnapshotName} · detached`
+    : `branch ${state.fs.currentBranch()}`;
   elements["branch-selection"].textContent = `Selected: ${selectedLabel}`;
   elements["branch-tree-view"].innerHTML = state.branchTreeNodes
     .map((node, index) => treeRowMarkup(node, index, state.selectedBranchNode))
@@ -445,11 +481,14 @@ function focusPendingBranchTreeNode() {
 
 function renderPreview() {
   elements["read-target"].textContent = state.selectedPath;
+  elements["view-mode"].textContent = isDetachedSnapshotView()
+    ? `Detached snapshot: ${state.detachedSnapshotName}`
+    : `Live branch: ${state.fs.currentBranch()}`;
   if (isDirectory(state.selectedPath)) {
     cancelEditorAutosave();
     state.editorDraftPath = null;
     state.editorDraftValue = "";
-    const entries = state.fs.listDir(state.selectedPath);
+    const entries = viewListDir(state.selectedPath);
     elements["directory-summary"].innerHTML = entries.length
       ? entries
           .map(
@@ -464,22 +503,32 @@ function renderPreview() {
       : '<div class="empty-state">Directory is empty.</div>';
     elements["file-editor"].value = "";
     elements["file-editor"].readOnly = true;
+    if (isDetachedSnapshotView()) {
+      elements["directory-summary"].insertAdjacentHTML(
+        "beforeend",
+        '<div class="empty-state">Snapshot view is read-only.</div>',
+      );
+    }
     return;
   }
 
-  elements["directory-summary"].innerHTML = '<div class="empty-state">Editing file contents.</div>';
-  elements["file-editor"].readOnly = false;
+  elements["directory-summary"].innerHTML = isDetachedSnapshotView()
+    ? '<div class="empty-state">Detached snapshot view. File editing is disabled.</div>'
+    : '<div class="empty-state">Editing file contents.</div>';
+  elements["file-editor"].readOnly = isDetachedSnapshotView();
   const preserveEditorValue =
-    document.activeElement === elements["file-editor"] && state.editorDraftPath === state.selectedPath;
+    !isDetachedSnapshotView()
+    && document.activeElement === elements["file-editor"]
+    && state.editorDraftPath === state.selectedPath;
   const nextValue = preserveEditorValue
     ? elements["file-editor"].value
-    : state.fs.readText(state.selectedPath);
+    : viewReadText(state.selectedPath);
   if (!preserveEditorValue) {
     elements["file-editor"].value = nextValue;
   }
   state.editorDraftPath = state.selectedPath;
   state.editorDraftValue = nextValue;
-  if (state.pendingEditorFocus) {
+  if (state.pendingEditorFocus && !isDetachedSnapshotView()) {
     elements["file-editor"].focus();
     state.pendingEditorFocus = false;
   }
@@ -521,7 +570,7 @@ function cancelEditorAutosave() {
 function flushEditorAutosave() {
   cancelEditorAutosave();
   const path = state.editorDraftPath;
-  if (!path || isDirectory(path)) {
+  if (!path || isDetachedSnapshotView() || isDirectory(path)) {
     return;
   }
   try {
@@ -545,7 +594,7 @@ function flushEditorAutosave() {
 }
 
 function scheduleEditorAutosave() {
-  if (elements["file-editor"].readOnly || isDirectory(state.selectedPath)) {
+  if (isDetachedSnapshotView() || elements["file-editor"].readOnly || isDirectory(state.selectedPath)) {
     return;
   }
 
@@ -570,6 +619,10 @@ function withAction(action, fn) {
 }
 
 function deleteSelectedPath() {
+  if (isDetachedSnapshotView()) {
+    pushLog("delete", "snapshot view is read-only", false);
+    return;
+  }
   if (state.selectedPath === "/") {
     pushLog("delete", "cannot delete root", false);
     return;
@@ -588,6 +641,7 @@ function refreshAll() {
   refreshMetadata();
   ensureSelectionsAreValid();
   syncStats();
+  syncActionAvailability();
   renderFileTree();
   renderBranchTree();
   renderPreview();
@@ -603,6 +657,7 @@ function refreshForPolling() {
   refreshMetadata();
   ensureSelectionsAreValid();
   syncStats();
+  syncActionAvailability();
   renderFileTree();
   renderBranchTree();
 
@@ -621,6 +676,14 @@ function startAutoRefreshLoop() {
   }, 1000);
 }
 
+function syncActionAvailability() {
+  const detached = isDetachedSnapshotView();
+  document.getElementById("tree-new-file").disabled = detached;
+  document.getElementById("tree-new-dir").disabled = detached;
+  document.getElementById("tree-delete").disabled = detached;
+  document.getElementById("branch-new-snapshot").disabled = detached;
+}
+
 function focusTreeIndex(nodes, index, kind) {
   const node = nodes[index];
   if (!node || node.kind.startsWith("Draft")) {
@@ -637,6 +700,10 @@ function focusTreeIndex(nodes, index, kind) {
 }
 
 function startFileDraft(kind) {
+  if (isDetachedSnapshotView()) {
+    pushLog(kind === "file" ? "new-file" : "new-dir", "snapshot view is read-only", false);
+    return;
+  }
   const parentPathForDraft = selectedDirectoryForCreate();
   state.expandedDirs.add(parentPathForDraft);
   state.fileDraft = { kind, parentPath: parentPathForDraft, name: "" };
@@ -686,6 +753,10 @@ function commitFileDraft() {
 }
 
 function startBranchDraft(kind) {
+  if (kind === "snapshot" && isDetachedSnapshotView()) {
+    pushLog("snapshot", "snapshot view is read-only", false);
+    return;
+  }
   if (kind === "snapshot") {
     const sourceBranch = state.fs.currentBranch();
     state.branchDraft = {
@@ -934,6 +1005,7 @@ function attachBranchTreeHandlers() {
     if (kind === "Branch") {
       withAction("checkout", () => {
         const branchName = key.replace(/^branch:/, "");
+        state.detachedSnapshotName = null;
         state.fs.checkoutBranch(branchName);
         pushLog("checkout", `switched to ${branchName}`);
       });
@@ -941,11 +1013,10 @@ function attachBranchTreeHandlers() {
     }
 
     if (kind === "Snapshot") {
-      withAction("rollback", () => {
-        const snapshotName = key.replace(/^snapshot:/, "");
-        state.fs.rollback(snapshotName);
-        pushLog("rollback", `restored ${state.fs.currentBranch()} to ${snapshotName}`);
-      });
+      const snapshotName = key.replace(/^snapshot:/, "");
+      state.detachedSnapshotName = snapshotName;
+      pushLog("snapshot-view", `opened detached snapshot ${snapshotName}`);
+      refreshAll();
       return;
     }
 
@@ -988,17 +1059,17 @@ function attachBranchTreeHandlers() {
         if (node.kind === "Branch") {
           withAction("checkout", () => {
             const branchName = node.key.replace(/^branch:/, "");
+            state.detachedSnapshotName = null;
             state.fs.checkoutBranch(branchName);
             state.selectedBranchNode = node.key;
             pushLog("checkout", `switched to ${branchName}`);
           });
         } else if (node.kind === "Snapshot") {
-          withAction("rollback", () => {
-            const snapshotName = node.key.replace(/^snapshot:/, "");
-            state.fs.rollback(snapshotName);
-            state.selectedBranchNode = node.key;
-            pushLog("rollback", `restored ${state.fs.currentBranch()} to ${snapshotName}`);
-          });
+          const snapshotName = node.key.replace(/^snapshot:/, "");
+          state.detachedSnapshotName = snapshotName;
+          state.selectedBranchNode = node.key;
+          pushLog("snapshot-view", `opened detached snapshot ${snapshotName}`);
+          refreshAll();
         }
         break;
     }
@@ -1035,6 +1106,7 @@ function attachPreviewHandlers() {
 function attachGlobalButtons() {
   document.getElementById("seed-demo").addEventListener("click", () => {
     withAction("scenario", () => {
+      state.detachedSnapshotName = null;
       state.fs.writeText("/projects/demo/readme.txt", "main branch draft");
       state.fs.writeText("/projects/demo/plan.md", "1. snapshot\n2. branch\n3. mutate");
       state.fs.snapshot("seed");
@@ -1054,6 +1126,7 @@ function attachGlobalButtons() {
     state.fs = await createSnapshotFs();
     state.selectedPath = "/";
     state.selectedBranchNode = "branch:main";
+    state.detachedSnapshotName = null;
     state.expandedDirs = new Set(["/"]);
     state.fileDraft = null;
     state.branchDraft = null;

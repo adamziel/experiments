@@ -63,7 +63,7 @@
           <div class="panel-heading">
             <p class="eyebrow">Versioning</p>
             <h2>Branch Tree</h2>
-            <p class="panel-subtitle">Click a branch to switch filesystems. Click a snapshot to restore the current branch. Child branches stay nested under their parent.</p>
+            <p class="panel-subtitle">Click a branch to switch filesystems. Click a snapshot to open a detached read-only view. Child branches stay nested under their parent.</p>
           </div>
           <div class="toolbar">
             <button id="branch-new-snapshot" class="small-button" type="button">Snapshot</button>
@@ -82,6 +82,7 @@
 
           <div class="preview-toolbar">
             <span id="read-target" class="badge">No file selected</span>
+            <span id="view-mode" class="badge">Live branch: main</span>
             <div class="toolbar">
             </div>
           </div>
