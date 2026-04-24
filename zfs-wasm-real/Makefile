@@ -196,7 +196,7 @@ ZFSWASM_LDFLAGS_COMMON := \
     -sALLOW_MEMORY_GROWTH=1 \
     -sINITIAL_MEMORY=67108864 \
     -sMODULARIZE=1 \
-    -sEXPORT_ES6=0 \
+    -sEXPORT_ES6=1 \
     -sEXPORT_NAME=ZfsWasm \
     -sENVIRONMENT=node,web,worker \
     -sFORCE_FILESYSTEM=1 \
@@ -231,6 +231,11 @@ $(BUILD)/zfswasm.o: src/zfswasm.c
 
 $(BUILD)/zfswasm.js: $(BUILD)/zfswasm.o $(BUILD)/libzfs.a $(BUILD)/libzpool.a $(BUILD)/libzcommon.a $(BUILD)/libnvpair.a $(BUILD)/libspl.a $(BUILD)/libshim.a
 	$(CC) $(CFLAGS) $(ZFSWASM_LDFLAGS) $^ -o $@
+	@# emscripten emits .js even with EXPORT_ES6=1; drop a package.json
+	@# next to it so Node treats files in build/ as ESM (without it,
+	@# Node 18 chokes on `import.meta.url` in the loader). The browser
+	@# loads the file by URL and does not care about package.json.
+	@printf '{"type":"module"}\n' > $(BUILD)/package.json
 
 $(BUILD)/libnvpair.a: $(NVPAIR_OBJS)
 	$(AR) rcs $@ $^

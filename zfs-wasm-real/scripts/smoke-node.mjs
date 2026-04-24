@@ -12,16 +12,17 @@
 // pthread condvars — a direct blocking call into ZFS code unwinds.
 
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const BACKING = '/tmp/zfswasm-smoke.img';
 const SIZE = 128 * 1024 * 1024;
 
-const { createRequire } = await import('node:module');
-const require = createRequire(import.meta.url);
-
 const log = (line) => console.log(line);
 
-const ZfsWasm = require(path.join(process.cwd(), 'build', 'zfswasm.js'));
+// The wasm module is built with -sEXPORT_ES6=1 so the browser demo
+// can `import` it. Use the matching dynamic-ESM form here.
+const modUrl = pathToFileURL(path.join(process.cwd(), 'build', 'zfswasm.js'));
+const { default: ZfsWasm } = await import(modUrl.href);
 const mod = await ZfsWasm({
     print: (s) => console.log('[mod] ' + s),
     printErr: (s) => console.log('[mod-err] ' + s),
