@@ -2,18 +2,30 @@
  * zfswasm: thin C wrapper around libzpool exposing the pool/dataset/file
  * API needed by the WordPress branching demo.
  *
- * Data layout note
- * ----------------
- * Our datasets are created with DMU_OST_OTHER (not DMU_OST_ZFS) so we
- * avoid pulling in the ZPL/znode layer. Instead, during ds_create we
- * claim object id 1 (ZFSWASM_ROOT_ZAP_OBJ) as a ZAP of type
- * DMU_OT_DIRECTORY_CONTENTS. That ZAP maps path -> (fileobj, length)
- * stored as two uint64_t values (integer size 8, int count 2).
+ * Data layout
+ * -----------
+ * Datasets are created with DMU_OST_OTHER so we skip the ZPL/znode
+ * layer. During ds_create we claim object id 1 (ZFSWASM_ROOT_ZAP_OBJ)
+ * as a ZAP of DMU_OT_DIRECTORY_CONTENTS. That ZAP maps
+ * path -> (fileobj, length) stored as two uint64_t values.
  *
- * file_write creates the fileobj on first write via dmu_object_alloc,
- * writes data with dmu_write, and updates the ZAP entry with the new
- * (obj, len) pair. file_read looks up the ZAP entry and dmu_read's
- * `len` bytes into the caller's buffer.
+ * Threading
+ * ---------
+ * Built with -sPROXY_TO_PTHREAD=1. main() runs on a dedicated "ZFS
+ * worker" pthread and pumps a proxying queue. Every exported
+ * zfswasm_*_begin entry point is a *non-blocking* enqueue: it calls
+ * emscripten_proxy_async to schedule the real implementation on the
+ * ZFS worker and returns immediately. The JS caller (which may be
+ * Emscripten's main runtime thread — where pthread condvar waits are
+ * forbidden) then polls zfswasm_poll() with a setTimeout loop until
+ * the task completes. The ZFS worker is a pthread, so it may block on
+ * cv_wait inside spa_activate / txg_sync / taskq drains without
+ * deadlocking the main runtime thread (which stays free to service
+ * proxied calls from taskq pthreads).
+ *
+ * This avoids the "unwind" failure seen in earlier iterations where
+ * emscripten_proxy_sync from the main runtime thread tripped the
+ * main-thread-blocking check.
  */
 
 #include <stdint.h>
@@ -21,7 +33,12 @@
 #include <stdio.h>
 #include <errno.h>
 #include <string.h>
+#include <time.h>
+#include <stdlib.h>
 #include <emscripten.h>
+#include <emscripten/proxying.h>
+#include <emscripten/threading.h>
+#include <pthread.h>
 
 #include <sys/zfs_context.h>
 #include <sys/spa.h>
@@ -37,25 +54,52 @@
 
 #define ZFSWASM_ROOT_ZAP_OBJ 1
 
-EMSCRIPTEN_KEEPALIVE
+static em_proxying_queue *g_zfs_q;
+static pthread_t g_zfs_tid;
+static volatile int g_zfs_ready;
+
+/* single-slot task state — smoke test is single-threaded caller */
+static volatile int g_task_in_flight;
+static volatile int g_task_done;
+static volatile int g_task_rc;
+
 int
-zfswasm_init(void)
+main(int argc, char **argv)
+{
+    (void) argc; (void) argv;
+    g_zfs_tid = pthread_self();
+    g_zfs_q = em_proxying_queue_create();
+    __atomic_store_n(&g_zfs_ready, 1, __ATOMIC_SEQ_CST);
+    for (;;) {
+        emscripten_proxy_execute_queue(g_zfs_q);
+        /*
+         * emscripten_thread_sleep blocks the pthread briefly so the
+         * event loop can schedule other work — cheap and legal
+         * because we're on a pthread, not the main browser thread.
+         */
+        emscripten_thread_sleep(5);
+    }
+    return (0);
+}
+
+/* -------- real implementations (run on the ZFS worker pthread) -------- */
+
+static int
+impl_init(void)
 {
     kernel_init(SPA_MODE_READ | SPA_MODE_WRITE);
     return (0);
 }
 
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_fini(void)
+static int
+impl_fini(void)
 {
     kernel_fini();
     return (0);
 }
 
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_pool_create(const char *pool, const char *backing_file)
+static int
+impl_pool_create(const char *pool, const char *backing_file)
 {
     nvlist_t *nvroot, *child;
     int err;
@@ -77,44 +121,35 @@ zfswasm_pool_create(const char *pool, const char *backing_file)
     return (err);
 }
 
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_pool_export(const char *pool)
+static int
+impl_pool_export(const char *pool)
 {
     return (spa_export(pool, NULL, B_TRUE, B_FALSE));
 }
 
-/*
- * Create-time callback: claim object id 1 as our root directory ZAP.
- * Runs inside the objset-creation txg, so it's guaranteed to be the
- * first user object allocated and the id is stable across snap/clone.
- */
 static void
-zfswasm_ds_create_cb(objset_t *os, void *arg, cred_t *cr, dmu_tx_t *tx)
+impl_ds_create_cb(objset_t *os, void *arg, cred_t *cr, dmu_tx_t *tx)
 {
     (void) arg; (void) cr;
     (void) zap_create_claim(os, ZFSWASM_ROOT_ZAP_OBJ,
         DMU_OT_DIRECTORY_CONTENTS, DMU_OT_NONE, 0, tx);
 }
 
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_ds_create(const char *fullname)
+static int
+impl_ds_create(const char *fullname)
 {
     return (dmu_objset_create(fullname, DMU_OST_OTHER, 0, NULL,
-        zfswasm_ds_create_cb, NULL));
+        impl_ds_create_cb, NULL));
 }
 
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_ds_destroy(const char *fullname)
+static int
+impl_ds_destroy(const char *fullname)
 {
     return (dsl_destroy_head(fullname));
 }
 
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_snap(const char *ds, const char *snapname)
+static int
+impl_snap(const char *ds, const char *snapname)
 {
     char full[ZFS_MAX_DATASET_NAME_LEN];
     nvlist_t *snaps = fnvlist_alloc();
@@ -130,32 +165,26 @@ zfswasm_snap(const char *ds, const char *snapname)
     return (err);
 }
 
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_snap_destroy(const char *full)
+static int
+impl_snap_destroy(const char *full)
 {
     return (dsl_destroy_snapshot(full, B_FALSE));
 }
 
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_clone(const char *snap, const char *newds)
+static int
+impl_clone(const char *snap, const char *newds)
 {
     return (dmu_objset_clone(newds, snap));
 }
 
 /*
- * file_write: create-or-update a logical file named `path` inside `ds`
- * with `len` bytes from `buf`. On first write for a given path we
- * allocate a new DMU object; on subsequent writes we reuse it and
- * truncate+overwrite.
- *
- * After the writing tx commits we txg_wait_synced so that any snapshot
- * taken afterwards observes the written data.
+ * file_write: create-or-update a logical file inside `ds`. On first
+ * write we allocate a fresh DMU object; on subsequent writes we
+ * reuse + truncate. After commit, txg_wait_synced so snapshots taken
+ * later observe the write.
  */
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_file_write(const char *ds, const char *path,
+static int
+impl_file_write(const char *ds, const char *path,
     const void *buf, size_t len)
 {
     objset_t *os;
@@ -164,22 +193,16 @@ zfswasm_file_write(const char *ds, const char *path,
     uint64_t fileobj;
     int err;
 
-    err = dmu_objset_own(ds, DMU_OST_OTHER, B_FALSE, B_FALSE,
-        FTAG, &os);
+    err = dmu_objset_own(ds, DMU_OST_OTHER, B_FALSE, B_FALSE, FTAG, &os);
     if (err != 0)
         return (err);
 
-    /*
-     * Look up existing (fileobj, len) pair, if any. zap_lookup with
-     * integer_size=8 and num_integers=2 fills both slots atomically.
-     */
     err = zap_lookup(os, ZFSWASM_ROOT_ZAP_OBJ, path, 8, 2, entry);
     if (err != 0 && err != ENOENT)
         goto out;
 
     tx = dmu_tx_create(os);
     if (entry[0] == 0) {
-        /* First write: allocate a fresh object and claim it in the ZAP. */
         dmu_tx_hold_zap(tx, ZFSWASM_ROOT_ZAP_OBJ, B_TRUE, path);
         dmu_tx_hold_write(tx, DMU_NEW_OBJECT, 0, len);
     } else {
@@ -198,7 +221,6 @@ zfswasm_file_write(const char *ds, const char *path,
             DMU_OT_NONE, 0, tx);
     } else {
         fileobj = entry[0];
-        /* Truncate any old data past len. */
         (void) dmu_free_range(os, fileobj, 0, DMU_OBJECT_END, tx);
     }
     if (len > 0)
@@ -211,7 +233,6 @@ zfswasm_file_write(const char *ds, const char *path,
     if (err != 0)
         goto out;
 
-    /* Make sure subsequent snapshots see this write. */
     txg_wait_synced(dmu_objset_pool(os), 0);
 out:
     dmu_objset_disown(os, B_FALSE, FTAG);
@@ -219,13 +240,11 @@ out:
 }
 
 /*
- * file_read: look up (fileobj, len) in the root ZAP and dmu_read
- * the data into `buf`. Accepts snapshots and clones (read-only or
- * not). On success *out_len is set to the number of bytes copied.
+ * file_read: look up (fileobj, len) in the root ZAP and dmu_read it.
+ * Works for snapshots and clones. *out_len = bytes copied on success.
  */
-EMSCRIPTEN_KEEPALIVE
-int
-zfswasm_file_read(const char *ds, const char *path,
+static int
+impl_file_read(const char *ds, const char *path,
     void *buf, size_t cap, size_t *out_len)
 {
     objset_t *os;
@@ -245,8 +264,7 @@ zfswasm_file_read(const char *ds, const char *path,
     if (to_copy > cap)
         to_copy = cap;
     if (to_copy > 0) {
-        err = dmu_read(os, entry[0], 0, to_copy, buf,
-            DMU_READ_PREFETCH);
+        err = dmu_read(os, entry[0], 0, to_copy, buf, DMU_READ_PREFETCH);
         if (err != 0)
             goto out;
     }
@@ -255,4 +273,174 @@ zfswasm_file_read(const char *ds, const char *path,
 out:
     dmu_objset_rele(os, FTAG);
     return (err);
+}
+
+/* ---------------- async dispatch plumbing ----------------------------- */
+
+/*
+ * Arg structs hold owned copies of any string arg. cwrap('string')
+ * allocates on the JS stack and frees it when the wrapped call
+ * returns; our _begin calls return immediately, so by the time the
+ * proxied impl runs on the ZFS worker those pointers would be stale.
+ * We strdup on enqueue and free after the callback.
+ */
+struct args_init  { int dummy; };
+struct args_fini  { int dummy; };
+struct args_s1    { char *a; };
+struct args_s2    { char *a; char *b; };
+struct args_write { char *ds; char *path;
+    const void *buf; size_t len; };
+struct args_read  { char *ds; char *path;
+    void *buf; size_t cap; size_t *out_len; };
+
+static struct args_init  a_init;
+static struct args_fini  a_fini;
+static struct args_s1    a_s1;
+static struct args_s2    a_s2;
+static struct args_write a_write;
+static struct args_read  a_read;
+
+#define DONE() __atomic_store_n(&g_task_done, 1, __ATOMIC_SEQ_CST)
+
+static void cb_init(void *p) { (void)p; g_task_rc = impl_init(); DONE(); }
+static void cb_fini(void *p) { (void)p; g_task_rc = impl_fini(); DONE(); }
+static void cb_pool_create(void *p) {
+    struct args_s2 *a = p;
+    g_task_rc = impl_pool_create(a->a, a->b);
+    free(a->a); free(a->b);
+    DONE();
+}
+static void cb_pool_export(void *p) {
+    struct args_s1 *a = p;
+    g_task_rc = impl_pool_export(a->a);
+    free(a->a);
+    DONE();
+}
+static void cb_ds_create(void *p) {
+    struct args_s1 *a = p;
+    g_task_rc = impl_ds_create(a->a);
+    free(a->a);
+    DONE();
+}
+static void cb_ds_destroy(void *p) {
+    struct args_s1 *a = p;
+    g_task_rc = impl_ds_destroy(a->a);
+    free(a->a);
+    DONE();
+}
+static void cb_snap(void *p) {
+    struct args_s2 *a = p;
+    g_task_rc = impl_snap(a->a, a->b);
+    free(a->a); free(a->b);
+    DONE();
+}
+static void cb_snap_destroy(void *p) {
+    struct args_s1 *a = p;
+    g_task_rc = impl_snap_destroy(a->a);
+    free(a->a);
+    DONE();
+}
+static void cb_clone(void *p) {
+    struct args_s2 *a = p;
+    g_task_rc = impl_clone(a->a, a->b);
+    free(a->a); free(a->b);
+    DONE();
+}
+static void cb_file_write(void *p) {
+    struct args_write *a = p;
+    g_task_rc = impl_file_write(a->ds, a->path, a->buf, a->len);
+    free(a->ds); free(a->path);
+    DONE();
+}
+static void cb_file_read(void *p) {
+    struct args_read *a = p;
+    g_task_rc = impl_file_read(a->ds, a->path, a->buf, a->cap, a->out_len);
+    free(a->ds); free(a->path);
+    DONE();
+}
+
+static int
+enqueue(void (*cb)(void *), void *arg)
+{
+    /* Busy-wait until the ZFS worker has initialized the queue. This
+     * is a pthread on the caller's side only at module startup; the
+     * flag flips within microseconds of module load. */
+    while (!__atomic_load_n(&g_zfs_ready, __ATOMIC_SEQ_CST)) {
+        /* nothing — caller is on JS main runtime thread, cannot
+         * nanosleep there reliably; the ready flag flips so fast
+         * this loop is effectively a no-op in practice. */
+    }
+    if (__atomic_exchange_n(&g_task_in_flight, 1, __ATOMIC_SEQ_CST) != 0)
+        return (EBUSY);
+    __atomic_store_n(&g_task_done, 0, __ATOMIC_SEQ_CST);
+    g_task_rc = 0;
+    if (!emscripten_proxy_async(g_zfs_q, g_zfs_tid, cb, arg)) {
+        __atomic_store_n(&g_task_in_flight, 0, __ATOMIC_SEQ_CST);
+        return (EIO);
+    }
+    return (0);
+}
+
+/* ---------------- exported begin/poll API ---------------------------- */
+
+EMSCRIPTEN_KEEPALIVE int zfswasm_poll(void) {
+    return __atomic_load_n(&g_task_done, __ATOMIC_SEQ_CST) ? 1 : 0;
+}
+
+EMSCRIPTEN_KEEPALIVE int zfswasm_result(void) {
+    int rc = g_task_rc;
+    __atomic_store_n(&g_task_in_flight, 0, __ATOMIC_SEQ_CST);
+    return rc;
+}
+
+EMSCRIPTEN_KEEPALIVE int zfswasm_init_begin(void) {
+    return enqueue(cb_init, &a_init);
+}
+EMSCRIPTEN_KEEPALIVE int zfswasm_fini_begin(void) {
+    return enqueue(cb_fini, &a_fini);
+}
+EMSCRIPTEN_KEEPALIVE int
+zfswasm_pool_create_begin(const char *pool, const char *backing) {
+    a_s2.a = strdup(pool); a_s2.b = strdup(backing);
+    return enqueue(cb_pool_create, &a_s2);
+}
+EMSCRIPTEN_KEEPALIVE int zfswasm_pool_export_begin(const char *pool) {
+    a_s1.a = strdup(pool);
+    return enqueue(cb_pool_export, &a_s1);
+}
+EMSCRIPTEN_KEEPALIVE int zfswasm_ds_create_begin(const char *name) {
+    a_s1.a = strdup(name);
+    return enqueue(cb_ds_create, &a_s1);
+}
+EMSCRIPTEN_KEEPALIVE int zfswasm_ds_destroy_begin(const char *name) {
+    a_s1.a = strdup(name);
+    return enqueue(cb_ds_destroy, &a_s1);
+}
+EMSCRIPTEN_KEEPALIVE int
+zfswasm_snap_begin(const char *ds, const char *snap) {
+    a_s2.a = strdup(ds); a_s2.b = strdup(snap);
+    return enqueue(cb_snap, &a_s2);
+}
+EMSCRIPTEN_KEEPALIVE int zfswasm_snap_destroy_begin(const char *full) {
+    a_s1.a = strdup(full);
+    return enqueue(cb_snap_destroy, &a_s1);
+}
+EMSCRIPTEN_KEEPALIVE int
+zfswasm_clone_begin(const char *snap, const char *newds) {
+    a_s2.a = strdup(snap); a_s2.b = strdup(newds);
+    return enqueue(cb_clone, &a_s2);
+}
+EMSCRIPTEN_KEEPALIVE int
+zfswasm_file_write_begin(const char *ds, const char *path,
+    const void *buf, size_t len) {
+    a_write.ds = strdup(ds); a_write.path = strdup(path);
+    a_write.buf = buf; a_write.len = len;
+    return enqueue(cb_file_write, &a_write);
+}
+EMSCRIPTEN_KEEPALIVE int
+zfswasm_file_read_begin(const char *ds, const char *path,
+    void *buf, size_t cap, size_t *out_len) {
+    a_read.ds = strdup(ds); a_read.path = strdup(path);
+    a_read.buf = buf; a_read.cap = cap; a_read.out_len = out_len;
+    return enqueue(cb_file_read, &a_read);
 }

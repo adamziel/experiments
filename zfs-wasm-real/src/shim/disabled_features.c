@@ -123,7 +123,9 @@ int vdev_raidz_impl_set(const char *s) { (void)s; return ENOTSUP; }
 void vdev_raidz_math_init(void) {}
 void vdev_raidz_math_fini(void) {}
 int vdev_draid_lookup_map(uint64_t a, void **b) { STUB_ENOTSUP; }
-int vdev_draid_spare_create(void *a, void *b, uint64_t *c, uint64_t d) { STUB_ENOTSUP; }
+/* No draid spares in our topology — success with ndraid=0. */
+int vdev_draid_spare_create(void *a, void *b, uint64_t *c, uint64_t d)
+{ (void)a;(void)b;(void)d; if (c) *c = 0; return (0); }
 int vdev_draid_spare_par_open(void *a, uint64_t *b, uint64_t *c) { STUB_ENOTSUP; }
 const char *vdev_draid_get_name(void *vd) { (void)vd; return "<none>"; }
 boolean_t vdev_draid_readable(void *vd, uint64_t b) { (void)vd;(void)b; return B_FALSE; }
@@ -134,20 +136,45 @@ boolean_t vdev_draid_is_remove_wanted(void *vd) { (void)vd; return B_FALSE; }
 int zil_crypt_init(void) { return 0; }
 void zil_crypt_fini(void) {}
 
-/* checksum providers — we keep only fletcher4 (in zcommon) + stub rest */
-int abd_checksum_sha256(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
-int abd_checksum_sha512_native(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
-int abd_checksum_sha512_byteswap(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
-int abd_checksum_skein_native(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
-int abd_checksum_skein_byteswap(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
+/*
+ * Checksum providers — signatures must match zio_checksum_t exactly:
+ *   void fn(abd_t *abd, uint64_t size, const void *ctx_template,
+ *           zio_cksum_t *zcp);
+ * Wasm indirect calls typecheck; a mismatched return or arg order
+ * traps with "null function or function signature mismatch". We keep
+ * only fletcher4 (compiled in zcommon); the rest are never selected
+ * by the demo's pool/datasets but must still link with the right
+ * type. Stub body zeros zcp so any accidental use is deterministic.
+ */
+static inline void
+zero_cksum(void *zcp)
+{
+    if (zcp)
+        memset(zcp, 0, 32); /* sizeof(zio_cksum_t) = 4 * uint64_t */
+}
+
+void abd_checksum_sha256(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
+void abd_checksum_sha512_native(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
+void abd_checksum_sha512_byteswap(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
+void abd_checksum_skein_native(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
+void abd_checksum_skein_byteswap(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
 void *abd_checksum_skein_tmpl_init(const void *salt) { (void)salt; return NULL; }
 void abd_checksum_skein_tmpl_free(void *tmpl) { (void)tmpl; }
-int abd_checksum_edonr_native(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
-int abd_checksum_edonr_byteswap(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
+void abd_checksum_edonr_native(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
+void abd_checksum_edonr_byteswap(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
 void *abd_checksum_edonr_tmpl_init(const void *salt) { (void)salt; return NULL; }
 void abd_checksum_edonr_tmpl_free(void *tmpl) { (void)tmpl; }
-int abd_checksum_blake3_native(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
-int abd_checksum_blake3_byteswap(void *a, void *b, uint64_t c, void *d) { (void)a;(void)b;(void)c;(void)d; return 0; }
+void abd_checksum_blake3_native(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
+void abd_checksum_blake3_byteswap(void *a, uint64_t s, const void *c, void *z)
+{ (void)a;(void)s;(void)c; zero_cksum(z); }
 void *abd_checksum_blake3_tmpl_init(const void *salt) { (void)salt; return NULL; }
 void abd_checksum_blake3_tmpl_free(void *tmpl) { (void)tmpl; }
 

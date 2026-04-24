@@ -1177,3 +1177,33 @@ boot().catch((error) => {
   elements["file-editor"].value = `Boot failed:\n${String(error)}`;
   pushLog("boot", String(error), false);
 });
+
+// Surface the OpenZFS wasm self-test status (see browser-host.js).
+// createSnapshotFs() kicked off runSelfTest() which creates a real
+// pool/dataset, writes a file, snapshots it, clones it, and reads
+// back. We mirror that status into the panel on the page.
+(function pumpZfsPanel() {
+  const statusEl = document.getElementById("zfs-wasm-real-status");
+  const logEl = document.getElementById("zfs-wasm-real-log");
+  if (!statusEl || !logEl) return;
+  let lastRender = "";
+  setInterval(() => {
+    const s = globalThis.zfswasmStatus;
+    if (!s) return;
+    let label;
+    if (s.error) label = `module load failed: ${s.error}`;
+    else if (s.selfTestOk === true) label =
+        `module loaded · pool=${s.pool} · ds=${s.ds} · round-trip OK`;
+    else if (s.selfTestOk === false) label =
+        `module loaded · pool=${s.pool} · round-trip mismatch`;
+    else if (s.loaded) label = `module loaded · pool=${s.pool} · running round-trip…`;
+    else label = "loading module…";
+    const lines = (s.selfTestLines || []).join("\n");
+    const next = label + "|" + lines;
+    if (next !== lastRender) {
+      statusEl.textContent = label;
+      logEl.textContent = lines;
+      lastRender = next;
+    }
+  }, 200);
+})();

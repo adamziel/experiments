@@ -26,7 +26,10 @@ DEFS := \
     -D_GNU_SOURCE \
     -DHAVE_ISSETUGID=1 \
     -DHAVE_PTHREAD=1 \
-    -D__USE_LARGEFILE64=1
+    -D__USE_LARGEFILE64=1 \
+    -DZFS_DEBUG=1 \
+    -DDEBUG=1 \
+    -DLIB_ZPOOL_BUILD=1
 
 CFLAGS := -O1 -g -fPIC -fvisibility=hidden -pthread -sUSE_ZLIB=1 $(DEFS) $(INCS) \
           -include src/config/zfs_config.h \
@@ -176,13 +179,16 @@ ZFSWASM_LDFLAGS := \
     -sMODULARIZE=1 \
     -sEXPORT_ES6=0 \
     -sEXPORT_NAME=ZfsWasm \
-    -sENVIRONMENT=node,worker \
-    -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,stringToNewUTF8,getValue,setValue \
+    -sENVIRONMENT=node,web,worker \
+    -sFORCE_FILESYSTEM=1 \
+    -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,HEAPU32,stringToNewUTF8,getValue,setValue,FS \
+    -sEXPORTED_FUNCTIONS=_malloc,_free,_zfswasm_poll,_zfswasm_result,_zfswasm_init_begin,_zfswasm_fini_begin,_zfswasm_pool_create_begin,_zfswasm_pool_export_begin,_zfswasm_ds_create_begin,_zfswasm_ds_destroy_begin,_zfswasm_snap_begin,_zfswasm_snap_destroy_begin,_zfswasm_clone_begin,_zfswasm_file_write_begin,_zfswasm_file_read_begin,_main \
     -sUSE_ZLIB=1 \
-    -sNODERAWFS=1 \
     -sPTHREAD_POOL_SIZE=32 \
     -sPTHREAD_POOL_SIZE_STRICT=0 \
     -sEXIT_RUNTIME=0 \
+    -sPROXY_TO_PTHREAD=1 \
+    -sALLOW_BLOCKING_ON_MAIN_THREAD=1 \
     -pthread
 
 zfswasm: $(BUILD)/zfswasm.js
