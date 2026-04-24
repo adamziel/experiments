@@ -32,7 +32,7 @@ RUN apt-get update \
 # patches/, but having the headers available lets the preprocessor
 # survive the include graph before we get to our stubs.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends libattr1-dev \
+ && apt-get install -y --no-install-recommends libattr1-dev zlib1g-dev libblkid-dev uuid-dev libudev-dev libssl-dev \
  && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /work
