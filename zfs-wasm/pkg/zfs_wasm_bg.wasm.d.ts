@@ -1,0 +1,30 @@
+/* tslint:disable */
+/* eslint-disable */
+export const memory: WebAssembly.Memory;
+export const __wbg_wasmsnapshotfs_free: (a: number, b: number) => void;
+export const wasmsnapshotfs_branch_info_json: (a: number) => [number, number];
+export const wasmsnapshotfs_branch_names_json: (a: number) => [number, number];
+export const wasmsnapshotfs_checkout_branch: (a: number, b: number, c: number) => [number, number];
+export const wasmsnapshotfs_clone_snapshot: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const wasmsnapshotfs_create_dir: (a: number, b: number, c: number) => [number, number];
+export const wasmsnapshotfs_current_branch: (a: number) => [number, number];
+export const wasmsnapshotfs_delete: (a: number, b: number, c: number) => [number, number];
+export const wasmsnapshotfs_exists: (a: number, b: number, c: number) => number;
+export const wasmsnapshotfs_exists_in_snapshot: (a: number, b: number, c: number, d: number, e: number) => [number, number, number];
+export const wasmsnapshotfs_list_dir_in_snapshot_json: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const wasmsnapshotfs_list_dir_json: (a: number, b: number, c: number) => [number, number, number, number];
+export const wasmsnapshotfs_new: () => number;
+export const wasmsnapshotfs_read_file: (a: number, b: number, c: number) => [number, number, number, number];
+export const wasmsnapshotfs_read_file_in_snapshot: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const wasmsnapshotfs_rollback: (a: number, b: number, c: number) => [number, number];
+export const wasmsnapshotfs_snapshot: (a: number, b: number, c: number) => [number, number];
+export const wasmsnapshotfs_snapshot_info_json: (a: number) => [number, number];
+export const wasmsnapshotfs_snapshot_names_json: (a: number) => [number, number];
+export const wasmsnapshotfs_stats_json: (a: number) => [number, number];
+export const wasmsnapshotfs_write_file: (a: number, b: number, c: number, d: number, e: number) => [number, number];
+export const __wbindgen_externrefs: WebAssembly.Table;
+export const __wbindgen_free: (a: number, b: number, c: number) => void;
+export const __wbindgen_malloc: (a: number, b: number) => number;
+export const __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
+export const __externref_table_dealloc: (a: number) => void;
+export const __wbindgen_start: () => void;

@@ -1,5 +1,16 @@
 name: zfs-wasm-pages
 
+# Unified GitHub Pages workflow. We publish two demos from one
+# artifact so the two deploys never race each other:
+#
+#   /                 — existing landing page (index.html at repo root)
+#   /zfs-wasm/        — the Rust snapshot-FS toy (original demo)
+#   /real-zfs/        — the OpenZFS-in-wasm port (zfs-wasm-real/)
+#
+# The two demos are independent: touching the Rust one triggers only
+# its build step and vice versa. Both end up in the same _site
+# artifact so one deploy publishes both.
+
 on:
   push:
     branches:
@@ -10,6 +21,8 @@ on:
       - "index.html"
       - "README.md"
       - "zfs-wasm/**"
+      - "zfs-wasm-real/**"
+      - "real-zfs/**"
   workflow_dispatch:
 
 permissions:
@@ -31,6 +44,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      # --- Build the original Rust zfs-wasm demo ---
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
@@ -39,20 +53,48 @@ jobs:
       - name: Install wasm-bindgen
         run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
 
-      - name: Build zfs-wasm demo
+      - name: Build Rust zfs-wasm demo
         working-directory: zfs-wasm
         run: ./build-demo.sh
 
+      # --- Build the OpenZFS-in-wasm port ---
+      - name: Build zfs-wasm-real Docker image
+        working-directory: zfs-wasm-real
+        run: ./scripts/docker-build-image.sh
+
+      - name: Fetch upstream OpenZFS + apply patches
+        working-directory: zfs-wasm-real
+        run: |
+          ./scripts/docker-run.sh "./scripts/fetch-upstream.sh && bash scripts/apply-patches.sh"
+
+      - name: Build zfswasm wasm module (MODE=release)
+        working-directory: zfs-wasm-real
+        run: ./scripts/docker-run.sh "make zfswasm"
+
+      # --- Stage the combined site ---
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
       - name: Stage site
         run: |
           rm -rf _site
-          mkdir -p _site/zfs-wasm
+          mkdir -p _site/zfs-wasm _site/real-zfs/build
+
+          # Root + original demo (unchanged).
           cp index.html _site/index.html
-          cp .nojekyll _site/.nojekyll
+          cp .nojekyll  _site/.nojekyll
           cp -R zfs-wasm/. _site/zfs-wasm/
+
+          # New OpenZFS-wasm demo.
+          cp real-zfs/index.html _site/real-zfs/index.html
+          cp real-zfs/styles.css _site/real-zfs/styles.css
+          cp real-zfs/app.js     _site/real-zfs/app.js
+          cp real-zfs/sw.js      _site/real-zfs/sw.js
+          cp zfs-wasm-real/build/zfswasm.js   _site/real-zfs/build/zfswasm.js
+          cp zfs-wasm-real/build/zfswasm.wasm _site/real-zfs/build/zfswasm.wasm
+          if [ -f zfs-wasm-real/build/zfswasm.worker.js ]; then
+            cp zfs-wasm-real/build/zfswasm.worker.js _site/real-zfs/build/zfswasm.worker.js
+          fi
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
