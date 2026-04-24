@@ -1,0 +1,62 @@
+# Smoke-test Makefile: compile libnvpair sources to wasm object files.
+# Invoked inside the build container via scripts/docker-run.sh.
+#
+# This proves the emcc + ZFS header graph combo works at all before
+# we invest in libspl and libzpool.
+
+ZFS      := upstream/zfs
+BUILD    := build/smoke
+CC       := emcc
+AR       := emar
+
+# Minimal include graph that nvpair.c pulls from.
+# - $(ZFS)/include              : public headers (libnvpair.h, sys/*)
+# - $(ZFS)/lib/libspl/include   : userland shims for rpc/*, umem, assert.h
+# - src/config                  : our hand-rolled zfs_config.h
+INCS := \
+    -I src/config \
+    -I src/shim \
+    -I $(ZFS)/include \
+    -I $(ZFS)/lib/libspl/include \
+    -I $(ZFS)/lib/libspl/include/os/linux
+
+# Userland build: ensure no code path takes #ifdef _KERNEL.
+DEFS := \
+    -D_GNU_SOURCE \
+    -DHAVE_ISSETUGID=1 \
+    -DHAVE_PTHREAD=1 \
+    -D__USE_LARGEFILE64=1
+
+CFLAGS := -O1 -g -fPIC -fvisibility=hidden $(DEFS) $(INCS) \
+          -include src/config/zfs_config.h \
+          -include sys/sysmacros.h \
+          -Wno-format \
+          -Wno-unused-parameter \
+          -Wno-unused-function \
+          -Wno-unused-variable \
+          -Wno-unused-but-set-variable \
+          -Wno-type-limits
+
+NVPAIR_SRCS := \
+    $(ZFS)/lib/libnvpair/libnvpair.c \
+    $(ZFS)/lib/libnvpair/libnvpair_json.c \
+    $(ZFS)/lib/libnvpair/nvpair_alloc_system.c \
+    $(ZFS)/module/nvpair/nvpair.c \
+    $(ZFS)/module/nvpair/nvpair_alloc_fixed.c \
+    $(ZFS)/module/nvpair/fnvpair.c
+
+NVPAIR_OBJS := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(NVPAIR_SRCS))
+
+.PHONY: nvpair clean
+nvpair: $(BUILD)/libnvpair.a
+	@echo "smoke OK: $(BUILD)/libnvpair.a"
+
+$(BUILD)/libnvpair.a: $(NVPAIR_OBJS)
+	$(AR) rcs $@ $^
+
+$(BUILD)/%.o: $(ZFS)/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -rf $(BUILD)

@@ -1,0 +1,44 @@
+Teach libspl's isa_defs.h about wasm32.
+
+WebAssembly is a defined ABI with known size classes: pointers and long
+are 32 bits (ILP32), long long is 64 bits, little-endian byte order,
+unaligned access is permitted. Clang sets __wasm__ (and for 32-bit wasm
+also __wasm32__). We match those to the same structure OpenZFS uses for
+arm32: _ILP32 + _ZFS_LITTLE_ENDIAN.
+
+This patch adds a new arch arm to the existing cascade in
+lib/libspl/include/sys/isa_defs.h, immediately before the final #else
+that emits "Unsupported ISA type".
+
+--- a/lib/libspl/include/sys/isa_defs.h
++++ b/lib/libspl/include/sys/isa_defs.h
+@@ -262,6 +262,29 @@
+ /* not all LoongArch cores support unaligned accesses in hardware */
+ #define	_ALIGNMENT_REQUIRED	1
+
++/*
++ * WebAssembly (wasm32). Compiled with clang/emcc; __wasm__ and
++ * __wasm32__ are set by the toolchain. ILP32, little-endian. We
++ * treat it structurally like arm32 for the purposes of libspl's
++ * ISA bookkeeping.
++ */
++#elif defined(__wasm__) || defined(__wasm32__)
++
++#if !defined(_ILP32)
++#define	_ILP32 1
++#endif
++
++#ifndef	__wasm__
++#define	__wasm__
++#endif
++
++#define	_ZFS_LITTLE_ENDIAN
++
++#define	_SUNOS_VTOC_16
++
++/* wasm permits unaligned loads/stores but the engine may trap; be safe */
++#define	_ALIGNMENT_REQUIRED	1
++
+ #else
+ /*
+  * Currently supported:
