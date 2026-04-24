@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>OpenZFS in WebAssembly — live demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <!--
+      Pthread support in emscripten needs SharedArrayBuffer, which the
+      browser only allows when the page is cross-origin isolated. GitHub
+      Pages does not let us set response headers, so the service worker
+      at sw.js reinjects COOP: same-origin / COEP: require-corp on every
+      fetch before handing the request to the page.
+    -->
+    <script>
+      if ("serviceWorker" in navigator && !window.crossOriginIsolated) {
+        navigator.serviceWorker
+          .register("./sw.js", { scope: "./" })
+          .then((reg) => {
+            if (reg.active && !navigator.serviceWorker.controller) {
+              window.location.reload();
+            }
+          });
+      }
+    </script>
+
+    <main>
+      <header>
+        <h1>OpenZFS in WebAssembly</h1>
+        <p class="sub">
+          Real OpenZFS 2.2.6 userland, compiled to wasm with Emscripten.
+          A pool on a 128 MiB file in the module's virtual FS. Real
+          snapshots, real copy-on-write clones.
+        </p>
+        <p class="sub small">
+          Source + Dockerized build pipeline:
+          <a href="https://github.com/adamziel/experiments/tree/main/zfs-wasm-real">zfs-wasm-real/</a>.
+        </p>
+      </header>
+
+      <section class="card">
+        <h2>1. Boot the module</h2>
+        <p class="help">
+          Starts the wasm module on a dedicated pthread worker, creates a
+          128 MiB backing file in MEMFS, then runs <code>spa_create</code>
+          to produce pool <code>tankw</code> and dataset
+          <code>tankw/site</code>.
+        </p>
+        <button id="op-boot">Boot pool</button>
+        <div id="boot-status" class="status"></div>
+      </section>
+
+      <section class="card" id="ops-card" hidden>
+        <h2>2. Write → snapshot → clone → read</h2>
+        <div class="grid">
+          <label>
+            <span>Write to <code>tankw/site:/file.txt</code></span>
+            <input id="main-text" value="hello world on main" />
+          </label>
+          <button id="op-write-main">Write main</button>
+          <button id="op-snap">Snapshot <code>@v1</code></button>
+          <button id="op-clone">Clone into <code>tankw/branch</code></button>
+          <label>
+            <span>Overwrite on <code>tankw/branch:/file.txt</code></span>
+            <input id="branch-text" value="on branch" />
+          </label>
+          <button id="op-write-branch">Write branch</button>
+          <button id="op-read">Read all three</button>
+        </div>
+      </section>
+
+      <section class="card" id="results-card" hidden>
+        <h2>3. Results</h2>
+        <div class="results">
+          <div>
+            <strong>tankw/site</strong>
+            <pre id="out-site">—</pre>
+          </div>
+          <div>
+            <strong>tankw/branch</strong>
+            <pre id="out-branch">—</pre>
+          </div>
+          <div>
+            <strong>tankw/site@v1</strong>
+            <pre id="out-snap">—</pre>
+          </div>
+        </div>
+        <p class="hint">
+          The snapshot returns the pre-modification content even after the
+          live dataset is overwritten — that is COW working on the real
+          OpenZFS DMU.
+        </p>
+      </section>
+
+      <section class="card">
+        <h2>Log</h2>
+        <pre id="log"></pre>
+      </section>
+    </main>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
