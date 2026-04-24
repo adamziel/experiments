@@ -1103,23 +1103,37 @@ function attachPreviewHandlers() {
 
 }
 
+function seedDemoScenario() {
+  state.detachedSnapshotName = null;
+  state.fs.writeText("/projects/demo/readme.txt", "main branch draft");
+  state.fs.writeText("/projects/demo/plan.md", "1. snapshot\n2. branch\n3. mutate");
+  state.fs.snapshot("seed");
+  state.fs.cloneSnapshot("seed", "feature-ui");
+  state.fs.checkoutBranch("feature-ui");
+  state.fs.writeText("/projects/demo/readme.txt", "feature branch draft");
+  state.fs.writeText("/projects/demo/branch-only.txt", "only on feature-ui");
+  state.expandedDirs.add("/projects");
+  state.expandedDirs.add("/projects/demo");
+  state.selectedPath = "/projects/demo/readme.txt";
+  state.selectedBranchNode = "branch:feature-ui";
+}
+
 function attachGlobalButtons() {
-  document.getElementById("seed-demo").addEventListener("click", () => {
-    withAction("scenario", () => {
-      state.detachedSnapshotName = null;
-      state.fs.writeText("/projects/demo/readme.txt", "main branch draft");
-      state.fs.writeText("/projects/demo/plan.md", "1. snapshot\n2. branch\n3. mutate");
-      state.fs.snapshot("seed");
-      state.fs.cloneSnapshot("seed", "feature-ui");
-      state.fs.checkoutBranch("feature-ui");
-      state.fs.writeText("/projects/demo/readme.txt", "feature branch draft");
-      state.fs.writeText("/projects/demo/branch-only.txt", "only on feature-ui");
-      state.expandedDirs.add("/projects");
-      state.expandedDirs.add("/projects/demo");
-      state.selectedPath = "/projects/demo/readme.txt";
-      state.selectedBranchNode = "branch:feature-ui";
-      pushLog("scenario", "loaded demo scenario with snapshot seed and branch feature-ui");
-    });
+  document.getElementById("seed-demo").addEventListener("click", async () => {
+    state.fs = await createSnapshotFs();
+    state.selectedPath = "/";
+    state.selectedBranchNode = "branch:main";
+    state.expandedDirs = new Set(["/"]);
+    state.fileDraft = null;
+    state.branchDraft = null;
+    state.pendingInlineFocus = null;
+    state.pendingEditorFocus = false;
+    cancelEditorAutosave();
+    state.editorDraftPath = null;
+    state.editorDraftValue = "";
+    seedDemoScenario();
+    refreshAll();
+    pushLog("scenario", "loaded demo scenario with snapshot seed and branch feature-ui");
   });
 
   document.getElementById("reset-fs").addEventListener("click", async () => {
@@ -1153,8 +1167,9 @@ async function boot() {
   attachGlobalButtons();
   startAutoRefreshLoop();
   renderLog();
+  seedDemoScenario();
   refreshAll();
-  pushLog("boot", "browser demo ready");
+  pushLog("boot", "browser demo ready with seeded scenario");
 }
 
 boot().catch((error) => {
