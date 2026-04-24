@@ -22,16 +22,32 @@ INCS := \
     -I $(ZFS)/lib/libspl/include \
     -I $(ZFS)/lib/libspl/include/os/linux
 
-DEFS := \
+# MODE controls the build flavor:
+#   debug   — -O1 -g -DDEBUG=1 -DZFS_DEBUG=1, for diagnosing VERIFY()
+#             failures or pthread issues.
+#   release — -Oz + LTO + no debug symbols + no ZFS internal asserts,
+#             optimized for wasm binary size. Default.
+MODE ?= release
+
+DEFS_COMMON := \
     -D_GNU_SOURCE \
     -DHAVE_ISSETUGID=1 \
     -DHAVE_PTHREAD=1 \
     -D__USE_LARGEFILE64=1 \
-    -DZFS_DEBUG=1 \
-    -DDEBUG=1 \
     -DLIB_ZPOOL_BUILD=1
 
-CFLAGS := -O1 -g -fPIC -fvisibility=hidden -pthread -sUSE_ZLIB=1 $(DEFS) $(INCS) \
+ifeq ($(MODE),debug)
+DEFS := $(DEFS_COMMON) -DZFS_DEBUG=1 -DDEBUG=1
+OPTFLAGS := -O1 -g
+else
+DEFS := $(DEFS_COMMON) -DNDEBUG=1
+# -Oz: optimize for size over speed; -flto: cross-TU dead code elim so
+#      unused ZFS entry points (scrub worker, etc.) drop out of the
+#      final wasm even though they live in the same archive.
+OPTFLAGS := -Oz -flto
+endif
+
+CFLAGS := $(OPTFLAGS) -fPIC -fvisibility=hidden -pthread -sUSE_ZLIB=1 $(DEFS) $(INCS) \
           -include src/config/zfs_config.h \
           -include sys/sysmacros.h \
           -Wno-format \
@@ -172,7 +188,10 @@ $(BUILD)/libzfs.a: $(ZFS_OBJS) $(AVL_OBJS) $(UNICODE_OBJS) $(ZUTIL_OBJS)
 	$(AR) rcs $@ $^
 
 # ----- final link: zfswasm.wasm + JS glue --------------------------------
-ZFSWASM_LDFLAGS := \
+# In release mode we also pass the optimizer flags at link time; emcc
+# invokes the linker as a second clang pass, so LTO and -Oz both need
+# to be present here too to actually take effect.
+ZFSWASM_LDFLAGS_COMMON := \
     -Wl,--error-limit=0 \
     -sALLOW_MEMORY_GROWTH=1 \
     -sINITIAL_MEMORY=67108864 \
@@ -190,6 +209,19 @@ ZFSWASM_LDFLAGS := \
     -sPROXY_TO_PTHREAD=1 \
     -sALLOW_BLOCKING_ON_MAIN_THREAD=1 \
     -pthread
+
+ifeq ($(MODE),debug)
+ZFSWASM_LDFLAGS := $(ZFSWASM_LDFLAGS_COMMON)
+else
+# -sWASM_BIGINT=1: drop the legacy 32-bit i64 JS<->wasm marshalling
+#   helpers; all targeted browsers + node >= 16 speak BigInt natively.
+# We intentionally do NOT pass --closure 1: Closure mangles FS.mkdirTree
+#   and other emscripten runtime methods, and the wasm-size win from
+#   -Oz + -flto + WASM_BIGINT is already large enough.
+ZFSWASM_LDFLAGS := $(ZFSWASM_LDFLAGS_COMMON) \
+    -Oz -flto \
+    -sWASM_BIGINT=1
+endif
 
 zfswasm: $(BUILD)/zfswasm.js
 
