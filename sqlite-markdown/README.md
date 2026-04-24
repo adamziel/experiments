@@ -37,6 +37,24 @@ Example:
 content/1-hello-world.md
 ```
 
+Hierarchical posts can also be represented in either of these ways:
+
+```text
+content/1-home/2-about/index.md
+```
+
+or:
+
+```text
+content/2-about.md
+```
+
+with front matter such as:
+
+```text
+post_parent = "home"
+```
+
 The file format looks like this:
 
 ```text
@@ -47,6 +65,7 @@ post_status = "publish"
 post_type = "post"
 post_date_gmt = "2026-04-23T00:00:00Z"
 post_modified_gmt = "2026-04-23T00:00:00Z"
+post_parent = "home"
 [[meta]]
 template = "landing"
 meta_id = 1
@@ -171,6 +190,7 @@ Updating `post_name` renames the underlying Markdown file. Deleting a post remov
 `markdown_posts` exposes:
 
 - `ID`
+- `post_parent`
 - `post_title`
 - `post_name`
 - `post_status`

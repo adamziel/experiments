@@ -55,6 +55,7 @@ class MarkdownStorageCrudTests(unittest.TestCase):
         *,
         title: str,
         name: str | None,
+        parent: int = 0,
         status: str = "draft",
         post_type: str = "post",
         date_gmt: str = "2026-04-23T00:00:00Z",
@@ -63,6 +64,7 @@ class MarkdownStorageCrudTests(unittest.TestCase):
         post_id: int | None = None,
     ) -> None:
         columns = [
+            "post_parent",
             "post_title",
             "post_name",
             "post_status",
@@ -72,6 +74,7 @@ class MarkdownStorageCrudTests(unittest.TestCase):
             "post_content",
         ]
         values = [
+            parent,
             title,
             name,
             status,
@@ -394,6 +397,228 @@ Readable body.
                 "meta_value": "Welcome",
             },
         ])
+
+    def test_reads_hierarchy_from_nested_index_paths(self) -> None:
+        parent_dir = self.root / "1-home"
+        child_dir = parent_dir / "2-about"
+        grandchild_dir = child_dir / "3-team"
+        grandchild_dir.mkdir(parents=True)
+        parent_dir.joinpath("index.md").write_text(
+            """---
+post_title = "Home"
+post_name = "home"
+post_status = "publish"
+post_type = "page"
+post_date_gmt = "2026-04-23T00:00:00Z"
+post_modified_gmt = "2026-04-23T00:00:00Z"
+---
+Home body.
+""",
+            encoding="utf-8",
+        )
+        child_dir.joinpath("index.md").write_text(
+            """---
+post_title = "About"
+post_name = "about"
+post_status = "publish"
+post_type = "page"
+post_date_gmt = "2026-04-23T00:00:00Z"
+post_modified_gmt = "2026-04-23T00:00:00Z"
+---
+About body.
+""",
+            encoding="utf-8",
+        )
+        grandchild_dir.joinpath("index.md").write_text(
+            """---
+post_title = "Team"
+post_name = "team"
+post_status = "publish"
+post_type = "page"
+post_date_gmt = "2026-04-23T00:00:00Z"
+post_modified_gmt = "2026-04-23T00:00:00Z"
+---
+Team body.
+""",
+            encoding="utf-8",
+        )
+
+        rows = [
+            dict(row)
+            for row in self.connection.execute(
+                """
+                SELECT ID, post_name, post_parent
+                FROM wp_posts
+                ORDER BY ID
+                """
+            )
+        ]
+
+        self.assertEqual(rows, [
+            {"ID": 1, "post_name": "home", "post_parent": 0},
+            {"ID": 2, "post_name": "about", "post_parent": 1},
+            {"ID": 3, "post_name": "team", "post_parent": 2},
+        ])
+
+    def test_reads_hierarchy_from_frontmatter_parent_slug(self) -> None:
+        (self.root / "1-home.md").write_text(
+            """---
+post_title = "Home"
+post_name = "home"
+post_status = "publish"
+post_type = "page"
+post_date_gmt = "2026-04-23T00:00:00Z"
+post_modified_gmt = "2026-04-23T00:00:00Z"
+---
+Home body.
+""",
+            encoding="utf-8",
+        )
+        (self.root / "2-about.md").write_text(
+            """---
+post_title = "About"
+post_name = "about"
+post_parent = "home"
+post_status = "publish"
+post_type = "page"
+post_date_gmt = "2026-04-23T00:00:00Z"
+post_modified_gmt = "2026-04-23T00:00:00Z"
+---
+About body.
+""",
+            encoding="utf-8",
+        )
+
+        rows = [
+            dict(row)
+            for row in self.connection.execute(
+                """
+                SELECT ID, post_name, post_parent
+                FROM wp_posts
+                ORDER BY ID
+                """
+            )
+        ]
+
+        self.assertEqual(rows, [
+            {"ID": 1, "post_name": "home", "post_parent": 0},
+            {"ID": 2, "post_name": "about", "post_parent": 1},
+        ])
+
+    def test_insert_and_update_post_parent_round_trips_as_wordpress_hierarchy(self) -> None:
+        self.insert_post(title="Home", name="home", parent=0, post_type="page", post_id=1)
+        self.insert_post(title="About", name="about", parent=1, post_type="page", post_id=2)
+
+        rows = [
+            dict(row)
+            for row in self.connection.execute(
+                """
+                SELECT ID, post_name, post_parent
+                FROM wp_posts
+                ORDER BY ID
+                """
+            )
+        ]
+        self.assertEqual(rows, [
+            {"ID": 1, "post_name": "home", "post_parent": 0},
+            {"ID": 2, "post_name": "about", "post_parent": 1},
+        ])
+
+        child_text = (self.root / "2-about.md").read_text(encoding="utf-8")
+        self.assertIn('post_parent = "home"', child_text)
+
+        self.connection.execute(
+            """
+            UPDATE wp_posts
+            SET post_parent = 0
+            WHERE ID = 2
+            """
+        )
+
+        row = self.connection.execute(
+            """
+            SELECT ID, post_name, post_parent
+            FROM wp_posts
+            WHERE ID = 2
+            """
+        ).fetchone()
+        self.assertEqual(dict(row), {
+            "ID": 2,
+            "post_name": "about",
+            "post_parent": 0,
+        })
+
+        child_text = (self.root / "2-about.md").read_text(encoding="utf-8")
+        self.assertNotIn("post_parent =", child_text)
+
+    def test_updates_seeded_index_posts_preserve_nested_layout_and_hierarchy(self) -> None:
+        child_dir = self.root / "1-home" / "2-about"
+        child_dir.mkdir(parents=True)
+        (self.root / "1-home" / "index.md").write_text(
+            """---
+post_title = "Home"
+post_name = "home"
+post_status = "publish"
+post_type = "page"
+post_date_gmt = "2026-04-23T00:00:00Z"
+post_modified_gmt = "2026-04-23T00:00:00Z"
+---
+Home body.
+""",
+            encoding="utf-8",
+        )
+        child_dir.joinpath("index.md").write_text(
+            """---
+post_title = "About"
+post_name = "about"
+post_status = "publish"
+post_type = "page"
+post_date_gmt = "2026-04-23T00:00:00Z"
+post_modified_gmt = "2026-04-23T00:00:00Z"
+---
+About body.
+""",
+            encoding="utf-8",
+        )
+
+        self.connection.execute(
+            """
+            UPDATE wp_posts
+            SET post_name = 'about-us',
+                post_title = 'About us'
+            WHERE ID = 2
+            """
+        )
+
+        rows = [
+            dict(row)
+            for row in self.connection.execute(
+                """
+                SELECT ID, post_name, post_parent
+                FROM wp_posts
+                ORDER BY ID
+                """
+            )
+        ]
+        self.assertEqual(rows, [
+            {"ID": 1, "post_name": "home", "post_parent": 0},
+            {"ID": 2, "post_name": "about-us", "post_parent": 1},
+        ])
+
+        self.assertFalse((self.root / "1-home" / "2-about" / "index.md").exists())
+        self.assertTrue((self.root / "1-home" / "2-about-us" / "index.md").exists())
+
+    def test_rejects_invalid_self_referential_post_parent(self) -> None:
+        self.insert_post(title="Home", name="home", parent=0, post_type="page", post_id=1)
+
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.connection.execute(
+                """
+                UPDATE wp_posts
+                SET post_parent = 1
+                WHERE ID = 1
+                """
+            )
 
     def test_hostile_cte_and_subquery_dml_round_trips_posts_and_meta(self) -> None:
         self.insert_post(title='Title "one"', name="slug-one", content="Body 1.\n", post_id=1)

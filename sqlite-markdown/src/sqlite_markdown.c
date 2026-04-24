@@ -20,6 +20,7 @@ typedef struct MetaEntry {
 
 typedef struct PostRecord {
     sqlite3_int64 id;
+    sqlite3_int64 post_parent;
     char *path;
     char *post_title;
     char *post_name;
@@ -28,6 +29,8 @@ typedef struct PostRecord {
     char *post_date_gmt;
     char *post_modified_gmt;
     char *post_content;
+    char *post_parent_slug_ref;
+    bool use_index_path;
     MetaEntry *meta_entries;
     int meta_count;
     int meta_capacity;
@@ -49,6 +52,7 @@ typedef struct TextBuffer {
 
 enum PostColumns {
     POST_COL_ID = 0,
+    POST_COL_PARENT,
     POST_COL_TITLE,
     POST_COL_NAME,
     POST_COL_STATUS,
@@ -95,6 +99,9 @@ typedef struct PostMetaCursor {
     int row_count;
     int index;
 } PostMetaCursor;
+
+static PostRecord *find_post_by_id(Dataset *dataset, sqlite3_int64 id);
+static char *join_path(const char *root, const char *filename);
 
 static void free_string(char *value) {
     free(value);
@@ -152,6 +159,7 @@ static void free_post_record(PostRecord *post) {
     free_string(post->post_date_gmt);
     free_string(post->post_modified_gmt);
     free_string(post->post_content);
+    free_string(post->post_parent_slug_ref);
     for (index = 0; index < post->meta_count; index++) {
         free_meta_entry(&post->meta_entries[index]);
     }
@@ -377,24 +385,25 @@ static int append_meta_slot(PostRecord *post, MetaEntry **meta) {
     return SQLITE_OK;
 }
 
-static int parse_filename(const char *filename, sqlite3_int64 *id, char **slug) {
-    const char *dot;
+static int parse_storage_segment(const char *segment, sqlite3_int64 *id, char **slug) {
     const char *dash;
     char *id_text;
     char *end_ptr;
     sqlite3_int64 parsed_id;
 
-    dot = strrchr(filename, '.');
-    if (dot == NULL || strcmp(dot, ".md") != 0) {
+    *id = 0;
+    *slug = NULL;
+
+    if (segment == NULL || *segment == '\0') {
         return SQLITE_IGNORE;
     }
 
-    dash = strchr(filename, '-');
-    if (dash == NULL || dash > dot) {
-        dash = dot;
+    dash = strchr(segment, '-');
+    if (dash == NULL) {
+        dash = segment + strlen(segment);
     }
 
-    id_text = duplicate_range(filename, (size_t)(dash - filename));
+    id_text = duplicate_range(segment, (size_t)(dash - segment));
     if (id_text == NULL) {
         return SQLITE_NOMEM;
     }
@@ -406,15 +415,35 @@ static int parse_filename(const char *filename, sqlite3_int64 *id, char **slug) 
     free(id_text);
 
     *id = parsed_id;
-    if (dash < dot && *dash == '-') {
-        *slug = duplicate_range(dash + 1, (size_t)(dot - dash - 1));
+    if (*dash == '-') {
+        *slug = duplicate_string(dash + 1);
         if (*slug == NULL) {
             return SQLITE_NOMEM;
         }
-    } else {
-        *slug = NULL;
     }
     return SQLITE_OK;
+}
+
+static int parse_filename(const char *filename, sqlite3_int64 *id, char **slug) {
+    const char *dot;
+    char *name = NULL;
+    int rc;
+
+    dot = strrchr(filename, '.');
+    if (dot == NULL || strcmp(dot, ".md") != 0) {
+        return SQLITE_IGNORE;
+    }
+
+    name = duplicate_range(filename, (size_t)(dot - filename));
+    if (name == NULL) {
+        return SQLITE_NOMEM;
+    }
+    rc = parse_storage_segment(name, id, slug);
+    free(name);
+    if (rc == SQLITE_IGNORE) {
+        return SQLITE_IGNORE;
+    }
+    return rc;
 }
 
 static int decode_quoted_value(const char *value, char **output) {
@@ -578,7 +607,28 @@ static int parse_assignment(const char *line, char **key, char **value) {
 static int set_post_field(PostRecord *post, const char *key, const char *value) {
     char *decoded = NULL;
     char **target = NULL;
+    char *end_ptr = NULL;
     int rc;
+
+    if (strcmp(key, "post_parent") == 0 || strcmp(key, "post_parent_slug") == 0) {
+        if (value[0] == '"' || value[0] == '\'') {
+            rc = decode_quoted_value(value, &decoded);
+            if (rc != SQLITE_OK) {
+                return rc;
+            }
+            free(post->post_parent_slug_ref);
+            post->post_parent_slug_ref = decoded;
+            post->post_parent = 0;
+            return SQLITE_OK;
+        }
+        post->post_parent = strtoll(value, &end_ptr, 10);
+        if (end_ptr == NULL || *end_ptr != '\0' || post->post_parent < 0) {
+            return SQLITE_ERROR;
+        }
+        free(post->post_parent_slug_ref);
+        post->post_parent_slug_ref = NULL;
+        return SQLITE_OK;
+    }
 
     rc = decode_quoted_value(value, &decoded);
     if (rc != SQLITE_OK) {
@@ -649,7 +699,15 @@ static int set_meta_field(MetaEntry *meta, const char *key, const char *value) {
     return SQLITE_OK;
 }
 
-static int parse_markdown_post(const char *path, sqlite3_int64 id, const char *slug, PostRecord *post) {
+static int parse_markdown_post(
+    const char *path,
+    sqlite3_int64 id,
+    const char *slug,
+    sqlite3_int64 parent_id_hint,
+    const char *parent_slug_hint,
+    bool use_index_path,
+    PostRecord *post
+) {
     char *text = NULL;
     size_t length = 0;
     const char *cursor;
@@ -664,9 +722,16 @@ static int parse_markdown_post(const char *path, sqlite3_int64 id, const char *s
     }
 
     post->id = id;
+    post->post_parent = parent_id_hint;
     post->path = duplicate_string(path);
     post->post_name = duplicate_string(slug);
-    if (post->path == NULL || (slug != NULL && post->post_name == NULL)) {
+    post->use_index_path = use_index_path;
+    if (parent_id_hint <= 0 && parent_slug_hint != NULL) {
+        post->post_parent_slug_ref = duplicate_string(parent_slug_hint);
+    }
+    if (post->path == NULL ||
+        (slug != NULL && post->post_name == NULL) ||
+        (parent_id_hint <= 0 && parent_slug_hint != NULL && post->post_parent_slug_ref == NULL)) {
         free(text);
         return SQLITE_NOMEM;
     }
@@ -771,6 +836,122 @@ static int parse_markdown_post(const char *path, sqlite3_int64 id, const char *s
     return SQLITE_OK;
 }
 
+static int resolve_parent_from_slug(Dataset *dataset, PostRecord *post) {
+    int index;
+    PostRecord *match = NULL;
+
+    if (post->post_parent_slug_ref == NULL) {
+        return SQLITE_OK;
+    }
+
+    for (index = 0; index < dataset->count; index++) {
+        PostRecord *candidate = &dataset->posts[index];
+        if (candidate->post_name != NULL &&
+            strcmp(candidate->post_name, post->post_parent_slug_ref) == 0) {
+            if (match != NULL) {
+                return SQLITE_CONSTRAINT;
+            }
+            match = candidate;
+        }
+    }
+    if (match == NULL) {
+        return SQLITE_NOTFOUND;
+    }
+
+    post->post_parent = match->id;
+    free(post->post_parent_slug_ref);
+    post->post_parent_slug_ref = NULL;
+    return SQLITE_OK;
+}
+
+static int validate_post_hierarchy(Dataset *dataset) {
+    int index;
+    int *state;
+
+    state = calloc((size_t)dataset->count, sizeof(int));
+    if (state == NULL) {
+        return SQLITE_NOMEM;
+    }
+
+    for (index = 0; index < dataset->count; index++) {
+        PostRecord *post = &dataset->posts[index];
+        if (post->post_parent == post->id) {
+            free(state);
+            return SQLITE_CONSTRAINT;
+        }
+        if (post->post_parent != 0 && find_post_by_id(dataset, post->post_parent) == NULL) {
+            free(state);
+            return SQLITE_NOTFOUND;
+        }
+    }
+
+    for (index = 0; index < dataset->count; index++) {
+        int current = index;
+        while (current >= 0) {
+            PostRecord *post = &dataset->posts[current];
+            PostRecord *parent;
+            int parent_index;
+
+            if (state[current] == 2) {
+                break;
+            }
+            if (state[current] == 1) {
+                free(state);
+                return SQLITE_CONSTRAINT;
+            }
+            state[current] = 1;
+            if (post->post_parent == 0) {
+                break;
+            }
+            parent = find_post_by_id(dataset, post->post_parent);
+            parent_index = (int)(parent - dataset->posts);
+            current = parent_index;
+        }
+
+        current = index;
+        while (current >= 0 && state[current] == 1) {
+            PostRecord *post = &dataset->posts[current];
+            PostRecord *parent = NULL;
+
+            state[current] = 2;
+            if (post->post_parent != 0) {
+                parent = find_post_by_id(dataset, post->post_parent);
+            }
+            current = parent == NULL ? -1 : (int)(parent - dataset->posts);
+        }
+    }
+
+    free(state);
+    return SQLITE_OK;
+}
+
+static int derive_parent_hint_from_segment(
+    const char *segment,
+    sqlite3_int64 *parent_id,
+    char **parent_slug
+) {
+    char *parsed_slug = NULL;
+    int rc;
+
+    *parent_id = 0;
+    *parent_slug = NULL;
+    if (segment == NULL) {
+        return SQLITE_OK;
+    }
+
+    rc = parse_storage_segment(segment, parent_id, &parsed_slug);
+    if (rc == SQLITE_OK) {
+        *parent_slug = parsed_slug;
+        return SQLITE_OK;
+    }
+    if (rc != SQLITE_IGNORE) {
+        return rc;
+    }
+
+    *parent_slug = duplicate_string(segment);
+    return *parent_slug == NULL ? SQLITE_NOMEM : SQLITE_OK;
+}
+
 static int compare_posts_by_id(const void *left, const void *right) {
     const PostRecord *left_post = left;
     const PostRecord *right_post = right;
@@ -783,71 +964,168 @@ static int compare_posts_by_id(const void *left, const void *right) {
     return 0;
 }
 
-static int load_dataset(const char *root, Dataset *dataset) {
+static int load_dataset_directory(
+    const char *root,
+    const char *directory_path,
+    const char *directory_segment,
+    const char *parent_directory_segment,
+    Dataset *dataset
+) {
     DIR *directory;
     struct dirent *entry;
 
-    dataset_init(dataset);
-
-    directory = opendir(root);
+    (void)root;
+    directory = opendir(directory_path);
     if (directory == NULL) {
         return SQLITE_CANTOPEN;
     }
 
     while ((entry = readdir(directory)) != NULL) {
-        sqlite3_int64 id = 0;
-        char *slug = NULL;
-        TextBuffer path = {0};
-        PostRecord *post = NULL;
+        char *full_path = NULL;
+        struct stat st;
         int rc;
-        int meta_index;
 
         if (entry->d_name[0] == '.') {
             continue;
         }
-        rc = parse_filename(entry->d_name, &id, &slug);
-        if (rc == SQLITE_IGNORE) {
+        full_path = join_path(directory_path, entry->d_name);
+        if (full_path == NULL) {
+            closedir(directory);
+            return SQLITE_NOMEM;
+        }
+        if (stat(full_path, &st) != 0) {
+            free(full_path);
+            closedir(directory);
+            return SQLITE_IOERR;
+        }
+
+        if (S_ISDIR(st.st_mode)) {
+            rc = load_dataset_directory(
+                root,
+                full_path,
+                entry->d_name,
+                directory_segment,
+                dataset
+            );
+            free(full_path);
+            if (rc != SQLITE_OK) {
+                closedir(directory);
+                return rc;
+            }
             continue;
         }
-        if (rc != SQLITE_OK) {
-            closedir(directory);
-            free(slug);
-            dataset_reset(dataset);
-            return rc;
-        }
-        rc = text_buffer_append(&path, root);
-        if (rc == SQLITE_OK && path.length > 0 && path.data[path.length - 1] != '/') {
-            rc = text_buffer_append_char(&path, '/');
-        }
-        if (rc == SQLITE_OK) {
-            rc = text_buffer_append(&path, entry->d_name);
-        }
-        if (rc == SQLITE_OK) {
-            rc = append_post_slot(dataset, &post);
-        }
-        if (rc == SQLITE_OK) {
-            rc = parse_markdown_post(path.data, id, slug, post);
-        }
-        free(slug);
-        text_buffer_reset(&path);
-        if (rc != SQLITE_OK) {
-            closedir(directory);
-            dataset_reset(dataset);
-            return rc;
-        }
-        if (id > dataset->max_post_id) {
-            dataset->max_post_id = id;
-        }
-        for (meta_index = 0; meta_index < post->meta_count; meta_index++) {
-            if (post->meta_entries[meta_index].meta_id > dataset->max_meta_id) {
-                dataset->max_meta_id = post->meta_entries[meta_index].meta_id;
+
+        if (S_ISREG(st.st_mode)) {
+            sqlite3_int64 id = 0;
+            sqlite3_int64 parent_id_hint = 0;
+            char *slug = NULL;
+            char *parent_slug_hint = NULL;
+            PostRecord *post = NULL;
+            int meta_index;
+            bool use_index_path = false;
+
+            if (strcmp(entry->d_name, "index.md") == 0) {
+                if (directory_segment == NULL) {
+                    free(full_path);
+                    continue;
+                }
+                rc = parse_storage_segment(directory_segment, &id, &slug);
+                if (rc == SQLITE_IGNORE) {
+                    free(full_path);
+                    continue;
+                }
+                if (rc == SQLITE_OK) {
+                    rc = derive_parent_hint_from_segment(
+                        parent_directory_segment,
+                        &parent_id_hint,
+                        &parent_slug_hint
+                    );
+                }
+                use_index_path = true;
+            } else {
+                rc = parse_filename(entry->d_name, &id, &slug);
+                if (rc == SQLITE_IGNORE) {
+                    free(full_path);
+                    continue;
+                }
+                if (rc == SQLITE_OK) {
+                    rc = derive_parent_hint_from_segment(
+                        directory_segment,
+                        &parent_id_hint,
+                        &parent_slug_hint
+                    );
+                }
             }
+            if (rc != SQLITE_OK) {
+                free(slug);
+                free(parent_slug_hint);
+                free(full_path);
+                closedir(directory);
+                return rc;
+            }
+
+            rc = append_post_slot(dataset, &post);
+            if (rc == SQLITE_OK) {
+                rc = parse_markdown_post(
+                    full_path,
+                    id,
+                    slug,
+                    parent_id_hint,
+                    parent_slug_hint,
+                    use_index_path,
+                    post
+                );
+            }
+            free(slug);
+            free(parent_slug_hint);
+            free(full_path);
+            if (rc != SQLITE_OK) {
+                closedir(directory);
+                return rc;
+            }
+            if (id > dataset->max_post_id) {
+                dataset->max_post_id = id;
+            }
+            for (meta_index = 0; meta_index < post->meta_count; meta_index++) {
+                if (post->meta_entries[meta_index].meta_id > dataset->max_meta_id) {
+                    dataset->max_meta_id = post->meta_entries[meta_index].meta_id;
+                }
+            }
+        } else {
+            free(full_path);
         }
     }
 
     closedir(directory);
+    return SQLITE_OK;
+}
+
+static int load_dataset(const char *root, Dataset *dataset) {
+    int rc;
+    int index;
+
+    dataset_init(dataset);
+
+    rc = load_dataset_directory(root, root, NULL, NULL, dataset);
+    if (rc != SQLITE_OK) {
+        dataset_reset(dataset);
+        return rc;
+    }
+
     if (dataset->count > 1) {
         qsort(dataset->posts, (size_t)dataset->count, sizeof(PostRecord), compare_posts_by_id);
+    }
+    for (index = 0; index < dataset->count; index++) {
+        rc = resolve_parent_from_slug(dataset, &dataset->posts[index]);
+        if (rc != SQLITE_OK) {
+            dataset_reset(dataset);
+            return rc;
+        }
+    }
+    rc = validate_post_hierarchy(dataset);
+    if (rc != SQLITE_OK) {
+        dataset_reset(dataset);
+        return rc;
     }
     return SQLITE_OK;
 }
@@ -942,7 +1220,7 @@ static int append_meta_key_value(TextBuffer *buffer, const char *key, const char
     return rc;
 }
 
-static char *build_post_filename(sqlite3_int64 id, const char *slug) {
+static char *build_post_segment(sqlite3_int64 id, const char *slug) {
     TextBuffer buffer = {0};
     char number[32];
     int rc;
@@ -959,6 +1237,23 @@ static char *build_post_filename(sqlite3_int64 id, const char *slug) {
     if (rc == SQLITE_OK) {
         rc = text_buffer_append(&buffer, effective_slug);
     }
+    if (rc != SQLITE_OK) {
+        text_buffer_reset(&buffer);
+        return NULL;
+    }
+    return buffer.data;
+}
+
+static char *build_post_filename(sqlite3_int64 id, const char *slug) {
+    TextBuffer buffer = {0};
+    char *segment = build_post_segment(id, slug);
+    int rc;
+
+    if (segment == NULL) {
+        return NULL;
+    }
+    rc = text_buffer_append(&buffer, segment);
+    free(segment);
     if (rc == SQLITE_OK) {
         rc = text_buffer_append(&buffer, ".md");
     }
@@ -1041,12 +1336,176 @@ static bool is_valid_post_name(const char *slug) {
     return true;
 }
 
-static int write_post_record(const char *root, const PostRecord *post, const char *old_path) {
+static int ensure_directory_exists(const char *path) {
+    struct stat st;
+
+    if (stat(path, &st) == 0) {
+        return S_ISDIR(st.st_mode) ? SQLITE_OK : SQLITE_CANTOPEN;
+    }
+    if (mkdir(path, 0777) == 0 || errno == EEXIST) {
+        return SQLITE_OK;
+    }
+    return SQLITE_CANTOPEN;
+}
+
+static int ensure_parent_directories(const char *root, const char *path) {
+    const char *cursor = path + strlen(root);
+    TextBuffer current = {0};
+    int rc;
+
+    rc = text_buffer_append(&current, root);
+    if (rc != SQLITE_OK) {
+        text_buffer_reset(&current);
+        return rc;
+    }
+    while (*cursor == '/') {
+        cursor++;
+    }
+    while (*cursor != '\0') {
+        const char *slash = strchr(cursor, '/');
+        if (slash == NULL) {
+            break;
+        }
+        rc = text_buffer_append_char(&current, '/');
+        if (rc == SQLITE_OK) {
+            rc = text_buffer_append_raw(&current, cursor, (size_t)(slash - cursor));
+        }
+        if (rc != SQLITE_OK) {
+            text_buffer_reset(&current);
+            return rc;
+        }
+        rc = ensure_directory_exists(current.data);
+        if (rc != SQLITE_OK) {
+            text_buffer_reset(&current);
+            return rc;
+        }
+        cursor = slash + 1;
+    }
+    text_buffer_reset(&current);
+    return SQLITE_OK;
+}
+
+static void remove_empty_parent_directories(const char *root, const char *path) {
+    char *current = duplicate_string(path);
+
+    if (current == NULL) {
+        return;
+    }
+    while (current != NULL) {
+        char *slash = strrchr(current, '/');
+        struct stat st;
+        DIR *directory;
+        struct dirent *entry;
+        bool has_visible_entries = false;
+
+        if (slash == NULL || strcmp(current, root) == 0) {
+            break;
+        }
+        *slash = '\0';
+        if (strcmp(current, root) == 0) {
+            break;
+        }
+        if (stat(current, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            break;
+        }
+        directory = opendir(current);
+        if (directory == NULL) {
+            break;
+        }
+        while ((entry = readdir(directory)) != NULL) {
+            if (strcmp(entry->d_name, ".") != 0 && strcmp(entry->d_name, "..") != 0) {
+                has_visible_entries = true;
+                break;
+            }
+        }
+        closedir(directory);
+        if (has_visible_entries || rmdir(current) != 0) {
+            break;
+        }
+    }
+    free(current);
+}
+
+static int build_post_path(
+    const char *root,
+    Dataset *dataset,
+    const PostRecord *post,
+    const char *slug,
+    char **path
+) {
+    TextBuffer buffer = {0};
+    const PostRecord *current;
+    const PostRecord *stack[256];
+    int depth = 0;
+    int index;
+    int rc;
+
+    *path = NULL;
+    rc = text_buffer_append(&buffer, root);
+    if (rc != SQLITE_OK) {
+        text_buffer_reset(&buffer);
+        return rc;
+    }
+
+    if (post->use_index_path) {
+        current = post;
+        while (current != NULL) {
+            if (depth >= (int)(sizeof(stack) / sizeof(stack[0]))) {
+                text_buffer_reset(&buffer);
+                return SQLITE_CONSTRAINT;
+            }
+            stack[depth++] = current;
+            if (current->post_parent == 0) {
+                current = NULL;
+            } else {
+                current = find_post_by_id(dataset, current->post_parent);
+            }
+        }
+        for (index = depth - 1; index >= 0 && rc == SQLITE_OK; index--) {
+            char *segment = build_post_segment(
+                stack[index]->id,
+                index == 0 ? slug : stack[index]->post_name
+            );
+            if (segment == NULL) {
+                rc = SQLITE_NOMEM;
+                break;
+            }
+            rc = text_buffer_append_char(&buffer, '/');
+            if (rc == SQLITE_OK) {
+                rc = text_buffer_append(&buffer, segment);
+            }
+            free(segment);
+        }
+        if (rc == SQLITE_OK) {
+            rc = text_buffer_append(&buffer, "/index.md");
+        }
+    } else {
+        char *filename = build_post_filename(post->id, slug);
+        if (filename == NULL) {
+            text_buffer_reset(&buffer);
+            return SQLITE_NOMEM;
+        }
+        rc = text_buffer_append_char(&buffer, '/');
+        if (rc == SQLITE_OK) {
+            rc = text_buffer_append(&buffer, filename);
+        }
+        free(filename);
+    }
+
+    if (rc != SQLITE_OK) {
+        text_buffer_reset(&buffer);
+        return rc;
+    }
+    *path = buffer.data;
+    return SQLITE_OK;
+}
+
+static int write_post_record(const char *root, Dataset *dataset, PostRecord *post, const char *old_path) {
     TextBuffer buffer = {0};
     char number[32];
     char *slug = NULL;
-    char *filename = NULL;
     char *path = NULL;
+    PostRecord *parent = NULL;
     int index;
     int rc = SQLITE_OK;
 
@@ -1060,16 +1519,17 @@ static int write_post_record(const char *root, const PostRecord *post, const cha
         free(slug);
         return SQLITE_CONSTRAINT;
     }
-    filename = build_post_filename(post->id, slug);
-    if (filename == NULL) {
-        free(slug);
-        return SQLITE_NOMEM;
+    if (post->post_parent != 0) {
+        parent = find_post_by_id(dataset, post->post_parent);
+        if (parent == NULL) {
+            free(slug);
+            return SQLITE_CONSTRAINT;
+        }
     }
-    path = join_path(root, filename);
-    if (path == NULL) {
+    rc = build_post_path(root, dataset, post, slug, &path);
+    if (rc != SQLITE_OK || path == NULL) {
         free(slug);
-        free(filename);
-        return SQLITE_NOMEM;
+        return rc == SQLITE_OK ? SQLITE_NOMEM : rc;
     }
 
     rc = text_buffer_append(&buffer, "---\n");
@@ -1078,6 +1538,9 @@ static int write_post_record(const char *root, const PostRecord *post, const cha
     }
     if (rc == SQLITE_OK) {
         rc = append_key_value(&buffer, "post_name", slug);
+    }
+    if (rc == SQLITE_OK && parent != NULL) {
+        rc = append_key_value(&buffer, "post_parent", parent->post_name);
     }
     if (rc == SQLITE_OK) {
         rc = append_key_value(&buffer, "post_status", post->post_status);
@@ -1120,14 +1583,24 @@ static int write_post_record(const char *root, const PostRecord *post, const cha
         rc = text_buffer_append(&buffer, post->post_content == NULL ? "" : post->post_content);
     }
     if (rc == SQLITE_OK) {
+        rc = ensure_parent_directories(root, path);
+    }
+    if (rc == SQLITE_OK) {
         rc = write_text_file_atomic(path, buffer.data, buffer.length);
     }
     if (rc == SQLITE_OK && old_path != NULL && strcmp(old_path, path) != 0) {
         unlink(old_path);
+        remove_empty_parent_directories(root, old_path);
+    }
+    if (rc == SQLITE_OK) {
+        free(post->path);
+        post->path = duplicate_string(path);
+        if (post->path == NULL) {
+            rc = SQLITE_NOMEM;
+        }
     }
 
     free(slug);
-    free(filename);
     free(path);
     text_buffer_reset(&buffer);
     return rc;
@@ -1204,7 +1677,15 @@ static int update_post_from_values(PostRecord *post, sqlite3_value **values) {
     char *date_gmt = NULL;
     char *modified_gmt = NULL;
     char *content = NULL;
+    sqlite3_int64 post_parent = 0;
     int rc = SQLITE_OK;
+
+    if (sqlite3_value_type(values[POST_COL_PARENT]) != SQLITE_NULL) {
+        post_parent = sqlite3_value_int64(values[POST_COL_PARENT]);
+        if (post_parent < 0) {
+            return SQLITE_CONSTRAINT;
+        }
+    }
 
     rc = value_to_heap_string(values[POST_COL_TITLE], &title);
     if (rc == SQLITE_OK) {
@@ -1243,6 +1724,8 @@ static int update_post_from_values(PostRecord *post, sqlite3_value **values) {
     free(post->post_date_gmt);
     free(post->post_modified_gmt);
     free(post->post_content);
+    free(post->post_parent_slug_ref);
+    post->post_parent = post_parent;
     post->post_title = title;
     post->post_name = name;
     post->post_status = status;
@@ -1250,6 +1733,7 @@ static int update_post_from_values(PostRecord *post, sqlite3_value **values) {
     post->post_date_gmt = date_gmt;
     post->post_modified_gmt = modified_gmt;
     post->post_content = content;
+    post->post_parent_slug_ref = NULL;
     return SQLITE_OK;
 }
 
@@ -1257,6 +1741,7 @@ static int posts_vtab_connect(sqlite3 *db, void *aux, int argc, const char *cons
     PostsTable *table;
     const char *schema = "CREATE TABLE x("
         "ID INTEGER PRIMARY KEY,"
+        "post_parent INTEGER,"
         "post_title TEXT,"
         "post_name TEXT,"
         "post_status TEXT,"
@@ -1392,6 +1877,9 @@ static int posts_vtab_column(sqlite3_vtab_cursor *cur, sqlite3_context *ctx, int
         case POST_COL_ID:
             sqlite3_result_int64(ctx, post->id);
             break;
+        case POST_COL_PARENT:
+            sqlite3_result_int64(ctx, post->post_parent);
+            break;
         case POST_COL_TITLE:
             sqlite3_result_text(ctx, post->post_title, -1, SQLITE_TRANSIENT);
             break;
@@ -1448,6 +1936,7 @@ static int posts_vtab_update(sqlite3_vtab *p_vtab, int argc, sqlite3_value **arg
             dataset_reset(&dataset);
             return SQLITE_IOERR_DELETE;
         }
+        remove_empty_parent_directories(table->root, post->path);
     } else if (sqlite3_value_type(argv[0]) == SQLITE_NULL) {
         PostRecord post;
         sqlite3_int64 explicit_id = 0;
@@ -1466,7 +1955,17 @@ static int posts_vtab_update(sqlite3_vtab *p_vtab, int argc, sqlite3_value **arg
         }
         rc = update_post_from_values(&post, values);
         if (rc == SQLITE_OK) {
-            rc = write_post_record(table->root, &post, NULL);
+            PostRecord *inserted_post;
+
+            rc = append_post_slot(&dataset, &inserted_post);
+            if (rc == SQLITE_OK) {
+                *inserted_post = post;
+                memset(&post, 0, sizeof(post));
+                rc = validate_post_hierarchy(&dataset);
+            }
+            if (rc == SQLITE_OK) {
+                rc = write_post_record(table->root, &dataset, inserted_post, NULL);
+            }
         }
         free_post_record(&post);
         if (rc != SQLITE_OK) {
@@ -1506,7 +2005,10 @@ static int posts_vtab_update(sqlite3_vtab *p_vtab, int argc, sqlite3_value **arg
         post->id = new_id;
         rc = update_post_from_values(post, values);
         if (rc == SQLITE_OK) {
-            rc = write_post_record(table->root, post, old_path);
+            rc = validate_post_hierarchy(&dataset);
+        }
+        if (rc == SQLITE_OK) {
+            rc = write_post_record(table->root, &dataset, post, old_path);
         }
         free(old_path);
         if (rc != SQLITE_OK) {
@@ -1761,7 +2263,7 @@ static int postmeta_vtab_update(sqlite3_vtab *p_vtab, int argc, sqlite3_value **
                         return SQLITE_NOMEM;
                     }
                     remove_meta_at(post, meta_index);
-                    rc = write_post_record(table->root, post, old_path);
+                    rc = write_post_record(table->root, &dataset, post, old_path);
                     free(old_path);
                     if (rc != SQLITE_OK) {
                         dataset_reset(&dataset);
@@ -1809,7 +2311,7 @@ static int postmeta_vtab_update(sqlite3_vtab *p_vtab, int argc, sqlite3_value **
             dataset_reset(&dataset);
             return SQLITE_NOMEM;
         }
-        rc = write_post_record(table->root, post, old_path);
+        rc = write_post_record(table->root, &dataset, post, old_path);
         free(old_path);
         if (rc != SQLITE_OK) {
             dataset_reset(&dataset);
@@ -1885,7 +2387,7 @@ static int postmeta_vtab_update(sqlite3_vtab *p_vtab, int argc, sqlite3_value **
                 rc = append_meta_slot(new_post, &slot);
                 if (rc == SQLITE_OK) {
                     *slot = entry;
-                    rc = write_post_record(table->root, new_post, old_post_path);
+                    rc = write_post_record(table->root, &dataset, new_post, old_post_path);
                 } else {
                     free_meta_entry(&entry);
                 }
@@ -1894,12 +2396,12 @@ static int postmeta_vtab_update(sqlite3_vtab *p_vtab, int argc, sqlite3_value **
                 rc = append_meta_slot(new_post, &slot);
                 if (rc == SQLITE_OK) {
                     *slot = entry;
-                    rc = write_post_record(table->root, old_post, old_post_path);
+                    rc = write_post_record(table->root, &dataset, old_post, old_post_path);
                 } else {
                     free_meta_entry(&entry);
                 }
                 if (rc == SQLITE_OK) {
-                    rc = write_post_record(table->root, new_post, new_post_path);
+                    rc = write_post_record(table->root, &dataset, new_post, new_post_path);
                 }
             }
             free(old_post_path);
