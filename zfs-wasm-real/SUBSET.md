@@ -28,16 +28,84 @@ blocks until they diverge.
 - ZIL SLOG / separate log devices. ZIL is needed but only in its default
   embedded form.
 - L2ARC / cache devices.
-- Encryption / keystore (`dsl_crypt`, `zio_crypt`, `hkdf`).
+- Encryption / keystore (`dsl_crypt`, `zio_crypt`, `hkdf`) and the
+  entire `libicp` crypto tree.
 - Dedup (`ddt_*`, `brt_*`).
 - `zfs send` / `zfs recv` / redaction / bookmarks (`dmu_send`, `dmu_recv`,
   `dmu_redact`, `dmu_diff`, bookmark machinery).
 - Scrub, resilver. We never replace or repair devices.
-- Compression beyond lz4 (no zstd, no gzip).
-- Checksums beyond fletcher4 (no edonr, skein, blake3 variants).
-- Quotas, user props, channel programs, delegation, `zfs_ioctl.c` paths.
-- `zpool upgrade` of feature flags at runtime; we ship a fixed feature set.
-- `mmap` of file data and `aio_*`. Plain pread/pwrite on the backing file.
+- Compression beyond lz4 and lzjb (no zstd, no gzip).
+- Checksums beyond fletcher4 (no edonr, skein, blake3 variants; no
+  SIMD accelerated fletchers).
+- Quotas, user props, Lua channel programs (`zcp_*` + `module/lua/`),
+  delegation, `zfs_ioctl.c` paths.
+- `zpool upgrade` of feature flags at runtime; we ship a fixed feature
+  set.
+- `mmap` of file data and `aio_*`. Plain pread/pwrite on the backing
+  file.
+- `libzfs` / `libzfs_core`. We call DMU/DSL APIs directly.
+
+### How we shrink further: stubs for the cut surfaces
+
+Some files we do compile (e.g. `dsl_dataset.c`) reference symbols
+from files we cut (`dsl_crypto_key_unload`, `ddt_class_update`,
+`dmu_send_estimate_fast`). We provide tiny stubs in
+`src/shim/disabled_features.c` that return `ENOTSUP` for every cut
+function. The call paths are never taken at runtime because the
+demo never enables encryption/dedup/send, so these stubs are
+compile-and-link fillers — not a runtime fallback we depend on.
+
+## Concrete file list
+
+### Compile (from module/zfs)
+
+spa.c, spa_misc.c, spa_config.c, spa_errlog.c, spa_history.c,
+spa_stats.c, spa_log_spacemap.c, spa_checkpoint.c,
+dmu.c, dmu_object.c, dmu_objset.c, dmu_tx.c, dmu_zfetch.c,
+dmu_traverse.c,
+dbuf.c, dbuf_stats.c, dnode.c, dnode_sync.c,
+dsl_dir.c, dsl_dataset.c, dsl_pool.c, dsl_synctask.c,
+dsl_destroy.c, dsl_prop.c, dsl_scan.c, dsl_deadlist.c,
+dsl_userhold.c, dsl_deleg.c,
+zap.c, zap_leaf.c, zap_micro.c,
+zio.c, zio_checksum.c, zio_compress.c, zio_inject.c,
+metaslab.c, space_map.c, space_reftree.c, range_tree.c,
+vdev.c, vdev_label.c, vdev_mirror.c, vdev_missing.c,
+vdev_queue.c, vdev_indirect.c, vdev_indirect_births.c,
+vdev_indirect_mapping.c, vdev_initialize.c, vdev_trim.c,
+vdev_removal.c, vdev_rebuild.c, vdev_root.c,
+arc.c, aggsum.c, btree.c, multilist.c, rrwlock.c, zrlock.c,
+unique.c, refcount.c, bplist.c, bpobj.c, bptree.c, bqueue.c,
+blkptr.c, txg.c, uberblock.c, fm.c, pathname.c,
+zfeature.c, zthr.c, mmp.c, sa.c, zil.c, zle.c, lzjb.c,
+lz4.c, lz4_zfs.c,
+zfs_byteswap.c, zfs_fm.c, zfs_rlock.c, zfs_ratelimit.c,
+zfs_sa.c, objlist.c, abd.c
+
+### Compile (from module/zcommon)
+
+cityhash.c, zfeature_common.c, zfs_comutil.c, zfs_namecheck.c,
+zfs_prop.c, zpool_prop.c, zprop_common.c,
+zfs_fletcher.c, zfs_fletcher_superscalar.c,
+zfs_fletcher_superscalar4.c
+
+### Compile (from module/os/linux/zfs)
+
+vdev_file.c, abd_os.c, arc_os.c, zfs_debug.c, zfs_racct.c
+
+### Compile (lib trees)
+
+lib/libspl/*.c (done), lib/libnvpair/*.c + module/nvpair/*.c
+(done), lib/libavl/avl.c, lib/libunicode/*.c, lib/libzutil/*.c
+
+### Stub out entirely (src/shim/disabled_features.c)
+
+All `dsl_crypto_*`, `zio_crypt_*`, `spa_keystore_*`, `hkdf_*`,
+`ddt_*`, `brt_*`, `dmu_send_*`, `dmu_recv_*`, `dmu_redact_*`,
+`dmu_diff_*`, `zcp_*`, `vdev_raidz_*`, `vdev_draid_*`,
+`zil_crypt_*` — every function compiled-but-dead. Each stub
+returns `SET_ERROR(ENOTSUP)` and, for predicate functions,
+returns false.
 
 ## Entry point
 
