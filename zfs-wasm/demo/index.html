@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ZFS Wasm Demo</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <header class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">Browser Demo</p>
+          <h1>ZFS-flavored snapshots running inside Wasm.</h1>
+          <p class="hero-text">
+            Two tree views drive this demo now: one for the filesystem and one for
+            branches and snapshots. Select a file to preview or edit it, select a
+            branch to switch instantly, and create new files or folders directly from
+            the explorer.
+          </p>
+          <div class="hero-actions">
+            <button id="seed-demo" class="primary">Load Scenario</button>
+            <button id="reset-fs" class="ghost">Reset Filesystem</button>
+          </div>
+        </div>
+        <div class="hero-card">
+          <div class="metric">
+            <span class="metric-label">Current Branch</span>
+            <strong id="metric-branch">main</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Snapshots</span>
+            <strong id="metric-snapshots">0</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Branches</span>
+            <strong id="metric-branches">1</strong>
+          </div>
+          <div class="metric">
+            <span class="metric-label">Logical Bytes</span>
+            <strong id="metric-bytes">0</strong>
+          </div>
+        </div>
+      </header>
+
+      <main class="studio-grid">
+        <section class="panel tree-panel">
+          <div class="panel-heading">
+            <p class="eyebrow">Filesystem</p>
+            <h2>File Tree</h2>
+            <p class="panel-subtitle">Arrow keys navigate. Enter opens. Left and right collapse or expand.</p>
+          </div>
+          <div class="toolbar">
+            <button id="tree-new-file" class="small-button" type="button">New File</button>
+            <button id="tree-new-dir" class="small-button" type="button">New Folder</button>
+            <button id="tree-delete" class="small-button" type="button">Delete</button>
+          </div>
+          <div id="tree-selection" class="badge">Selected: /</div>
+          <div id="tree-view" class="tree-view" role="tree" aria-label="Filesystem tree"></div>
+        </section>
+
+        <section class="panel tree-panel">
+          <div class="panel-heading">
+            <p class="eyebrow">Versioning</p>
+            <h2>Branch Tree</h2>
+            <p class="panel-subtitle">Click a branch to switch filesystems. Click a snapshot to open a detached read-only view. Child branches stay nested under their parent.</p>
+          </div>
+          <div class="toolbar">
+            <button id="branch-new-snapshot" class="small-button" type="button">Snapshot</button>
+            <button id="branch-new-branch" class="small-button" type="button">New Branch</button>
+          </div>
+          <div id="branch-selection" class="badge">Selected: branch main</div>
+          <div id="branch-tree-view" class="tree-view" role="tree" aria-label="Branch tree"></div>
+        </section>
+
+        <section class="panel preview-panel">
+          <div class="panel-heading">
+            <p class="eyebrow">Preview</p>
+            <h2>File Previewer</h2>
+            <p class="panel-subtitle">Select a file from the tree to inspect or edit it. Select a directory to see its contents.</p>
+          </div>
+
+          <div class="preview-toolbar">
+            <span id="read-target" class="badge">No file selected</span>
+            <span id="view-mode" class="badge">Live branch: main</span>
+            <div class="toolbar">
+            </div>
+          </div>
+
+          <div id="directory-summary" class="directory-summary"></div>
+          <textarea id="file-editor" class="file-editor" spellcheck="false" placeholder="edit here"></textarea>
+          <pre id="stats-view" class="code-view"></pre>
+        </section>
+
+        <section class="panel panel-log">
+          <div class="panel-heading">
+            <p class="eyebrow">Audit</p>
+            <h2>Journal</h2>
+          </div>
+          <div class="toolbar">
+            <button id="clear-log" class="small-button" type="button">Clear</button>
+          </div>
+          <div id="log-view" class="log-view"></div>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

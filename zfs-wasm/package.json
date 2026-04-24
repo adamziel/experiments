@@ -1,0 +1,14 @@
+{
+  "name": "zfs-wasm-host",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:js": "./scripts/build-js-packages.sh",
+    "build:demo": "./build-demo.sh",
+    "test:rust": "cargo test",
+    "test:js": "npm run build:js && node --test tests/js_host.test.mjs",
+    "test": "npm run test:rust && npm run test:js",
+    "demo:cli": "npm run build:js && node bin/zfs-wasm-cli.mjs examples/branch-demo.json",
+    "demo:web": "npm run build:js && python3 -m http.server 4173"
+  }
+}

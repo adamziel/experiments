@@ -31,6 +31,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Install wasm-bindgen
+        run: cargo install wasm-bindgen-cli --version 0.2.118 --locked
+
+      - name: Build zfs-wasm demo
+        working-directory: zfs-wasm
+        run: ./build-demo.sh
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 

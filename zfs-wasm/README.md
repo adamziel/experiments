@@ -1,33 +1,39 @@
 # zfs-wasm
 
-An interactive browser demo of a ZFS-flavored snapshotting filesystem compiled to WebAssembly.
+This directory contains the full Rust -> Wasm build pipeline and the GitHub Pages demo for a small snapshotting filesystem with ZFS-flavored semantics.
 
-The UI supports:
-
-- creating directories
-- writing, reading, and deleting files
-- creating immutable named snapshots
-- cloning snapshots into branches
-- checking out branches and rolling back to snapshots
-- inspecting directory listings, stats, branch state, and an operation log
-
-The published site is available at:
+Live demo:
 
 `https://adamziel.github.io/experiments/zfs-wasm/`
 
-## Layout
-
-- `index.html`, `app.js`, `styles.css`: the static browser UI
-- `browser-host.js`: thin browser host wrapper over the generated Wasm bindings
-- `pkg/`: generated `wasm-bindgen` web bundle and `.wasm` binary
-- `build-demo.sh`: refreshes the hosted assets from a local checkout of the standalone `zfs-wasm` project
-
-## Refreshing the Wasm bundle
-
-Use the repo-local build helper:
+## Build and test
 
 ```bash
-./build-demo.sh /path/to/zfs-wasm
+npm run build:js
+npm test
 ```
 
-It will rebuild the standalone project, copy the browser assets into this directory, and rewrite import paths for static hosting under GitHub Pages.
+That builds:
+
+- `pkg/node/*` for the Node host wrapper
+- `pkg/web/*` for browser consumption
+
+## Refresh the hosted demo
+
+```bash
+npm run build:demo
+```
+
+That rebuilds the Wasm bundle locally, then refreshes the Pages-hosted files at the root of this directory. GitHub Pages runs the same script on deploy, so the live site is built from the checked-in Rust/Wasm sources in this directory:
+
+- `index.html`, `app.js`, `styles.css`
+- `browser-host.js`
+- `pkg/zfs_wasm*`
+
+## Layout
+
+- `src/`: Rust snapshot filesystem implementation compiled to Wasm
+- `tests/`: Rust and JS tests
+- `scripts/build-js-packages.sh`: `wasm-bindgen` packaging for Node and browser targets
+- `demo/`: source browser demo used for local development
+- `index.html`, `app.js`, `styles.css`, `browser-host.js`, `pkg/`: static Pages-hosted build output

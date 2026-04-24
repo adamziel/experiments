@@ -1,0 +1,12 @@
+[
+  { "op": "mkdir", "path": "/docs" },
+  { "op": "writeText", "path": "/docs/notes.txt", "text": "v1" },
+  { "op": "snapshot", "name": "seed" },
+  { "op": "clone", "snapshot": "seed", "branch": "feature" },
+  { "op": "checkout", "branch": "feature" },
+  { "op": "writeText", "path": "/docs/notes.txt", "text": "feature-v2" },
+  { "op": "stats" },
+  { "op": "readText", "path": "/docs/notes.txt" },
+  { "op": "checkout", "branch": "main" },
+  { "op": "readText", "path": "/docs/notes.txt" }
+]
