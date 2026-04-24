@@ -17,6 +17,7 @@ AR      := emar
 INCS := \
     -I src/config \
     -I src/shim \
+    -I src/shim/os/wasm/zfs \
     -I $(ZFS)/include \
     -I $(ZFS)/lib/libspl/include \
     -I $(ZFS)/lib/libspl/include/os/linux
@@ -27,7 +28,7 @@ DEFS := \
     -DHAVE_PTHREAD=1 \
     -D__USE_LARGEFILE64=1
 
-CFLAGS := -O1 -g -fPIC -fvisibility=hidden -pthread $(DEFS) $(INCS) \
+CFLAGS := -O1 -g -fPIC -fvisibility=hidden -pthread -sUSE_ZLIB=1 $(DEFS) $(INCS) \
           -include src/config/zfs_config.h \
           -include sys/sysmacros.h \
           -Wno-format \
@@ -52,6 +53,73 @@ NVPAIR_SRCS := \
     $(ZFS)/module/nvpair/nvpair_alloc_fixed.c \
     $(ZFS)/module/nvpair/fnvpair.c
 
+# ----- libzpool kernel emulation -----------------------------------------
+# kernel.c: provides the kernel-side SPL surface used by module/zfs
+#           (taskq, mutex, cv, buf cache shims, kmem, etc).
+# taskq.c:  userland taskq implementation (pthreads).
+# util.c:   small userland helpers used by ztest/zdb; ZFS also calls some.
+
+LIBZPOOL_SRCS := \
+    $(ZFS)/lib/libzpool/kernel.c \
+    $(ZFS)/lib/libzpool/taskq.c \
+    $(ZFS)/lib/libzpool/util.c
+
+LIBZPOOL_OBJS := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(LIBZPOOL_SRCS))
+
+# ----- zcommon subset ----------------------------------------------------
+ZCOMMON_SRCS := \
+    $(ZFS)/module/zcommon/cityhash.c \
+    $(ZFS)/module/zcommon/zfeature_common.c \
+    $(ZFS)/module/zcommon/zfs_comutil.c \
+    $(ZFS)/module/zcommon/zfs_namecheck.c \
+    $(ZFS)/module/zcommon/zfs_prop.c \
+    $(ZFS)/module/zcommon/zpool_prop.c \
+    $(ZFS)/module/zcommon/zprop_common.c \
+    $(ZFS)/module/zcommon/zfs_fletcher.c \
+    $(ZFS)/module/zcommon/zfs_fletcher_superscalar.c \
+    $(ZFS)/module/zcommon/zfs_fletcher_superscalar4.c
+
+ZCOMMON_OBJS := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(ZCOMMON_SRCS))
+
+# ----- libavl / libunicode / libzutil ------------------------------------
+AVL_SRCS := $(ZFS)/module/avl/avl.c
+UNICODE_SRCS := $(wildcard $(ZFS)/module/unicode/*.c)
+ZUTIL_SRCS := $(wildcard $(ZFS)/lib/libzutil/*.c)
+
+AVL_OBJS := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(AVL_SRCS))
+UNICODE_OBJS := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(UNICODE_SRCS))
+ZUTIL_OBJS := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(ZUTIL_SRCS))
+
+# ----- module/zfs core (big subset per SUBSET.md) ------------------------
+ZFS_SRCS := $(addprefix $(ZFS)/module/zfs/, \
+    spa.c spa_misc.c spa_config.c spa_errlog.c spa_history.c \
+    spa_stats.c spa_log_spacemap.c spa_checkpoint.c \
+    dmu.c dmu_object.c dmu_objset.c dmu_tx.c dmu_zfetch.c \
+    dmu_traverse.c \
+    dbuf.c dbuf_stats.c dnode.c dnode_sync.c \
+    dsl_dir.c dsl_dataset.c dsl_pool.c dsl_synctask.c \
+    dsl_destroy.c dsl_prop.c dsl_scan.c dsl_deadlist.c \
+    dsl_userhold.c dsl_deleg.c \
+    zap.c zap_leaf.c zap_micro.c \
+    zio.c zio_checksum.c zio_compress.c zio_inject.c \
+    metaslab.c space_map.c space_reftree.c range_tree.c \
+    vdev.c vdev_label.c vdev_mirror.c vdev_missing.c \
+    vdev_queue.c vdev_indirect.c vdev_indirect_births.c \
+    vdev_indirect_mapping.c vdev_initialize.c vdev_trim.c \
+    vdev_removal.c vdev_rebuild.c vdev_root.c \
+    arc.c aggsum.c btree.c multilist.c rrwlock.c zrlock.c \
+    unique.c refcount.c bplist.c bpobj.c bptree.c bqueue.c \
+    blkptr.c txg.c uberblock.c fm.c pathname.c \
+    zfeature.c zthr.c mmp.c sa.c zil.c zle.c lzjb.c \
+    lz4.c lz4_zfs.c \
+    zfs_byteswap.c zfs_fm.c zfs_rlock.c zfs_ratelimit.c \
+    zfs_sa.c objlist.c abd.c)
+
+ZFS_OS_SRCS := $(addprefix $(ZFS)/module/os/linux/zfs/, \
+    vdev_file.c abd_os.c arc_os.c zfs_debug.c zfs_racct.c)
+
+ZFS_OBJS := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(ZFS_SRCS) $(ZFS_OS_SRCS))
+
 # ----- libspl ------------------------------------------------------------
 # Userland portions we need. The Linux-specific files that touch /proc
 # or mount tables are excluded; we replace them with wasm stubs below.
@@ -69,18 +137,62 @@ SPL_SRCS := \
 
 SHIM_SRCS := \
     src/shim/xdr_stub.c \
-    src/shim/spl_host_stubs.c
+    src/shim/spl_host_stubs.c \
+    src/shim/disabled_features.c
 
 NVPAIR_OBJS := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(NVPAIR_SRCS))
 SPL_OBJS    := $(patsubst $(ZFS)/%.c,$(BUILD)/%.o,$(SPL_SRCS))
 SHIM_OBJS   := $(patsubst src/%.c,$(BUILD)/shim/%.o,$(SHIM_SRCS))
 
-.PHONY: libs libnvpair libspl clean
-libs: $(BUILD)/libnvpair.a $(BUILD)/libspl.a $(BUILD)/libshim.a
+.PHONY: libs libnvpair libspl libzpool libzcommon clean apply-patches
+libs: $(BUILD)/libnvpair.a $(BUILD)/libspl.a $(BUILD)/libshim.a $(BUILD)/libzpool.a $(BUILD)/libzcommon.a
 	@echo "libs OK"
 
-libnvpair: $(BUILD)/libnvpair.a
-libspl:    $(BUILD)/libspl.a
+# Apply our patch queue before any compile. Idempotent.
+apply-patches: $(BUILD)/.patches-applied
+$(BUILD)/.patches-applied: $(wildcard patches/*.patch) scripts/apply-patches.sh
+	@mkdir -p $(BUILD)
+	bash scripts/apply-patches.sh
+	@touch $@
+
+libnvpair:  $(BUILD)/libnvpair.a
+libspl:     $(BUILD)/libspl.a
+libzpool:   $(BUILD)/libzpool.a
+libzcommon: $(BUILD)/libzcommon.a
+
+$(BUILD)/libzcommon.a: $(ZCOMMON_OBJS)
+	$(AR) rcs $@ $^
+
+.PHONY: libzfs zfswasm
+libzfs: $(BUILD)/libzfs.a
+$(BUILD)/libzfs.a: $(ZFS_OBJS) $(AVL_OBJS) $(UNICODE_OBJS) $(ZUTIL_OBJS)
+	$(AR) rcs $@ $^
+
+# ----- final link: zfswasm.wasm + JS glue --------------------------------
+ZFSWASM_LDFLAGS := \
+    -Wl,--error-limit=0 \
+    -sALLOW_MEMORY_GROWTH=1 \
+    -sINITIAL_MEMORY=67108864 \
+    -sMODULARIZE=1 \
+    -sEXPORT_ES6=0 \
+    -sEXPORT_NAME=ZfsWasm \
+    -sENVIRONMENT=node,worker \
+    -sEXPORTED_RUNTIME_METHODS=ccall,cwrap,HEAPU8,stringToNewUTF8,getValue,setValue \
+    -sUSE_ZLIB=1 \
+    -sNODERAWFS=1 \
+    -sPTHREAD_POOL_SIZE=32 \
+    -sPTHREAD_POOL_SIZE_STRICT=0 \
+    -sEXIT_RUNTIME=0 \
+    -pthread
+
+zfswasm: $(BUILD)/zfswasm.js
+
+$(BUILD)/zfswasm.o: src/zfswasm.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(BUILD)/zfswasm.js: $(BUILD)/zfswasm.o $(BUILD)/libzfs.a $(BUILD)/libzpool.a $(BUILD)/libzcommon.a $(BUILD)/libnvpair.a $(BUILD)/libspl.a $(BUILD)/libshim.a
+	$(CC) $(CFLAGS) $(ZFSWASM_LDFLAGS) $^ -o $@
 
 $(BUILD)/libnvpair.a: $(NVPAIR_OBJS)
 	$(AR) rcs $@ $^
@@ -91,11 +203,14 @@ $(BUILD)/libspl.a: $(SPL_OBJS)
 $(BUILD)/libshim.a: $(SHIM_OBJS)
 	$(AR) rcs $@ $^
 
-$(BUILD)/%.o: $(ZFS)/%.c
+$(BUILD)/libzpool.a: $(LIBZPOOL_OBJS)
+	$(AR) rcs $@ $^
+
+$(BUILD)/%.o: $(ZFS)/%.c $(BUILD)/.patches-applied
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-$(BUILD)/shim/%.o: src/%.c
+$(BUILD)/shim/%.o: src/%.c $(BUILD)/.patches-applied
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 

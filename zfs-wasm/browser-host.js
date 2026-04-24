@@ -1,4 +1,14 @@
-import init, { WasmSnapshotFs } from "./pkg/zfs_wasm.js";
+// Moved from the old Rust bindgen pkg to the real OpenZFS WebAssembly
+// build in ../zfs-wasm-real/build. That bundle is an Emscripten
+// MODULARIZE UMD (factory name ZfsWasm) plus a worker.js sidecar.
+//
+// For the browser demo we only need to (a) load the module and (b)
+// call zfswasm_init so it's live; the rest of the BrowserSnapshotFs
+// methods keep an in-memory tree for the existing UI. A full swap to
+// driving the UI from ZFS datasets needs OPFS plumbing that doesn't
+// fit in this change.
+import ZfsWasmFactory from "../zfs-wasm-real/build/zfswasm.js";
+import { WasmSnapshotFs } from "./js/browser/legacy-fallback.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -124,9 +134,23 @@ export class BrowserSnapshotFsHost {
 
 export async function initSnapshotFs(input) {
   if (!initPromise) {
-    initPromise = init(input);
-  } else if (input !== undefined) {
-    await initPromise;
+    initPromise = (async () => {
+      // Boot the real OpenZFS WebAssembly module. The smoke test in
+      // zfs-wasm-real/scripts/smoke-node.mjs exercises the full
+      // pool/dataset/snapshot/clone/file round-trip; the browser demo
+      // only proves the module loads here and surfaces its status on
+      // `window.zfswasmStatus` for the page to read.
+      const mod = await ZfsWasmFactory({
+        print: (s) => console.log("[zfswasm]", s),
+        printErr: (s) => console.warn("[zfswasm]", s),
+      });
+      const init = mod.cwrap("zfswasm_init", "number", []);
+      const rc = init();
+      if (typeof window !== "undefined") {
+        window.zfswasmStatus = { loaded: true, initRc: rc };
+      }
+      console.log("[zfswasm] loaded, init rc =", rc);
+    })();
   }
 
   await initPromise;

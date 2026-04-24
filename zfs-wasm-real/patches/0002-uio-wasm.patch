@@ -1,0 +1,11 @@
+--- a/lib/libspl/include/sys/uio.h
++++ b/lib/libspl/include/sys/uio.h
+@@ -50,7 +50,7 @@
+ #include <stdint.h>
+ typedef struct iovec iovec_t;
+
+-#if defined(__linux__) || defined(__APPLE__)
++#if defined(__linux__) || defined(__APPLE__) || defined(__EMSCRIPTEN__) || defined(__wasm__)
+ typedef enum zfs_uio_rw {
+ 	UIO_READ =	0,
+ 	UIO_WRITE =	1,

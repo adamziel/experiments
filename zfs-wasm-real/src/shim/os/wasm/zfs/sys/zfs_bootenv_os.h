@@ -1,0 +1,4 @@
+#ifndef _ZFS_BOOTENV_OS_H
+#define _ZFS_BOOTENV_OS_H
+#define BOOTENV_OS BE_LINUX_VENDOR
+#endif

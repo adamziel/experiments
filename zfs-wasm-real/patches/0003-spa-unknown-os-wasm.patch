@@ -1,0 +1,11 @@
+--- a/module/zfs/spa.c
++++ b/module/zfs/spa.c
+@@ -1132,7 +1132,7 @@ spa_taskqs_init(spa_t *spa, zio_type_t t, zio_taskq_type_t q)
+ 			 * insignificant.
+ 			 */
+ 			if (t == ZIO_TYPE_WRITE && q == ZIO_TASKQ_ISSUE) {
+-#if defined(__linux__)
++#if defined(__linux__) || defined(__EMSCRIPTEN__) || defined(__wasm__)
+ 				pri++;
+ #elif defined(__FreeBSD__)
+ 				pri += 4;
