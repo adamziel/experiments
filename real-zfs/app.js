@@ -129,9 +129,14 @@ async function bootZfs() {
         const rc = await call(fr, ds, path, buf, cap, out);
         if (rc !== 0) return { rc, data: null };
         const len = mod.HEAPU32[out >> 2];
+        // HEAPU8 is backed by a SharedArrayBuffer when pthreads are
+        // on; TextDecoder rejects shared views. Copy into a non-shared
+        // Uint8Array first.
+        const copy = new Uint8Array(len);
+        copy.set(mod.HEAPU8.subarray(buf, buf + len));
         return {
           rc: 0,
-          data: new TextDecoder().decode(mod.HEAPU8.subarray(buf, buf + len)),
+          data: new TextDecoder().decode(copy),
           len,
         };
       } finally { mod._free(buf); mod._free(out); }
