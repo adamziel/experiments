@@ -178,6 +178,43 @@ impl_clone(const char *snap, const char *newds)
 }
 
 /*
+ * rollback: discard everything in `ds` after snapshot `snapname` so
+ * the dataset's content matches the snapshot. The snapshot is
+ * referenced by short name; we expand it to fullname inside.
+ */
+static int
+impl_rollback(const char *ds, const char *snapname)
+{
+    char tosnap[ZFS_MAX_DATASET_NAME_LEN];
+    nvlist_t *result = NULL;
+    int err;
+
+    if (snprintf(tosnap, sizeof (tosnap), "%s@%s", ds, snapname)
+        >= (int) sizeof (tosnap))
+        return (ENAMETOOLONG);
+
+    /* owner=NULL: no userland holder; result captures snaps that
+     * had to be destroyed (newer than tosnap). We discard it. */
+    err = dsl_dataset_rollback(ds, tosnap, NULL, result);
+    if (result != NULL)
+        nvlist_free(result);
+    return (err);
+}
+
+/*
+ * promote: turn a clone into the parent of the dataset it was
+ * cloned from. After promote(), the original dataset depends on
+ * the clone instead of the other way around — the user can then
+ * destroy the original to "merge" the clone's state in place.
+ */
+static int
+impl_promote(const char *clone)
+{
+    char conflict[ZFS_MAX_DATASET_NAME_LEN] = "";
+    return (dsl_dataset_promote(clone, conflict));
+}
+
+/*
  * file_write: create-or-update a logical file inside `ds`. On first
  * write we allocate a fresh DMU object; on subsequent writes we
  * reuse + truncate. After commit, txg_wait_synced so snapshots taken
@@ -346,6 +383,18 @@ static void cb_clone(void *p) {
     free(a->a); free(a->b);
     DONE();
 }
+static void cb_rollback(void *p) {
+    struct args_s2 *a = p;
+    g_task_rc = impl_rollback(a->a, a->b);
+    free(a->a); free(a->b);
+    DONE();
+}
+static void cb_promote(void *p) {
+    struct args_s1 *a = p;
+    g_task_rc = impl_promote(a->a);
+    free(a->a);
+    DONE();
+}
 static void cb_file_write(void *p) {
     struct args_write *a = p;
     g_task_rc = impl_file_write(a->ds, a->path, a->buf, a->len);
@@ -429,6 +478,16 @@ EMSCRIPTEN_KEEPALIVE int
 zfswasm_clone_begin(const char *snap, const char *newds) {
     a_s2.a = strdup(snap); a_s2.b = strdup(newds);
     return enqueue(cb_clone, &a_s2);
+}
+EMSCRIPTEN_KEEPALIVE int
+zfswasm_rollback_begin(const char *ds, const char *snapname) {
+    a_s2.a = strdup(ds); a_s2.b = strdup(snapname);
+    return enqueue(cb_rollback, &a_s2);
+}
+EMSCRIPTEN_KEEPALIVE int
+zfswasm_promote_begin(const char *clone) {
+    a_s1.a = strdup(clone);
+    return enqueue(cb_promote, &a_s1);
 }
 EMSCRIPTEN_KEEPALIVE int
 zfswasm_file_write_begin(const char *ds, const char *path,
