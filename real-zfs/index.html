@@ -66,17 +66,17 @@
             <p class="eyebrow">Versioning</p>
             <h2>Datasets &amp; snapshots</h2>
             <p class="panel-subtitle">
-              Click a dataset to make it active. Click a snapshot to read
-              from it. Clones nest under the snapshot they were made from.
+              Hover any row to act on it. <strong>Branch</strong>
+              snapshots and clones in one step.
             </p>
           </div>
-          <div class="toolbar">
-            <button id="op-snap" class="small" disabled>Snapshot…</button>
-            <button id="op-clone" class="small" disabled>Clone snap…</button>
-            <button id="op-newds" class="small" disabled>New dataset…</button>
-            <button id="op-destroy" class="small ghost" disabled>Destroy…</button>
+          <div id="dataset-tree" class="tree" role="tree"
+               aria-label="Datasets and snapshots"></div>
+          <div class="legend">
+            <span><span class="dot active"></span>active dataset</span>
+            <span><span class="dot snap"></span>snapshot (read-only)</span>
+            <span><span class="dot clone"></span>clone</span>
           </div>
-          <div id="dataset-tree" class="tree"></div>
         </section>
 
         <section class="panel">
@@ -126,7 +126,8 @@
       </main>
     </div>
 
-    <!-- Modal for short text prompts (snap name, clone name, etc.) -->
+    <!-- Modal kept for the few flows that need real text bodies
+         (initial file content). All naming flows are inline. -->
     <dialog id="prompt-dialog">
       <form method="dialog">
         <h3 id="prompt-title">Name</h3>
