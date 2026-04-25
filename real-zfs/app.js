@@ -287,23 +287,24 @@ function poolRow() {
       <span class="tag pool">POOL</span>
     </div>
     <div></div>
-    <div class="actions">
-      <button class="icon-btn primary" title="New dataset">+ Dataset</button>
-    </div>
+    <div class="actions"></div>
   `;
-  row.querySelector("button").onclick = (e) => {
-    e.stopPropagation();
-    inlineEdit(row, {
-      placeholder: "data",
-      hint: `${state.pool}/`,
-      onCommit: withBusy(async (name) => {
-        const full = `${state.pool}/${name}`;
-        await mkDataset(full);
-        setActive({ kind: "ds", ds: full });
-        setStatus(`created ${full}`, "ok");
+  attachRowMenu(row, [
+    {
+      label: "+ New dataset",
+      kind: "primary",
+      run: () => inlineEdit(row, {
+        placeholder: "data",
+        hint: `${state.pool}/`,
+        onCommit: withBusy(async (name) => {
+          const full = `${state.pool}/${name}`;
+          await mkDataset(full);
+          setActive({ kind: "ds", ds: full });
+          setStatus(`created ${full}`, "ok");
+        }),
       }),
-    });
-  };
+    },
+  ]);
   return row;
 }
 
@@ -325,11 +326,7 @@ function renderDsRow(parentEl, ds, childrenOfSnap) {
       <span class="tag ${tagText}">${tagText.toUpperCase()}</span>
     </div>
     <div>${pinHTML}</div>
-    <div class="actions">
-      <button class="icon-btn" title="Snapshot only">📷 Snap</button>
-      <button class="icon-btn primary" title="Snapshot then clone (git-style)">🌿 Branch</button>
-      <button class="icon-btn danger" title="Destroy dataset">✕</button>
-    </div>
+    <div class="actions"></div>
   `;
 
   row.addEventListener("click", () => {
@@ -337,42 +334,43 @@ function renderDsRow(parentEl, ds, childrenOfSnap) {
     refresh();
   });
 
-  const [snapBtn, branchBtn, destroyBtn] = row.querySelectorAll(".actions button");
-
-  snapBtn.onclick = (e) => {
-    e.stopPropagation();
-    inlineEdit(row, {
-      placeholder: nextSnapName(meta),
-      hint: `${ds}@`,
-      onCommit: withBusy(async (name) => {
-        await mkSnap(ds, name);
-        setStatus(`snapshot ${snapFull(ds, name)}`, "ok");
+  attachRowMenu(row, [
+    {
+      label: "🌿 Branch (snap + clone)",
+      kind: "primary",
+      run: () => inlineEdit(row, {
+        placeholder: nextBranchName(),
+        hint: `${state.pool}/`,
+        onCommit: withBusy(async (name) => {
+          const full = `${state.pool}/${name}`;
+          await branchFrom(ds, name);
+          setActive({ kind: "ds", ds: full });
+          setStatus(`branched ${ds} → ${full}`, "ok");
+        }),
       }),
-    });
-  };
-
-  branchBtn.onclick = (e) => {
-    e.stopPropagation();
-    inlineEdit(row, {
-      placeholder: nextBranchName(),
-      hint: `${state.pool}/`,
-      onCommit: withBusy(async (name) => {
-        const full = `${state.pool}/${name}`;
-        await branchFrom(ds, name);
-        setActive({ kind: "ds", ds: full });
-        setStatus(`branched ${ds} → ${full}`, "ok");
+    },
+    {
+      label: "📷 Snapshot only",
+      run: () => inlineEdit(row, {
+        placeholder: nextSnapName(meta),
+        hint: `${ds}@`,
+        onCommit: withBusy(async (name) => {
+          await mkSnap(ds, name);
+          setStatus(`snapshot ${snapFull(ds, name)}`, "ok");
+        }),
       }),
-    });
-  };
-
-  destroyBtn.onclick = (e) => {
-    e.stopPropagation();
-    confirmInline(row, "Destroy?", withBusy(async () => {
-      await destroyTarget(ds);
-      if (state.active?.ds === ds) setActive(null);
-      setStatus(`destroyed ${ds}`, "ok");
-    }));
-  };
+    },
+    { divider: true },
+    {
+      label: "✕ Destroy dataset",
+      kind: "danger",
+      run: () => confirmInline(row, "Destroy?", withBusy(async () => {
+        await destroyTarget(ds);
+        if (state.active?.ds === ds) setActive(null);
+        setStatus(`destroyed ${ds}`, "ok");
+      })),
+    },
+  ]);
 
   parentEl.appendChild(row);
 
@@ -408,10 +406,7 @@ function renderSnapRow(parentEl, ds, snap, full) {
       <span class="tag ro">RO</span>
     </div>
     <div></div>
-    <div class="actions">
-      <button class="icon-btn primary" title="Clone snapshot into a new dataset">🌿 Branch</button>
-      <button class="icon-btn danger" title="Destroy snapshot">✕</button>
-    </div>
+    <div class="actions"></div>
   `;
 
   row.addEventListener("click", () => {
@@ -419,34 +414,101 @@ function renderSnapRow(parentEl, ds, snap, full) {
     refresh();
   });
 
-  const [branchBtn, destroyBtn] = row.querySelectorAll(".actions button");
-  branchBtn.onclick = (e) => {
-    e.stopPropagation();
-    inlineEdit(row, {
-      placeholder: nextBranchName(),
-      hint: `${state.pool}/`,
-      onCommit: withBusy(async (name) => {
-        const dst = `${state.pool}/${name}`;
-        await mkClone(full, dst);
-        setActive({ kind: "ds", ds: dst });
-        setStatus(`cloned ${full} → ${dst}`, "ok");
+  attachRowMenu(row, [
+    {
+      label: "🌿 Branch from snapshot",
+      kind: "primary",
+      run: () => inlineEdit(row, {
+        placeholder: nextBranchName(),
+        hint: `${state.pool}/`,
+        onCommit: withBusy(async (name) => {
+          const dst = `${state.pool}/${name}`;
+          await mkClone(full, dst);
+          setActive({ kind: "ds", ds: dst });
+          setStatus(`cloned ${full} → ${dst}`, "ok");
+        }),
       }),
-    });
-  };
-  destroyBtn.onclick = (e) => {
-    e.stopPropagation();
-    confirmInline(row, "Destroy?", withBusy(async () => {
-      await destroyTarget(full);
-      if (state.active?.kind === "snap"
-          && state.active.ds === ds && state.active.snap === snap) {
-        setActive(null);
-      }
-      setStatus(`destroyed ${full}`, "ok");
-    }));
-  };
+    },
+    { divider: true },
+    {
+      label: "✕ Destroy snapshot",
+      kind: "danger",
+      run: () => confirmInline(row, "Destroy?", withBusy(async () => {
+        await destroyTarget(full);
+        if (state.active?.kind === "snap"
+            && state.active.ds === ds && state.active.snap === snap) {
+          setActive(null);
+        }
+        setStatus(`destroyed ${full}`, "ok");
+      })),
+    },
+  ]);
 
   parentEl.appendChild(row);
 }
+
+// ---------- Per-row dropdown menu ----------
+//
+// Each tree row carries a single ⋯ button on the right. Clicking it
+// opens a dropdown anchored beneath the button with the row's actions.
+// One menu is open at a time; clicking outside or selecting an item
+// closes it. Keyboard: Escape closes.
+
+let openMenu = null;
+
+function attachRowMenu(row, items) {
+  const actionsEl = row.querySelector(".actions");
+  const trigger = document.createElement("button");
+  trigger.type = "button";
+  trigger.className = "menu-trigger";
+  trigger.title = "Actions";
+  trigger.setAttribute("aria-label", "Actions");
+  trigger.textContent = "⋯";
+  actionsEl.appendChild(trigger);
+
+  trigger.addEventListener("click", (e) => {
+    e.stopPropagation();
+    if (openMenu?.row === row) { closeMenu(); return; }
+    closeMenu();
+    showMenu(row, trigger, items);
+  });
+}
+
+function showMenu(row, trigger, items) {
+  const menu = document.createElement("div");
+  menu.className = "row-menu";
+  for (const item of items) {
+    if (item.divider) {
+      menu.appendChild(document.createElement("hr"));
+      continue;
+    }
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = item.label;
+    if (item.kind) btn.classList.add(item.kind);
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      closeMenu();
+      item.run();
+    });
+    menu.appendChild(btn);
+  }
+  trigger.classList.add("open");
+  row.querySelector(".actions").appendChild(menu);
+  openMenu = { row, menu, trigger };
+}
+
+function closeMenu() {
+  if (!openMenu) return;
+  openMenu.menu.remove();
+  openMenu.trigger.classList.remove("open");
+  openMenu = null;
+}
+
+document.addEventListener("click", () => closeMenu());
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") closeMenu();
+});
 
 function nextSnapName(meta) {
   return `v${meta.snaps.length + 1}`;
