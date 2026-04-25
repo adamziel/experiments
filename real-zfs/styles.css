@@ -211,34 +211,139 @@ button.primary {
   padding: 6px 4px;
 }
 
-.tree-node {
-  padding: 4px 8px;
-  border-radius: 4px;
-  cursor: pointer;
-  display: flex;
+/*
+ * Each tree row is a grid: [label | (active dot) | actions].
+ * Action chips are hidden until hover/focus/edit so the tree stays
+ * calm at rest, but every node is one hover away from snap/branch/
+ * destroy.
+ */
+.row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 6px;
+  padding: 4px 6px 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
   color: var(--ink);
   font-family: ui-monospace, SFMono-Regular, monospace;
   font-size: 12.5px;
   user-select: none;
+  position: relative;
 }
 
-.tree-node:hover {
+.row:hover,
+.row:focus-within {
   background: rgba(96, 165, 250, 0.08);
 }
 
-.tree-node.selected {
+.row.selected {
   background: rgba(96, 165, 250, 0.18);
+}
+
+.row.snap        { color: var(--accent-2); }
+.row.muted       { color: var(--ink-muted); cursor: default; }
+.row.muted:hover { background: transparent; }
+
+.row .label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.row .label .name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row .pin {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ok);
+  box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.18);
+  flex-shrink: 0;
+}
+
+.row .actions {
+  display: flex;
+  gap: 2px;
+  opacity: 0;
+  transition: opacity 90ms ease;
+}
+
+.row:hover .actions,
+.row:focus-within .actions,
+.row.editing .actions {
+  opacity: 1;
+}
+
+.icon-btn {
+  background: transparent;
+  color: var(--ink-dim);
+  border: 0;
+  padding: 3px 7px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  line-height: 1.1;
+}
+
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.06);
   color: var(--ink);
 }
 
-.tree-node.snap {
-  color: var(--accent-2);
+.icon-btn.danger:hover {
+  background: rgba(248, 113, 113, 0.14);
+  color: var(--err);
 }
 
-.tree-node.muted {
+.icon-btn.primary {
+  color: var(--accent);
+}
+
+.icon-btn.primary:hover {
+  background: rgba(96, 165, 250, 0.16);
+  color: var(--ink);
+}
+
+/*
+ * Inline rename / inline new-name editing replaces the row's label
+ * with an input + tiny [✓] [✕] cluster. Used for snap, branch, and
+ * new-dataset flows so naming feels like git checkout -b.
+ */
+.row.editing {
+  background: rgba(96, 165, 250, 0.14);
+}
+
+.row .inline-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.row .inline-edit input {
+  flex: 1;
+  background: #0a1020;
+  color: var(--ink);
+  border: 1px solid var(--line-strong);
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 12.5px;
+  min-width: 0;
+}
+
+.row .inline-edit .hint {
   color: var(--ink-muted);
+  font-size: 11px;
 }
 
 .tree-children {
@@ -255,12 +360,33 @@ button.primary {
   background: rgba(129, 140, 248, 0.18);
   color: var(--accent-2);
   letter-spacing: 0.04em;
+  flex-shrink: 0;
 }
 
-.tag.ds   { background: rgba(96, 165, 250, 0.18); color: var(--accent); }
-.tag.snap { background: rgba(129, 140, 248, 0.18); color: var(--accent-2); }
-.tag.clone{ background: rgba(52, 211, 153, 0.18); color: var(--ok); }
-.tag.ro   { background: rgba(251, 191, 36, 0.20); color: var(--warn); }
+.tag.ds    { background: rgba(96, 165, 250, 0.18); color: var(--accent); }
+.tag.snap  { background: rgba(129, 140, 248, 0.18); color: var(--accent-2); }
+.tag.clone { background: rgba(52, 211, 153, 0.18); color: var(--ok); }
+.tag.ro    { background: rgba(251, 191, 36, 0.20); color: var(--warn); }
+.tag.pool  { background: rgba(255, 255, 255, 0.06); color: var(--ink-dim); }
+
+.legend {
+  display: flex;
+  gap: 14px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--ink-muted);
+}
+.legend .dot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: 1px;
+}
+.legend .dot.active { background: var(--ok); }
+.legend .dot.snap   { background: var(--accent-2); }
+.legend .dot.clone  { background: var(--ok); opacity: 0.55; }
 
 /* ----- Editor ----- */
 

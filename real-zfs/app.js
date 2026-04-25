@@ -1,16 +1,13 @@
 // Browser demo for the OpenZFS-in-wasm bundle.
 //
-// Wires every operation the wasm exposes (pool create/export, dataset
-// create/destroy, snapshot, snapshot destroy, clone, file read/write)
-// into a tree-view UI: dataset/snapshot tree on the left, file tree
-// in the middle, content editor on the right.
+// Hover any row in the dataset tree to act on it: snapshot, branch
+// (snap + clone in one step), or destroy. Names are entered inline,
+// not in a modal. The file panel and editor mirror the active node.
 //
-// The wasm runs on a dedicated pthread (-sPROXY_TO_PTHREAD), so each
-// op is a non-blocking enqueue followed by polling. We track the
-// dataset / snapshot / file tree on the JS side because the C bundle
-// does not yet expose `list` APIs — every state change here either
-// originated in this UI or in the demo seed scenario, so the mirror
-// stays accurate.
+// Wasm runs on a dedicated pthread (-sPROXY_TO_PTHREAD); each op is
+// a non-blocking enqueue followed by polling. Dataset / snapshot /
+// file state lives JS-side because the C bundle has no list APIs.
+// Every transition starts in this UI, so the mirror stays accurate.
 
 import ZfsWasmFactory from "./build/zfswasm.js";
 
@@ -29,9 +26,7 @@ const els = {
   filesTitle: $("files-title"), filesSubtitle: $("files-subtitle"),
   editor: $("editor"), editorTitle: $("editor-title"),
   editorSubtitle: $("editor-subtitle"), editorStatus: $("editor-status"),
-  opSnap: $("op-snap"), opClone: $("op-clone"), opNewds: $("op-newds"),
-  opDestroy: $("op-destroy"), opNewfile: $("op-newfile"),
-  opSave: $("op-save"),
+  opNewfile: $("op-newfile"), opSave: $("op-save"),
   log: $("log"), clearLog: $("clear-log"),
   promptDialog: $("prompt-dialog"), promptTitle: $("prompt-title"),
   promptHelp: $("prompt-help"), promptInput: $("prompt-input"),
@@ -53,17 +48,16 @@ const setStatus = (msg, kind = "") => {
 const state = {
   zfs: null,
   pool: null,
-  // Map<datasetFullName, { kind: 'ds' | 'clone',
-  //                       parentSnap?: 'pool/ds@snap',
-  //                       files: Map<path, { size }>,
-  //                       snaps: string[] }>
+  // Map<datasetFullName, { kind, parentSnap?, files, snaps[] }>
   datasets: new Map(),
-  active: null,            // selected node: { kind, ds, snap?, file? }
+  active: null,            // { kind, ds, snap?, file? }
   busy: false,
+  editing: null,           // { row, cancel }
 };
 
 const isSnapshot = (id) => id.includes("@");
 const dsOfSnap   = (snap) => snap.split("@")[0];
+const snapFull   = (ds, snap) => `${ds}@${snap}`;
 
 // ---------- WASM bindings ----------
 
@@ -130,8 +124,7 @@ async function bootZfs() {
         if (rc !== 0) return { rc, data: null };
         const len = mod.HEAPU32[out >> 2];
         // HEAPU8 is backed by a SharedArrayBuffer when pthreads are
-        // on; TextDecoder rejects shared views. Copy into a non-shared
-        // Uint8Array first.
+        // on; TextDecoder rejects shared views. Copy first.
         const copy = new Uint8Array(len);
         copy.set(mod.HEAPU8.subarray(buf, buf + len));
         return {
@@ -156,21 +149,21 @@ async function boot() {
       throw new Error("pool_create failed");
     state.pool = POOL;
 
-    // Seed: site dataset with two files, snapshot, clone, branch edits.
     await mkDataset(`${POOL}/site`);
     await writeFile(`${POOL}/site`, "/index.html",
-      "<h1>Hello from OpenZFS</h1>\n<p>Edit me, snapshot, branch.</p>\n");
+      "<h1>Hello from OpenZFS</h1>\n<p>Hover any row → branch in one click.</p>\n");
     await writeFile(`${POOL}/site`, "/notes.txt",
-      "Welcome — try the Snapshot button on tankw/site, then Clone.\n");
+      "Try this:\n  1. Hover tankw/site → 'Branch' → name it.\n" +
+      "  2. Edit a file in the branch.\n" +
+      "  3. Click the older snapshot to confirm the original is intact.\n");
     await mkSnap(`${POOL}/site`, "v1");
     await mkClone(`${POOL}/site@v1`, `${POOL}/branch`);
     await writeFile(`${POOL}/branch`, "/index.html",
-      "<h1>Hello from a branch</h1>\n<p>This is the cloned dataset.</p>\n");
+      "<h1>Hello from a branch</h1>\n<p>Try editing me. The snapshot stays.</p>\n");
 
     setActive({ kind: "ds", ds: `${POOL}/site` });
     refresh();
-    [els.opSnap, els.opClone, els.opNewds, els.opDestroy,
-     els.opNewfile, els.opSave, els.reset].forEach((b) => (b.disabled = false));
+    [els.opNewfile, els.opSave, els.reset].forEach((b) => (b.disabled = false));
     setStatus("ready", "ok");
   } catch (e) {
     log("[err] " + e.message);
@@ -179,7 +172,7 @@ async function boot() {
   }
 }
 
-// ---------- State mutators ----------
+// ---------- Mutators ----------
 
 async function mkDataset(full) {
   log(`ds_create ${full}`);
@@ -189,7 +182,7 @@ async function mkDataset(full) {
 }
 
 async function mkSnap(ds, name) {
-  log(`snap ${ds}@${name}`);
+  log(`snap ${snapFull(ds, name)}`);
   const rc = await state.zfs.snap(ds, name);
   if (rc !== 0) throw new Error(`snap rc=${rc}`);
   state.datasets.get(ds).snaps.push(name);
@@ -200,14 +193,22 @@ async function mkClone(snap, dst) {
   const rc = await state.zfs.clone(snap, dst);
   if (rc !== 0) throw new Error(`clone rc=${rc}`);
   // Inherit files from the parent at snap time (best-effort mirror).
-  const parentFiles = state.datasets.get(dsOfSnap(snap))?.files
-                       ?? new Map();
+  const parentFiles = state.datasets.get(dsOfSnap(snap))?.files ?? new Map();
   state.datasets.set(dst, {
     kind: "clone",
     parentSnap: snap,
-    files: new Map([...parentFiles]),
+    files: new Map([...parentFiles].map(([p, f]) => [p, { ...f }])),
     snaps: [],
   });
+}
+
+// One-click branch: snap + clone. Snap name auto-derived; the user
+// only names the branch.
+async function branchFrom(ds, branchName) {
+  const meta = state.datasets.get(ds);
+  const snapName = `branchpoint-${meta.snaps.length + 1}`;
+  await mkSnap(ds, snapName);
+  await mkClone(snapFull(ds, snapName), `${POOL}/${branchName}`);
 }
 
 async function writeFile(ds, path, text) {
@@ -218,52 +219,44 @@ async function writeFile(ds, path, text) {
   if (meta) meta.files.set(path, { size: text.length });
 }
 
-async function destroyDataset(full) {
-  log(`destroy ${full}`);
-  const rc = isSnapshot(full)
-    ? await state.zfs.snapDestroy(full)
-    : await state.zfs.dsDestroy(full);
+async function destroyTarget(target) {
+  log(`destroy ${target}`);
+  const rc = isSnapshot(target)
+    ? await state.zfs.snapDestroy(target)
+    : await state.zfs.dsDestroy(target);
   if (rc !== 0) throw new Error(`destroy rc=${rc}`);
-  if (isSnapshot(full)) {
-    const ds = state.datasets.get(dsOfSnap(full));
-    if (ds) ds.snaps = ds.snaps.filter((n) => `${dsOfSnap(full)}@${n}` !== full);
+  if (isSnapshot(target)) {
+    const ds = state.datasets.get(dsOfSnap(target));
+    if (ds) ds.snaps = ds.snaps.filter(
+      (n) => snapFull(dsOfSnap(target), n) !== target);
   } else {
-    state.datasets.delete(full);
+    state.datasets.delete(target);
   }
 }
 
-// ---------- UI: tree rendering ----------
+// ---------- Tree rendering ----------
 
 function refresh() {
-  // Active label
   els.mPool.textContent = state.pool ?? "—";
-  els.mDs.textContent = [...state.datasets.values()].length;
+  els.mDs.textContent = state.datasets.size;
   els.mSnaps.textContent = [...state.datasets.values()]
     .reduce((n, d) => n + d.snaps.length, 0);
   els.mActive.textContent = activeLabel();
-
   renderDatasetTree();
   renderFileTree();
   renderEditor();
 }
 
 function activeLabel() {
-  if (!state.active) return "—";
   const a = state.active;
-  if (a.kind === "snap") return `${a.ds}@${a.snap}`;
-  return a.ds;
+  if (!a) return "—";
+  return a.kind === "snap" ? snapFull(a.ds, a.snap) : a.ds;
 }
 
 function renderDatasetTree() {
   els.dsTree.innerHTML = "";
   if (!state.pool) return;
-  // Pool root.
-  const root = node({
-    label: state.pool, tag: "POOL", className: "tree-node muted",
-  });
-  els.dsTree.appendChild(root);
 
-  // Build parent-snap -> [clone names] map.
   const childrenOfSnap = new Map();
   for (const [name, meta] of state.datasets) {
     if (meta.kind === "clone")
@@ -271,52 +264,282 @@ function renderDatasetTree() {
         [...(childrenOfSnap.get(meta.parentSnap) ?? []), name]);
   }
 
-  // Top-level datasets: directly under pool, not clones of any snap.
   const topLevel = [...state.datasets.entries()]
     .filter(([, m]) => m.kind === "ds")
     .map(([n]) => n)
     .sort();
 
+  els.dsTree.appendChild(poolRow());
+
   const wrap = document.createElement("div");
   wrap.className = "tree-children";
-  root.after(wrap);
+  els.dsTree.appendChild(wrap);
 
-  for (const ds of topLevel) renderDatasetSubtree(wrap, ds, childrenOfSnap);
+  for (const ds of topLevel) renderDsRow(wrap, ds, childrenOfSnap);
 }
 
-function renderDatasetSubtree(parentEl, ds, childrenOfSnap) {
+function poolRow() {
+  const row = document.createElement("div");
+  row.className = "row muted";
+  row.innerHTML = `
+    <div class="label">
+      <span class="name">${state.pool}</span>
+      <span class="tag pool">POOL</span>
+    </div>
+    <div></div>
+    <div class="actions">
+      <button class="icon-btn primary" title="New dataset">+ Dataset</button>
+    </div>
+  `;
+  row.querySelector("button").onclick = (e) => {
+    e.stopPropagation();
+    inlineEdit(row, {
+      placeholder: "data",
+      hint: `${state.pool}/`,
+      onCommit: withBusy(async (name) => {
+        const full = `${state.pool}/${name}`;
+        await mkDataset(full);
+        setActive({ kind: "ds", ds: full });
+        setStatus(`created ${full}`, "ok");
+      }),
+    });
+  };
+  return row;
+}
+
+function renderDsRow(parentEl, ds, childrenOfSnap) {
   const meta = state.datasets.get(ds);
+  const isActive = state.active?.kind === "ds" && state.active.ds === ds;
+
+  const row = document.createElement("div");
+  row.className = "row" + (isActive ? " selected" : "");
+  row.tabIndex = 0;
+  row.dataset.id = ds;
+
   const tagText = meta.kind === "clone" ? "clone" : "ds";
-  const dsEl = node({
-    label: ds, tag: tagText, className: "tree-node",
-    selected: state.active?.kind !== "snap" && state.active?.ds === ds,
-    onClick: () => { setActive({ kind: "ds", ds }); refresh(); },
+  const pinHTML = isActive ? `<span class="pin" title="active"></span>` : "";
+
+  row.innerHTML = `
+    <div class="label">
+      <span class="name">${ds}</span>
+      <span class="tag ${tagText}">${tagText.toUpperCase()}</span>
+    </div>
+    <div>${pinHTML}</div>
+    <div class="actions">
+      <button class="icon-btn" title="Snapshot only">📷 Snap</button>
+      <button class="icon-btn primary" title="Snapshot then clone (git-style)">🌿 Branch</button>
+      <button class="icon-btn danger" title="Destroy dataset">✕</button>
+    </div>
+  `;
+
+  row.addEventListener("click", () => {
+    setActive({ kind: "ds", ds });
+    refresh();
   });
-  parentEl.appendChild(dsEl);
+
+  const [snapBtn, branchBtn, destroyBtn] = row.querySelectorAll(".actions button");
+
+  snapBtn.onclick = (e) => {
+    e.stopPropagation();
+    inlineEdit(row, {
+      placeholder: nextSnapName(meta),
+      hint: `${ds}@`,
+      onCommit: withBusy(async (name) => {
+        await mkSnap(ds, name);
+        setStatus(`snapshot ${snapFull(ds, name)}`, "ok");
+      }),
+    });
+  };
+
+  branchBtn.onclick = (e) => {
+    e.stopPropagation();
+    inlineEdit(row, {
+      placeholder: nextBranchName(),
+      hint: `${state.pool}/`,
+      onCommit: withBusy(async (name) => {
+        const full = `${state.pool}/${name}`;
+        await branchFrom(ds, name);
+        setActive({ kind: "ds", ds: full });
+        setStatus(`branched ${ds} → ${full}`, "ok");
+      }),
+    });
+  };
+
+  destroyBtn.onclick = (e) => {
+    e.stopPropagation();
+    confirmInline(row, "Destroy?", withBusy(async () => {
+      await destroyTarget(ds);
+      if (state.active?.ds === ds) setActive(null);
+      setStatus(`destroyed ${ds}`, "ok");
+    }));
+  };
+
+  parentEl.appendChild(row);
 
   const children = document.createElement("div");
   children.className = "tree-children";
   parentEl.appendChild(children);
 
   for (const snap of meta.snaps) {
-    const full = `${ds}@${snap}`;
-    const snapEl = node({
-      label: `@${snap}`, tag: "snap ro", className: "tree-node snap",
-      selected: state.active?.kind === "snap" && state.active.ds === ds
-        && state.active.snap === snap,
-      onClick: () => { setActive({ kind: "snap", ds, snap }); refresh(); },
-    });
-    children.appendChild(snapEl);
-
+    const full = snapFull(ds, snap);
+    renderSnapRow(children, ds, snap, full);
     const cloneNames = childrenOfSnap.get(full) ?? [];
     for (const c of cloneNames) {
       const sub = document.createElement("div");
       sub.className = "tree-children";
       children.appendChild(sub);
-      renderDatasetSubtree(sub, c, childrenOfSnap);
+      renderDsRow(sub, c, childrenOfSnap);
     }
   }
 }
+
+function renderSnapRow(parentEl, ds, snap, full) {
+  const isActive = state.active?.kind === "snap"
+    && state.active.ds === ds && state.active.snap === snap;
+  const row = document.createElement("div");
+  row.className = "row snap" + (isActive ? " selected" : "");
+  row.tabIndex = 0;
+  row.dataset.id = full;
+
+  row.innerHTML = `
+    <div class="label">
+      <span class="name">@${snap}</span>
+      <span class="tag snap">SNAP</span>
+      <span class="tag ro">RO</span>
+    </div>
+    <div></div>
+    <div class="actions">
+      <button class="icon-btn primary" title="Clone snapshot into a new dataset">🌿 Branch</button>
+      <button class="icon-btn danger" title="Destroy snapshot">✕</button>
+    </div>
+  `;
+
+  row.addEventListener("click", () => {
+    setActive({ kind: "snap", ds, snap });
+    refresh();
+  });
+
+  const [branchBtn, destroyBtn] = row.querySelectorAll(".actions button");
+  branchBtn.onclick = (e) => {
+    e.stopPropagation();
+    inlineEdit(row, {
+      placeholder: nextBranchName(),
+      hint: `${state.pool}/`,
+      onCommit: withBusy(async (name) => {
+        const dst = `${state.pool}/${name}`;
+        await mkClone(full, dst);
+        setActive({ kind: "ds", ds: dst });
+        setStatus(`cloned ${full} → ${dst}`, "ok");
+      }),
+    });
+  };
+  destroyBtn.onclick = (e) => {
+    e.stopPropagation();
+    confirmInline(row, "Destroy?", withBusy(async () => {
+      await destroyTarget(full);
+      if (state.active?.kind === "snap"
+          && state.active.ds === ds && state.active.snap === snap) {
+        setActive(null);
+      }
+      setStatus(`destroyed ${full}`, "ok");
+    }));
+  };
+
+  parentEl.appendChild(row);
+}
+
+function nextSnapName(meta) {
+  return `v${meta.snaps.length + 1}`;
+}
+function nextBranchName() {
+  let i = 1;
+  while (state.datasets.has(`${state.pool}/branch${i}`)) i++;
+  return `branch${i}`;
+}
+
+// ---------- Inline editing ----------
+//
+// Replaces a row's label cell with an input + ✓/✕ for the duration
+// of the edit. Enter commits, Escape cancels. Only one inline edit
+// at a time — opening another cancels the previous.
+
+function inlineEdit(row, { placeholder, hint, onCommit }) {
+  cancelInline();
+
+  const labelCell = row.querySelector(".label");
+  const original = labelCell.innerHTML;
+  row.classList.add("editing");
+
+  labelCell.innerHTML = `
+    <span class="inline-edit">
+      <span class="hint">${hint}</span>
+      <input value="${placeholder}" />
+      <button type="button" class="icon-btn primary" title="Confirm">✓</button>
+      <button type="button" class="icon-btn" title="Cancel">✕</button>
+    </span>
+  `;
+  const input = labelCell.querySelector("input");
+  const [okBtn, cancelBtn] = labelCell.querySelectorAll("button");
+  input.focus();
+  input.select();
+
+  const cancel = () => {
+    state.editing = null;
+    row.classList.remove("editing");
+    labelCell.innerHTML = original;
+  };
+  const commit = async () => {
+    const value = input.value.trim();
+    if (!value) return cancel();
+    state.editing = null;
+    row.classList.remove("editing");
+    labelCell.innerHTML = original;
+    await onCommit(value);
+    refresh();
+  };
+
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    if (e.key === "Escape") { e.preventDefault(); cancel(); }
+  });
+  okBtn.addEventListener("click", (e) => { e.stopPropagation(); commit(); });
+  cancelBtn.addEventListener("click", (e) => { e.stopPropagation(); cancel(); });
+
+  state.editing = { row, cancel };
+}
+
+function cancelInline() {
+  if (state.editing) state.editing.cancel();
+}
+
+function confirmInline(row, message, onConfirm) {
+  cancelInline();
+  const actions = row.querySelector(".actions");
+  const original = actions.innerHTML;
+  row.classList.add("editing");
+
+  actions.innerHTML = `
+    <span class="hint" style="margin-right:6px;color:var(--err);">${message}</span>
+    <button class="icon-btn danger" type="button">Yes</button>
+    <button class="icon-btn"        type="button">No</button>
+  `;
+  const [yes, no] = actions.querySelectorAll("button");
+  const restore = () => {
+    state.editing = null;
+    row.classList.remove("editing");
+    actions.innerHTML = original;
+  };
+  yes.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    restore();
+    await onConfirm();
+    refresh();
+  });
+  no.addEventListener("click", (e) => { e.stopPropagation(); restore(); });
+  state.editing = { row, cancel: restore };
+}
+
+// ---------- File panel + editor ----------
 
 function renderFileTree() {
   els.fileTree.innerHTML = "";
@@ -330,12 +553,12 @@ function renderFileTree() {
     ? `Files in ${ds}@${state.active.snap}` : `Files in ${ds}`;
   els.filesSubtitle.textContent = isSnap
     ? "Read-only view of the snapshot."
-    : "Click a file to open.";
+    : "Click a file to open. New file… adds one.";
 
   const sorted = [...meta.files.keys()].sort();
   if (!sorted.length) {
     const empty = document.createElement("div");
-    empty.className = "tree-node muted";
+    empty.className = "row muted";
     empty.textContent = "(empty)";
     els.fileTree.appendChild(empty);
     return;
@@ -343,22 +566,29 @@ function renderFileTree() {
 
   for (const path of sorted) {
     const file = meta.files.get(path);
-    const el = node({
-      label: path, tag: `${file.size}B`, className: "tree-node",
-      selected: state.active?.file === path,
-      onClick: () => {
-        state.active = { ...state.active, file: path };
-        refresh();
-        loadFileIntoEditor(path);
-      },
+    const isSel = state.active?.file === path;
+    const row = document.createElement("div");
+    row.className = "row" + (isSel ? " selected" : "");
+    row.innerHTML = `
+      <div class="label">
+        <span class="name">${path}</span>
+        <span class="tag">${file.size}B</span>
+      </div>
+      <div></div>
+      <div></div>
+    `;
+    row.addEventListener("click", () => {
+      state.active = { ...state.active, file: path };
+      refresh();
+      loadFileIntoEditor(path);
     });
-    els.fileTree.appendChild(el);
+    els.fileTree.appendChild(row);
   }
 }
 
 async function loadFileIntoEditor(path) {
   const target = state.active.kind === "snap"
-    ? `${state.active.ds}@${state.active.snap}`
+    ? snapFull(state.active.ds, state.active.snap)
     : state.active.ds;
   log(`file_read ${target}:${path}`);
   const r = await state.zfs.fileRead(target, path);
@@ -390,28 +620,7 @@ function setActive(active) {
   state.active = active;
 }
 
-function node({ label, tag, className, selected, onClick }) {
-  const el = document.createElement("div");
-  el.className = className + (selected ? " selected" : "");
-  el.role = "treeitem";
-
-  const lbl = document.createElement("span");
-  lbl.textContent = label;
-  el.appendChild(lbl);
-
-  if (tag) {
-    for (const t of String(tag).split(" ")) {
-      const badge = document.createElement("span");
-      badge.className = `tag ${t}`;
-      badge.textContent = t.toUpperCase();
-      el.appendChild(badge);
-    }
-  }
-  if (onClick) el.addEventListener("click", onClick);
-  return el;
-}
-
-// ---------- Prompt dialog ----------
+// ---------- Modal (only used for multi-line file content) ----------
 
 function promptText({ title, help, value = "", multiline = false }) {
   return new Promise((resolve) => {
@@ -449,60 +658,6 @@ function withBusy(fn) {
 }
 
 els.boot.addEventListener("click", boot);
-
-els.opSnap.addEventListener("click", withBusy(async () => {
-  if (!state.active || state.active.kind !== "ds") {
-    setStatus("select a dataset first", "err"); return;
-  }
-  const name = await promptText({
-    title: `Snapshot ${state.active.ds}`,
-    help: "Snap name. Will be saved as " + state.active.ds + "@<name>.",
-    value: `v${(state.datasets.get(state.active.ds).snaps.length || 0) + 1}`,
-  });
-  if (!name) return;
-  await mkSnap(state.active.ds, name);
-  setStatus(`snapshot ${state.active.ds}@${name}`, "ok");
-}));
-
-els.opClone.addEventListener("click", withBusy(async () => {
-  if (!state.active || state.active.kind !== "snap") {
-    setStatus("select a snapshot first", "err"); return;
-  }
-  const dst = await promptText({
-    title: `Clone ${state.active.ds}@${state.active.snap}`,
-    help: "New dataset name. Must be unique under the pool.",
-    value: `${POOL}/clone${state.datasets.size}`,
-  });
-  if (!dst) return;
-  await mkClone(`${state.active.ds}@${state.active.snap}`, dst);
-  setActive({ kind: "ds", ds: dst });
-  setStatus(`cloned to ${dst}`, "ok");
-}));
-
-els.opNewds.addEventListener("click", withBusy(async () => {
-  const name = await promptText({
-    title: "New dataset",
-    help: `Will be created as ${POOL}/<name>.`,
-    value: "data",
-  });
-  if (!name) return;
-  const full = `${POOL}/${name}`;
-  await mkDataset(full);
-  setActive({ kind: "ds", ds: full });
-  setStatus(`created ${full}`, "ok");
-}));
-
-els.opDestroy.addEventListener("click", withBusy(async () => {
-  if (!state.active) return;
-  const target = state.active.kind === "snap"
-    ? `${state.active.ds}@${state.active.snap}`
-    : state.active.ds;
-  const ok = confirm(`Destroy ${target}?`);
-  if (!ok) return;
-  await destroyDataset(target);
-  setActive(null);
-  setStatus(`destroyed ${target}`, "ok");
-}));
 
 els.opNewfile.addEventListener("click", withBusy(async () => {
   if (!state.active || state.active.kind !== "ds") {
