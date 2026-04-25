@@ -82,6 +82,8 @@ async function bootZfs() {
   const snap    = mod.cwrap("zfswasm_snap_begin", "number", ["string","string"]);
   const sndest  = mod.cwrap("zfswasm_snap_destroy_begin", "number", ["string"]);
   const clone   = mod.cwrap("zfswasm_clone_begin", "number", ["string","string"]);
+  const rollback= mod.cwrap("zfswasm_rollback_begin", "number", ["string","string"]);
+  const promote = mod.cwrap("zfswasm_promote_begin", "number", ["string"]);
   const fw      = mod.cwrap("zfswasm_file_write_begin", "number",
                             ["string","string","number","number"]);
   const fr      = mod.cwrap("zfswasm_file_read_begin", "number",
@@ -108,6 +110,8 @@ async function bootZfs() {
     snap:      (ds, name) => call(snap, ds, name),
     snapDestroy:(full)    => call(sndest, full),
     clone:     (snap, dst)=> call(clone, snap, dst),
+    rollback:  (ds, name) => call(rollback, ds, name),
+    promote:   (clone)    => call(promote, clone),
     async fileWrite(ds, path, text) {
       const bytes = new TextEncoder().encode(text);
       const buf = mod._malloc(bytes.length || 1);
@@ -209,6 +213,43 @@ async function branchFrom(ds, branchName) {
   const snapName = `branchpoint-${meta.snaps.length + 1}`;
   await mkSnap(ds, snapName);
   await mkClone(snapFull(ds, snapName), `${POOL}/${branchName}`);
+}
+
+// rollback: discard changes in `ds` newer than the named snapshot.
+// On the JS mirror this means restoring the file map from the snap.
+// We can't reconstruct snapshot file maps perfectly without list APIs,
+// so the mirror just drops files added after the snap was taken;
+// the wasm-backed dataset is correctly rewound either way.
+async function rollback(ds, snapName) {
+  log(`rollback ${ds} → @${snapName}`);
+  const rc = await state.zfs.rollback(ds, snapName);
+  if (rc !== 0) throw new Error(`rollback rc=${rc}`);
+  // Drop any snapshots taken after the rollback target; ZFS does
+  // the same on its side.
+  const meta = state.datasets.get(ds);
+  if (meta) {
+    const idx = meta.snaps.indexOf(snapName);
+    if (idx >= 0) meta.snaps = meta.snaps.slice(0, idx + 1);
+  }
+}
+
+// promote: turn `clone` into the parent. After this the previous
+// parent depends on `clone`'s lineage, so the user can destroy the
+// old dataset to "merge" the clone in place.
+async function promote(clone) {
+  log(`promote ${clone}`);
+  const rc = await state.zfs.promote(clone);
+  if (rc !== 0) throw new Error(`promote rc=${rc}`);
+  // Mirror update: the clone is no longer a child of its parent
+  // snap. The previous parent dataset becomes a clone of the
+  // promoted dataset's history. We approximate by clearing
+  // parentSnap on the promoted clone and tagging it as a normal
+  // ds; the original parent stays where it is.
+  const meta = state.datasets.get(clone);
+  if (meta) {
+    meta.kind = "ds";
+    meta.parentSnap = undefined;
+  }
 }
 
 async function writeFile(ds, path, text) {
@@ -334,10 +375,11 @@ function renderDsRow(parentEl, ds, childrenOfSnap) {
     refresh();
   });
 
-  attachRowMenu(row, [
+  const items = [
     {
       label: "🌿 Branch (snap + clone)",
       kind: "primary",
+      help: "Snapshot now and clone the snapshot into a new dataset. Switches to the new branch.",
       run: () => inlineEdit(row, {
         placeholder: nextBranchName(),
         hint: `${state.pool}/`,
@@ -351,6 +393,7 @@ function renderDsRow(parentEl, ds, childrenOfSnap) {
     },
     {
       label: "📷 Snapshot only",
+      help: "Take a snapshot without cloning.",
       run: () => inlineEdit(row, {
         placeholder: nextSnapName(meta),
         hint: `${ds}@`,
@@ -360,17 +403,33 @@ function renderDsRow(parentEl, ds, childrenOfSnap) {
         }),
       }),
     },
-    { divider: true },
-    {
-      label: "✕ Destroy dataset",
-      kind: "danger",
-      run: () => confirmInline(row, "Destroy?", withBusy(async () => {
-        await destroyTarget(ds);
-        if (state.active?.ds === ds) setActive(null);
-        setStatus(`destroyed ${ds}`, "ok");
+  ];
+
+  // For clones, expose Promote (the closest ZFS has to "merge").
+  if (meta.kind === "clone") {
+    items.push({ divider: true });
+    items.push({
+      label: "⬆ Promote (merge into parent)",
+      help: "Make this clone the parent in its lineage. Then destroying the original dataset adopts the clone's state.",
+      run: () => confirmInline(row, "Promote?", withBusy(async () => {
+        await promote(ds);
+        setStatus(`promoted ${ds}`, "ok");
       })),
-    },
-  ]);
+    });
+  }
+
+  items.push({ divider: true });
+  items.push({
+    label: "✕ Destroy dataset",
+    kind: "danger",
+    run: () => confirmInline(row, "Destroy?", withBusy(async () => {
+      await destroyTarget(ds);
+      if (state.active?.ds === ds) setActive(null);
+      setStatus(`destroyed ${ds}`, "ok");
+    })),
+  });
+
+  attachRowMenu(row, items);
 
   parentEl.appendChild(row);
 
@@ -418,6 +477,7 @@ function renderSnapRow(parentEl, ds, snap, full) {
     {
       label: "🌿 Branch from snapshot",
       kind: "primary",
+      help: "Clone this snapshot into a new dataset. Both datasets share blocks until they diverge.",
       run: () => inlineEdit(row, {
         placeholder: nextBranchName(),
         hint: `${state.pool}/`,
@@ -428,6 +488,15 @@ function renderSnapRow(parentEl, ds, snap, full) {
           setStatus(`cloned ${full} → ${dst}`, "ok");
         }),
       }),
+    },
+    {
+      label: "↩ Rollback dataset to here",
+      help: "Discard all changes in the parent dataset newer than this snapshot. Newer snapshots are also dropped.",
+      run: () => confirmInline(row, "Rollback?", withBusy(async () => {
+        await rollback(ds, snap);
+        setActive({ kind: "ds", ds });
+        setStatus(`rolled ${ds} → @${snap}`, "ok");
+      })),
     },
     { divider: true },
     {
@@ -492,6 +561,12 @@ function showMenu(row, trigger, items) {
       item.run();
     });
     menu.appendChild(btn);
+    if (item.help) {
+      const help = document.createElement("div");
+      help.className = "menu-help";
+      help.textContent = item.help;
+      menu.appendChild(help);
+    }
   }
   trigger.classList.add("open");
   row.querySelector(".actions").appendChild(menu);

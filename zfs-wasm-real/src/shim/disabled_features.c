@@ -27,6 +27,17 @@ int dsl_crypto_key_load(const char *a, void *b) { (void)a;(void)b; STUB_ENOTSUP;
 int dsl_crypto_key_rewrap(const char *a, void *b, void *c) { (void)a;(void)b;(void)c; STUB_ENOTSUP; }
 int dsl_crypto_populate_key_nvlist(void *a, uint64_t b, void *c) { (void)a;(void)b;(void)c; STUB_ENOTSUP; }
 int dsl_crypto_recv_key(const char *a, uint64_t b, void *c, void *d) { (void)a;(void)b;(void)c;(void)d; STUB_ENOTSUP; }
+
+/* Promote pulls in encryption sanity checks; without crypto the
+ * answer is always "no encryption involved, nothing to do". */
+int dsl_dataset_promote_crypt_check(void *target, void *origin)
+{ (void)target; (void)origin; return (0); }
+void dsl_dataset_promote_crypt_sync(void *target, void *origin, void *tx)
+{ (void)target; (void)origin; (void)tx; }
+
+/* Bookmark machinery — promote walks bookmarks. We never create one. */
+void dsl_bookmark_node_add(void *ds, void *node, void *tx)
+{ (void)ds; (void)node; (void)tx; }
 void spa_keystore_init(void *k) { (void)k; }
 void spa_keystore_fini(void *k) { (void)k; }
 int spa_keystore_load_wkey(const char *a, void *b, boolean_t c) { (void)a;(void)b;(void)c; STUB_ENOTSUP; }
