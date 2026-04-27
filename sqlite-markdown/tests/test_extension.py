@@ -826,6 +826,33 @@ About body.
         )
 
 
+    def test_noop_update_does_not_rewrite_markdown_file(self) -> None:
+        self.insert_post(title="Stable", name="stable", content="stable body\n", post_id=1)
+        post_path = self.root / "1-stable.md"
+        original_bytes = post_path.read_bytes()
+        original_mtime_ns = post_path.stat().st_mtime_ns
+
+        # Re-issue an UPDATE that sets every column to its current value. The
+        # rendered markdown is identical, so the file must not be touched.
+        self.connection.execute(
+            """
+            UPDATE wp_posts
+            SET
+                post_title = post_title,
+                post_name = post_name,
+                post_status = post_status,
+                post_type = post_type,
+                post_date_gmt = post_date_gmt,
+                post_modified_gmt = post_modified_gmt,
+                post_content = post_content
+            WHERE ID = 1
+            """
+        )
+
+        self.assertEqual(post_path.read_bytes(), original_bytes)
+        self.assertEqual(post_path.stat().st_mtime_ns, original_mtime_ns)
+
+
 def expected_post_name(title: str, name: str | None) -> str:
     if name is not None and name != "":
         return name
