@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HTML — PHP Toolkit reference</title>
 <meta name="description" content="A pure-PHP HTML5 parser and tag rewriter mirroring WordPress core&#x27;s HTML API. Treat HTML the way browsers do — without libxml2, DOMDocument, or regex hacks — and rewrite attributes in a single linear pass.">
-<link rel="stylesheet" href="../assets/style.css?v=20260503-fallback">
+<link rel="stylesheet" href="../assets/style.css?v=20260503-script-unescape">
 <script type="module" src="https://playground.wordpress.net/php-code-snippet.js"></script>
 <script id="toolkit-setup" type="application/json"></script>
-<script src="../assets/page.js?v=20260503-fallback" defer></script>
+<script src="../assets/page.js?v=20260503-script-unescape" defer></script>
 </head>
 <body>
 <header class="site">
@@ -178,20 +178,17 @@ echo $tags->get_updated_html();
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$untrusted = &#x27;&lt;p&gt;Hi &lt;b onclick=&quot;steal()&quot;&gt;friend&lt;/b&gt;!&lt;/p&gt;&#x27;
-	. &#x27;&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;&#x27;
-	. &#x27;&lt;img src=x onerror=&quot;boom()&quot;&gt;&#x27;;
+$untrusted = &#x27;&lt;p onclick=&quot;x()&quot;&gt;hi&lt;/p&gt;&#x27;
+	. &#x27;&lt;script&gt;evil()&lt;/script&gt;&#x27;
+	. &#x27;&lt;img src=&quot;x&quot; onerror=&quot;boom()&quot;&gt;&#x27;;
 
 $tags = new WP_HTML_Tag_Processor( $untrusted );
 while ( $tags-&gt;next_tag() ) {
 	if ( &#x27;SCRIPT&#x27; === $tags-&gt;get_tag() &amp;&amp; ! $tags-&gt;is_tag_closer() ) {
 		$tags-&gt;set_modifiable_text( &#x27;&#x27; );
 	}
-	$on_handlers = $tags-&gt;get_attribute_names_with_prefix( &#x27;on&#x27; );
-	if ( $on_handlers ) {
-		foreach ( $on_handlers as $name ) {
-			$tags-&gt;remove_attribute( $name );
-		}
+	foreach ( $tags-&gt;get_attribute_names_with_prefix( &#x27;on&#x27; ) as $attr ) {
+		$tags-&gt;remove_attribute( $attr );
 	}
 }
 
@@ -200,27 +197,24 @@ echo $tags-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$untrusted = '<p>Hi <b onclick="steal()">friend</b>!</p>'
-	. '<script>alert("xss")<\/script>'
-	. '<img src=x onerror="boom()">';
+$untrusted = '<p onclick="x()">hi</p>'
+	. '<script>evil()<\/script>'
+	. '<img src="x" onerror="boom()">';
 
 $tags = new WP_HTML_Tag_Processor( $untrusted );
 while ( $tags->next_tag() ) {
 	if ( 'SCRIPT' === $tags->get_tag() && ! $tags->is_tag_closer() ) {
 		$tags->set_modifiable_text( '' );
 	}
-	$on_handlers = $tags->get_attribute_names_with_prefix( 'on' );
-	if ( $on_handlers ) {
-		foreach ( $on_handlers as $name ) {
-			$tags->remove_attribute( $name );
-		}
+	foreach ( $tags->get_attribute_names_with_prefix( 'on' ) as $attr ) {
+		$tags->remove_attribute( $attr );
 	}
 }
 
 echo $tags->get_updated_html();
 </script>
 <script type="text/expected-output">
-<p>Hi <b >friend</b>!</p><script><\/script><img src=x >
+<p>hi</p><script><\/script><img src="x">
 </script>
 </php-snippet>
 
@@ -558,6 +552,14 @@ echo $tags->get_updated_html();
 </php-snippet>
 
 <h2 id="when-to-use-which">When to use which</h2>
+
+<table class="api-table">
+<tr><th>Use</th><th>For</th></tr>
+<tr><td><code>WP_HTML_Tag_Processor</code></td><td>Attribute rewriting, sanitization, finding tags by name. Forward-only walks. Anything where speed and byte-honesty matter more than context.</td></tr>
+<tr><td><code>WP_HTML_Processor::create_fragment()</code></td><td>Queries by ancestry (<code>breadcrumbs</code>), heading outline extraction, anything that needs to know "is this tag inside that one."</td></tr>
+<tr><td><code>WP_HTML_Decoder::decode_text_node()</code></td><td>Turning entity-encoded text (<code>AT&amp;amp;T</code>) back into raw text correctly. Implements the HTML5 entity algorithm — don't roll your own.</td></tr>
+<tr><td><code>WP_HTML_Decoder::attribute_starts_with()</code></td><td>Safe URL-prefix checks that respect encoded characters (<code>java&amp;#x09;script:</code>). The classic <code>strpos</code> approach misses these.</td></tr>
+</table>
 
 <h2 id="pitfalls">Pitfalls</h2>
 

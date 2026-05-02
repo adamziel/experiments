@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>CORSProxy — PHP Toolkit reference</title>
 <meta name="description" content="A small PHP CORS proxy intended for browser-side code that needs to reach servers without CORS headers.">
-<link rel="stylesheet" href="../assets/style.css?v=20260503-fallback">
+<link rel="stylesheet" href="../assets/style.css?v=20260503-script-unescape">
 <script type="module" src="https://playground.wordpress.net/php-code-snippet.js"></script>
 <script id="toolkit-setup" type="application/json"></script>
-<script src="../assets/page.js?v=20260503-fallback" defer></script>
+<script src="../assets/page.js?v=20260503-script-unescape" defer></script>
 </head>
 <body>
 <header class="site">
@@ -59,6 +59,13 @@
 <p>A Playground-style browser tool reads <code>https://api.github.com/repos/WordPress/php-toolkit</code>, a plugin ZIP from <code>downloads.wordpress.org</code>, or a raw fixture from GitHub. The browser blocks the response when the upstream server does not send the required CORS headers, even though PHP can fetch the same public URL server-side.</p><p>The CORSProxy component is that server-side bridge. It accepts a target URL, fetches it from PHP, and returns a browser-readable response. Because an open proxy is a security and abuse risk, real deployments should add host allowlists, rate limits, header controls, and private-network protections appropriate to their environment.</p>
 
 <h2 id="run-the-proxy-locally">Run the proxy locally</h2>
+
+<p class="callout"><strong>Run on your machine:</strong> the proxy needs to listen on a port. Start PHP's built-in server and request any HTTPS URL through it.</p><pre><code>PLAYGROUND_CORS_PROXY_DISABLE_RATE_LIMIT=1 \
+  php -S 127.0.0.1:5263 vendor/wp-php-toolkit/corsproxy/cors-proxy.php
+
+# In another terminal:
+curl -s "http://127.0.0.1:5263/cors-proxy.php/https://api.github.com/repos/WordPress/php-toolkit" | head
+</code></pre>
 
 <h2 id="a-minimal-example">A minimal example</h2>
 
@@ -194,11 +201,42 @@ echo "Allowlist config active.\n";
 
 <h2 id="browser-side-fetch-through-the-proxy">Browser-side fetch through the proxy</h2>
 
-<p>Once deployed, the client side is just <code>fetch()</code> with the proxy URL. Drop this into any HTML page.</p>
+<p>Once deployed, the client side is just <code>fetch()</code> with the proxy URL. Drop this into any HTML page.</p><pre><code>const PROXY = "https://cors.example.com/cors-proxy.php";
+
+async function viaProxy(url, init = {}) {
+  const res = await fetch(`${PROXY}/${url}`, {
+    ...init,
+    headers: {
+      ...(init.headers || {}),
+      "X-Cors-Proxy-Allowed-Request-Headers": "Authorization",
+    },
+  });
+  if (!res.ok) throw new Error(`Proxy returned ${res.status}`);
+  return res;
+}
+
+const repo = await viaProxy("https://api.github.com/repos/WordPress/php-toolkit").then(r =&gt; r.json());
+console.log(repo.full_name, repo.stargazers_count);
+</code></pre>
 
 <h2 id="deploy-behind-nginx">Deploy behind nginx</h2>
 
-<p>The proxy is a single PHP script — any SAPI works. nginx + php-fpm is a common production setup. <code>PATH_INFO</code> is what the proxy reads to learn the target URL.</p>
+<p>The proxy is a single PHP script — any SAPI works. nginx + php-fpm is a common production setup. <code>PATH_INFO</code> is what the proxy reads to learn the target URL.</p><pre><code>server {
+  listen 443 ssl http2;
+  server_name cors.example.com;
+
+  root /var/www/cors-proxy;
+  index cors-proxy.php;
+
+  location ~ ^/cors-proxy\.php(/.*)?$ {
+    fastcgi_pass unix:/run/php/php8.1-fpm.sock;
+    fastcgi_split_path_info ^(.+\.php)(/.*)$;
+    fastcgi_param SCRIPT_FILENAME $document_root/cors-proxy.php;
+    fastcgi_param PATH_INFO $fastcgi_path_info;
+    include fastcgi_params;
+  }
+}
+</code></pre>
 
 <h2 id="see-also">See also</h2>
 

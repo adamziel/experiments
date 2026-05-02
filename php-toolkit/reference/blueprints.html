@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Blueprints — PHP Toolkit reference</title>
 <meta name="description" content="Declarative WordPress site provisioning. Write a JSON description of plugins, options, and content; let the runner execute it.">
-<link rel="stylesheet" href="../assets/style.css?v=20260503-fallback">
+<link rel="stylesheet" href="../assets/style.css?v=20260503-script-unescape">
 <script type="module" src="https://playground.wordpress.net/php-code-snippet.js"></script>
 <script id="toolkit-setup" type="application/json"></script>
-<script src="../assets/page.js?v=20260503-fallback" defer></script>
+<script src="../assets/page.js?v=20260503-script-unescape" defer></script>
 </head>
 <body>
 <header class="site">
@@ -290,7 +290,20 @@ Blueprint root["steps"][0]: Missing required field: step.
 
 <h2 id="the-blueprint-json-shape">The Blueprint JSON shape</h2>
 
-<p>A blueprint is a JSON document with a <code>version</code> field and a <code>steps</code> array. Each step has a <code>"step"</code> discriminator and step-specific fields. This is the same shape used by <a href="https://playground.wordpress.net/">WordPress Playground</a>.</p>
+<p>A blueprint is a JSON document with a <code>version</code> field and a <code>steps</code> array. Each step has a <code>"step"</code> discriminator and step-specific fields. This is the same shape used by <a href="https://playground.wordpress.net/">WordPress Playground</a>.</p><pre><code>{
+  "version": 2,
+  "steps": [
+    { "step": "setSiteOptions",
+      "options": {
+        "blogname": "Demo Site",
+        "permalink_structure": "/%postname%/"
+      } },
+    { "step": "installPlugin",
+      "pluginData": "https://downloads.wordpress.org/plugin/gutenberg.zip" },
+    { "step": "activatePlugin",
+      "plugin": "gutenberg/gutenberg.php" }
+  ]
+}</code></pre>
 
 <h2 id="see-also">See also</h2>
 

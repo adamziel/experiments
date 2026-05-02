@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Zip — PHP Toolkit reference</title>
 <meta name="description" content="Read and write ZIP archives in pure PHP — no libzip, no ZipArchive. Streams entries one at a time, so you can build EPUBs, .docx files, and multi-gigabyte plugin bundles without buffering the archive in memory.">
-<link rel="stylesheet" href="../assets/style.css?v=20260503-fallback">
+<link rel="stylesheet" href="../assets/style.css?v=20260503-script-unescape">
 <script type="module" src="https://playground.wordpress.net/php-code-snippet.js"></script>
 <script id="toolkit-setup" type="application/json"></script>
-<script src="../assets/page.js?v=20260503-fallback" defer></script>
+<script src="../assets/page.js?v=20260503-script-unescape" defer></script>
 </head>
 <body>
 <header class="site">
@@ -620,6 +620,15 @@ files now in memory:
 </php-snippet>
 
 <h2 id="when-to-use-which-type">When to use which type</h2>
+
+<table class="api-table">
+<tr><th>Use</th><th>For</th></tr>
+<tr><td><code>ZipFilesystem::create()</code></td><td>Reading. You want <code>get_contents()</code>, <code>ls()</code>, <code>is_dir()</code> over a ZIP. The most common case.</td></tr>
+<tr><td><code>ZipEncoder</code></td><td>Writing. Stream entries into any <code>ByteWriteStream</code> sink. Required when format rules matter (EPUB, .docx).</td></tr>
+<tr><td><code>ZipDecoder</code></td><td>Low-level read access to the central directory and individual entry headers. Most code reaches for <code>ZipFilesystem</code> instead.</td></tr>
+<tr><td><code>open_read_stream()</code> on a ZipFilesystem</td><td>Inflating a single large entry without buffering it whole in memory.</td></tr>
+<tr><td><code>copy_between_filesystems()</code></td><td>Moving entries from a ZIP into another filesystem (memory, local, SQLite).</td></tr>
+</table>
 
 <h2 id="pitfalls">Pitfalls</h2>
 

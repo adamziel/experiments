@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HttpClient — PHP Toolkit reference</title>
 <meta name="description" content="Async HTTP client without curl required. Uses sockets when curl is missing, supports concurrent requests and streaming responses.">
-<link rel="stylesheet" href="../assets/style.css?v=20260503-fallback">
+<link rel="stylesheet" href="../assets/style.css?v=20260503-script-unescape">
 <script type="module" src="https://playground.wordpress.net/php-code-snippet.js"></script>
 <script id="toolkit-setup" type="application/json"></script>
-<script src="../assets/page.js?v=20260503-fallback" defer></script>
+<script src="../assets/page.js?v=20260503-script-unescape" defer></script>
 </head>
 <body>
 <header class="site">
@@ -60,7 +60,7 @@
 
 <h2 id="a-minimal-example">A minimal example</h2>
 
-<p>The smallest flow has three steps: create a request, wait until headers arrive, then consume the body stream. This is intentionally close to the Fetch API shape, but the body is a toolkit byte stream instead of a buffered string.</p>
+<p class="callout"><strong>Network access in the demo runtime.</strong> Live request examples show the real API, but outbound HTTP in browser sandboxes may require a CORS proxy.</p><p>The smallest flow has three steps: create a request, wait until headers arrive, then consume the body stream. This is intentionally close to the Fetch API shape, but the body is a toolkit byte stream instead of a buffered string.</p>
 
 <php-snippet blueprint="toolkit-setup" name="get.php">
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
@@ -268,11 +268,11 @@ size:   27 bytes
 
 <h2 id="pick-the-right-reading-style">Pick the right reading style</h2>
 
-<p>There are three common ways to consume a response. Start simple, then move down the table only when the workflow demands it.</p>
+<p>There are three common ways to consume a response. Start simple, then move down the table only when the workflow demands it.</p><table><thead><tr><th>Style</th><th>Use when</th><th>Tradeoff</th></tr></thead><tbody><tr><td><code>consume_all()</code> or <code>json()</code></td><td>Small HTML, JSON, or API responses.</td><td>Buffers the full body.</td></tr><tr><td><code>Client::await_next_event()</code></td><td>Progress bars, streaming to disk, queues, failure handling.</td><td>You own the event loop.</td></tr><tr><td>Filesystem and parser composition</td><td>Remote ZIPs, WXR files, import pipelines.</td><td>Requires a stream-aware consumer.</td></tr></tbody></table>
 
 <h2 id="refinement-choose-a-transport">Refinement: choose a transport</h2>
 
-<p>The transport is the I/O backend. It should not change your request, response, redirect, cache, or stream code; it only changes how bytes move across the network.</p><p><code>concurrency</code>, <code>timeout_ms</code>, <code>cache_dir</code>, redirects, and response streaming sit above the transport, so the examples later on work with either backend.</p>
+<p>The transport is the I/O backend. It should not change your request, response, redirect, cache, or stream code; it only changes how bytes move across the network.</p><table><thead><tr><th>Transport</th><th>What it does</th><th>When to choose it</th></tr></thead><tbody><tr><td><code>auto</code></td><td>Uses curl when loaded, otherwise sockets.</td><td>Application default. Best when you want portability and the fastest available backend.</td></tr><tr><td><code>sockets</code></td><td>Uses PHP stream sockets, no curl extension.</td><td>Tests, Playground-style runtimes, hosts where curl is unavailable, or proving the dependency-free path works.</td></tr><tr><td><code>curl</code></td><td>Uses the curl extension.</td><td>Hosts where curl is available and you want to compare behavior or performance explicitly.</td></tr></tbody></table><p><code>concurrency</code>, <code>timeout_ms</code>, <code>cache_dir</code>, redirects, and response streaming sit above the transport, so the examples later on work with either backend.</p>
 
 <php-snippet blueprint="toolkit-setup" name="transports.php" runnable="false">
 <pre class="snippet-fallback"><code class="language-php">&lt;?php

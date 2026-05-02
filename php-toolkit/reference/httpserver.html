@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HttpServer — PHP Toolkit reference</title>
 <meta name="description" content="A minimal blocking TCP HTTP server in pure PHP. For CLI tools and tests, not for production traffic.">
-<link rel="stylesheet" href="../assets/style.css?v=20260503-fallback">
+<link rel="stylesheet" href="../assets/style.css?v=20260503-script-unescape">
 <script type="module" src="https://playground.wordpress.net/php-code-snippet.js"></script>
 <script id="toolkit-setup" type="application/json"></script>
-<script src="../assets/page.js?v=20260503-fallback" defer></script>
+<script src="../assets/page.js?v=20260503-script-unescape" defer></script>
 </head>
 <body>
 <header class="site">
@@ -60,6 +60,8 @@
 
 <h2 id="a-minimal-example">A minimal example</h2>
 
+<p class="callout"><strong>Run on your machine:</strong> the Playground sandbox does not allow processes to bind listening TCP ports. Save this snippet locally and run <code>php hello-server.php</code>.</p>
+
 <php-snippet blueprint="toolkit-setup" name="hello-server.php" runnable="false">
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require __DIR__ . &#x27;/vendor/autoload.php&#x27;;
@@ -103,7 +105,7 @@ $server->serve( function ( $host, $port ) {
 
 <h2 id="refinement-a-tiny-json-router">Refinement: a tiny JSON router</h2>
 
-<p>Build a CLI tool with a web UI by switching on the parsed path and method.</p>
+<p class="callout"><strong>Run on your machine:</strong> needs a listening port. Once running, try <code>curl localhost:8080/api/status</code>.</p><p>Build a CLI tool with a web UI by switching on the parsed path and method.</p>
 
 <php-snippet blueprint="toolkit-setup" name="mini-router.php" runnable="false">
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
