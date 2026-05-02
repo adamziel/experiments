@@ -1,15 +1,16 @@
 name: zfs-wasm-pages
 
-# Unified GitHub Pages workflow. We publish two demos from one
-# artifact so the two deploys never race each other:
+# Unified GitHub Pages workflow. We publish multiple demos from one
+# artifact so the deploys never race each other:
 #
-#   /                 — existing landing page (index.html at repo root)
-#   /zfs-wasm/        — the Rust snapshot-FS toy (original demo)
-#   /real-zfs/        — the OpenZFS-in-wasm port (zfs-wasm-real/)
+#   /                    — existing landing page (index.html at repo root)
+#   /zfs-wasm/           — the Rust snapshot-FS toy (original demo)
+#   /real-zfs/           — the OpenZFS-in-wasm port (zfs-wasm-real/)
+#   /php-toolkit/        — preview of the WordPress/php-toolkit docs site
 #
-# The two demos are independent: touching the Rust one triggers only
-# its build step and vice versa. Both end up in the same _site
-# artifact so one deploy publishes both.
+# The demos are independent: touching one triggers only its build steps
+# and vice versa. They all end up in the same _site artifact so one
+# deploy publishes everything.
 
 on:
   push:
@@ -23,6 +24,7 @@ on:
       - "zfs-wasm/**"
       - "zfs-wasm-real/**"
       - "real-zfs/**"
+      - "php-toolkit/**"
   workflow_dispatch:
 
 permissions:
@@ -94,6 +96,13 @@ jobs:
           cp zfs-wasm-real/build/zfswasm.wasm _site/real-zfs/build/zfswasm.wasm
           if [ -f zfs-wasm-real/build/zfswasm.worker.js ]; then
             cp zfs-wasm-real/build/zfswasm.worker.js _site/real-zfs/build/zfswasm.worker.js
+          fi
+
+          # WordPress/php-toolkit docs preview. The directory contains a
+          # pre-built docs site (index.html + reference/ + learn/ + assets/).
+          # All links inside are relative, so the path prefix doesn't matter.
+          if [ -d php-toolkit ]; then
+            cp -R php-toolkit _site/php-toolkit
           fi
 
       - name: Upload Pages artifact
