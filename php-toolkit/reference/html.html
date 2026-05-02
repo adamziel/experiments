@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>HTML — PHP Toolkit reference</title>
 <meta name="description" content="A pure-PHP HTML5 parser and tag rewriter mirroring WordPress core&#x27;s HTML API. Treat HTML the way browsers do — without libxml2, DOMDocument, or regex hacks — and rewrite attributes in a single linear pass.">
-<link rel="stylesheet" href="../assets/style.css?v=20260429-rewrite">
+<link rel="stylesheet" href="../assets/style.css?v=20260503-fallback">
 <script type="module" src="https://playground.wordpress.net/php-code-snippet.js"></script>
 <script id="toolkit-setup" type="application/json"></script>
-<script src="../assets/page.js?v=20260429-rewrite" defer></script>
+<script src="../assets/page.js?v=20260503-fallback" defer></script>
 </head>
 <body>
 <header class="site">
@@ -67,6 +67,25 @@
 <p>The "hello world" of tag rewriting. One linear pass, no DOM, no reserialization cost beyond the bytes you actually changed.</p><p><strong>Try this:</strong> click <em>Run</em>, then change <code>'lazy'</code> to <code>'eager'</code> on the first image only by guarding it with <code>$tags->get_attribute( 'src' ) === 'hero.jpg'</code>. Run again and notice that <code>get_updated_html()</code> only rewrites the bytes for that one tag.</p>
 
 <php-snippet blueprint="toolkit-setup" name="lazy-load-images.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+$html = &#x27;&lt;article&gt;
+	&lt;img src=&quot;hero.jpg&quot; alt=&quot;Hero&quot;&gt;
+	&lt;p&gt;Intro copy.&lt;/p&gt;
+	&lt;img src=&quot;inline.jpg&quot; alt=&quot;Inline&quot;&gt;
+&lt;/article&gt;&#x27;;
+
+$tags = new WP_HTML_Tag_Processor( $html );
+while ( $tags-&gt;next_tag( &#x27;img&#x27; ) ) {
+	// Don&#x27;t clobber an explicit eager hint the author already set.
+	if ( null === $tags-&gt;get_attribute( &#x27;loading&#x27; ) ) {
+		$tags-&gt;set_attribute( &#x27;loading&#x27;, &#x27;lazy&#x27; );
+	}
+	$tags-&gt;set_attribute( &#x27;decoding&#x27;, &#x27;async&#x27; );
+}
+
+echo $tags-&gt;get_updated_html();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -102,6 +121,27 @@ echo $tags->get_updated_html();
 <p>Use this before sending post content to an RSS feed, an email template, or a CDN-backed copy of a site. The processor rewrites only the changed bytes, so untouched markup stays byte-identical.</p>
 
 <php-snippet blueprint="toolkit-setup" name="absolute-links.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+$html = &#x27;&lt;p&gt;See &lt;a href=&quot;/about&quot;&gt;about&lt;/a&gt;, &lt;a href=&quot;https://example.com/x&quot;&gt;x&lt;/a&gt;, &#x27;
+	. &#x27;and &lt;a href=&quot;contact.html&quot;&gt;contact&lt;/a&gt;.&lt;/p&gt;&#x27;;
+
+$base = &#x27;https://my-site.test/&#x27;;
+
+$tags = new WP_HTML_Tag_Processor( $html );
+while ( $tags-&gt;next_tag( &#x27;a&#x27; ) ) {
+	$href = $tags-&gt;get_attribute( &#x27;href&#x27; );
+	if ( null === $href || &#x27;&#x27; === $href ) {
+		continue;
+	}
+	if ( preg_match( &#x27;#^[a-z][a-z0-9+.-]*:#i&#x27;, $href ) || 0 === strpos( $href, &#x27;//&#x27; ) || 0 === strpos( $href, &#x27;#&#x27; ) ) {
+		continue;
+	}
+	$tags-&gt;set_attribute( &#x27;href&#x27;, rtrim( $base, &#x27;/&#x27; ) . &#x27;/&#x27; . ltrim( $href, &#x27;/&#x27; ) );
+}
+
+echo $tags-&gt;get_updated_html();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -135,6 +175,27 @@ echo $tags->get_updated_html();
 <p>A common sanitization step: neutralize untrusted HTML before display. Blank a script's body with <code>set_modifiable_text()</code> and strip every <code>on*</code> attribute via <code>get_attribute_names_with_prefix()</code>.</p>
 
 <php-snippet blueprint="toolkit-setup" name="sanitize-html.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+$untrusted = &#x27;&lt;p&gt;Hi &lt;b onclick=&quot;steal()&quot;&gt;friend&lt;/b&gt;!&lt;/p&gt;&#x27;
+	. &#x27;&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt;&#x27;
+	. &#x27;&lt;img src=x onerror=&quot;boom()&quot;&gt;&#x27;;
+
+$tags = new WP_HTML_Tag_Processor( $untrusted );
+while ( $tags-&gt;next_tag() ) {
+	if ( &#x27;SCRIPT&#x27; === $tags-&gt;get_tag() &amp;&amp; ! $tags-&gt;is_tag_closer() ) {
+		$tags-&gt;set_modifiable_text( &#x27;&#x27; );
+	}
+	$on_handlers = $tags-&gt;get_attribute_names_with_prefix( &#x27;on&#x27; );
+	if ( $on_handlers ) {
+		foreach ( $on_handlers as $name ) {
+			$tags-&gt;remove_attribute( $name );
+		}
+	}
+}
+
+echo $tags-&gt;get_updated_html();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -168,6 +229,24 @@ echo $tags->get_updated_html();
 <p>Content Security Policy in <code>nonce-</code> mode requires every inline <code><script></code> and <code><style></code> to carry a matching nonce attribute. Tag-by-tag is exactly the right granularity.</p>
 
 <php-snippet blueprint="toolkit-setup" name="csp-nonce.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+$nonce = bin2hex( random_bytes( 8 ) );
+
+$html = &#x27;&lt;head&gt;&lt;style&gt;body{font:16px sans-serif}&lt;/style&gt;&lt;/head&gt;&#x27;
+	. &#x27;&lt;body&gt;&lt;script&gt;console.log(&quot;hi&quot;)&lt;/script&gt;&lt;script src=&quot;vendor.js&quot;&gt;&lt;/script&gt;&lt;/body&gt;&#x27;;
+
+$tags = new WP_HTML_Tag_Processor( $html );
+while ( $tags-&gt;next_tag() ) {
+	$tag = $tags-&gt;get_tag();
+	if ( ( &#x27;SCRIPT&#x27; === $tag || &#x27;STYLE&#x27; === $tag ) &amp;&amp; ! $tags-&gt;is_tag_closer() ) {
+		$tags-&gt;set_attribute( &#x27;nonce&#x27;, $nonce );
+	}
+}
+
+echo &quot;nonce: {$nonce}\n\n&quot;;
+echo $tags-&gt;get_updated_html();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -200,6 +279,27 @@ nonce: <random>
 <p>Generate responsive image markup at render time without touching the editor data model. Read the existing <code>src</code>, derive a <code>srcset</code> with width descriptors, add a <code>sizes</code> hint.</p>
 
 <php-snippet blueprint="toolkit-setup" name="srcset-rewrite.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+$html = &#x27;&lt;figure&gt;&lt;img src=&quot;https://cdn.test/uploads/photo.jpg&quot; alt=&quot;Sunset&quot;&gt;&lt;/figure&gt;&#x27;;
+$widths = array( 480, 768, 1200 );
+
+$tags = new WP_HTML_Tag_Processor( $html );
+while ( $tags-&gt;next_tag( &#x27;img&#x27; ) ) {
+	$src = $tags-&gt;get_attribute( &#x27;src&#x27; );
+	if ( null === $src || $tags-&gt;get_attribute( &#x27;srcset&#x27; ) !== null ) {
+		continue;
+	}
+	$variants = array();
+	foreach ( $widths as $w ) {
+		$variants[] = $src . &#x27;?w=&#x27; . $w . &#x27; &#x27; . $w . &#x27;w&#x27;;
+	}
+	$tags-&gt;set_attribute( &#x27;srcset&#x27;, implode( &#x27;, &#x27;, $variants ) );
+	$tags-&gt;set_attribute( &#x27;sizes&#x27;, &#x27;(max-width: 768px) 100vw, 768px&#x27; );
+}
+
+echo $tags-&gt;get_updated_html();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -233,6 +333,19 @@ echo $tags->get_updated_html();
 <p>The HTML5 entity table has roughly 2,200 named references and a long list of edge cases. <code>WP_HTML_Decoder</code> implements the algorithm — don't roll your own.</p>
 
 <php-snippet blueprint="toolkit-setup" name="decode-entities.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+echo &quot;attribute: &quot; . WP_HTML_Decoder::decode_attribute( &#x27;path?a=1&amp;amp;b=2&amp;amp;copy&#x27; ) . &quot;\n&quot;;
+echo &quot;text:      &quot; . WP_HTML_Decoder::decode_text_node( &#x27;AT&amp;amp;T &amp;mdash; 100&amp;percnt; &amp;#x1F600;&#x27; ) . &quot;\n&quot;;
+
+// Safe URL prefix check that respects encoded colons (a classic XSS vector).
+$is_javascript = WP_HTML_Decoder::attribute_starts_with(
+	&#x27;java&amp;#x09;script:alert(1)&#x27;,
+	&#x27;javascript:&#x27;,
+	&#x27;ascii-case-insensitive&#x27;
+);
+var_dump( $is_javascript );</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -260,6 +373,24 @@ bool(false)
 <p>The full <code>WP_HTML_Processor</code> understands HTML5 tree construction, so you can ask "find every <code><img></code> directly inside a <code><figure></code>" without writing your own DOM walker.</p>
 
 <php-snippet blueprint="toolkit-setup" name="breadcrumbs.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+$html = &#x27;&lt;article&gt;&#x27;
+	. &#x27;&lt;figure&gt;&lt;img src=&quot;hero.jpg&quot; alt=&quot;Hero&quot;&gt;&lt;figcaption&gt;Hero shot&lt;/figcaption&gt;&lt;/figure&gt;&#x27;
+	. &#x27;&lt;p&gt;Body copy &lt;img src=&quot;emoji.png&quot; alt=&quot;&quot;&gt; mid-paragraph.&lt;/p&gt;&#x27;
+	. &#x27;&lt;figure&gt;&lt;img src=&quot;diagram.png&quot; alt=&quot;Diagram&quot;&gt;&lt;/figure&gt;&#x27;
+	. &#x27;&lt;/article&gt;&#x27;;
+
+$p = WP_HTML_Processor::create_fragment( $html );
+$figure_images = 0;
+while ( $p-&gt;next_tag( array( &#x27;breadcrumbs&#x27; =&gt; array( &#x27;FIGURE&#x27;, &#x27;IMG&#x27; ) ) ) ) {
+	$p-&gt;add_class( &#x27;figure-image&#x27; );
+	$figure_images++;
+}
+
+echo &quot;found {$figure_images} figure images\n&quot;;
+echo $p-&gt;get_updated_html();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -291,6 +422,36 @@ found 2 figure images
 <p>The full processor exposes <code>get_current_depth()</code> and <code>get_breadcrumbs()</code>. Combine with <code>next_token()</code> to print a structural outline.</p>
 
 <php-snippet blueprint="toolkit-setup" name="outline.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+$html = &#x27;&lt;section&gt;&lt;h1&gt;Title&lt;/h1&gt;&#x27;
+	. &#x27;&lt;section&gt;&lt;h2&gt;Chapter 1&lt;/h2&gt;&lt;p&gt;Body&lt;/p&gt;&lt;/section&gt;&#x27;
+	. &#x27;&lt;section&gt;&lt;h2&gt;Chapter 2&lt;/h2&gt;&lt;p&gt;More body&lt;/p&gt;&lt;/section&gt;&#x27;
+	. &#x27;&lt;/section&gt;&#x27;;
+
+$p = WP_HTML_Processor::create_fragment( $html );
+while ( $p-&gt;next_token() ) {
+	if ( &#x27;#tag&#x27; !== $p-&gt;get_token_type() || $p-&gt;is_tag_closer() ) {
+		continue;
+	}
+	$tag = $p-&gt;get_tag();
+	if ( ! preg_match( &#x27;/^H[1-6]$/&#x27;, $tag ) ) {
+		continue;
+	}
+	$indent = str_repeat( &#x27;  &#x27;, max( 0, $p-&gt;get_current_depth() - 2 ) );
+	$text = &#x27;&#x27;;
+	while ( $p-&gt;next_token() ) {
+		if ( &#x27;#text&#x27; === $p-&gt;get_token_type() ) {
+			$text .= $p-&gt;get_modifiable_text();
+			continue;
+		}
+		if ( &#x27;#tag&#x27; === $p-&gt;get_token_type() &amp;&amp; $tag === $p-&gt;get_tag() &amp;&amp; $p-&gt;is_tag_closer() ) {
+			break;
+		}
+	}
+	echo &quot;{$indent}{$tag}  {$text}\n&quot;;
+}</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -335,6 +496,33 @@ while ( $p->next_token() ) {
 <p>Bookmarks are the one escape from forward-only scanning. Save a position, scan ahead, decide what to do, then <code>seek()</code> back and rewrite the earlier tag.</p>
 
 <php-snippet blueprint="toolkit-setup" name="bookmarks.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+$html = &#x27;&lt;ul&gt;&#x27;
+	. &#x27;&lt;li&gt;&lt;input type=&quot;checkbox&quot; checked&gt; Buy milk&lt;/li&gt;&#x27;
+	. &#x27;&lt;li&gt;&lt;input type=&quot;checkbox&quot;&gt; Walk the dog&lt;/li&gt;&#x27;
+	. &#x27;&lt;li&gt;&lt;input type=&quot;checkbox&quot; checked&gt; Read book&lt;/li&gt;&#x27;
+	. &#x27;&lt;/ul&gt;&#x27;;
+
+$tags = new WP_HTML_Tag_Processor( $html );
+$tags-&gt;next_tag( &#x27;ul&#x27; );
+$tags-&gt;set_bookmark( &#x27;list&#x27; );
+
+$total = 0;
+$done = 0;
+while ( $tags-&gt;next_tag( &#x27;input&#x27; ) ) {
+	$total++;
+	if ( null !== $tags-&gt;get_attribute( &#x27;checked&#x27; ) ) {
+		$done++;
+	}
+}
+
+$tags-&gt;seek( &#x27;list&#x27; );
+$tags-&gt;set_attribute( &#x27;data-progress&#x27;, $done . &#x27;/&#x27; . $total );
+$tags-&gt;release_bookmark( &#x27;list&#x27; );
+
+echo $tags-&gt;get_updated_html();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';

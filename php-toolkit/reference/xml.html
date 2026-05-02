@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XML — PHP Toolkit reference</title>
 <meta name="description" content="A streaming, namespace-aware XML processor in pure PHP. Read and modify huge feeds, WXR exports, ePub manifests, and Office Open XML parts without ever loading the document into memory and without depending on libxml2.">
-<link rel="stylesheet" href="../assets/style.css?v=20260429-rewrite">
+<link rel="stylesheet" href="../assets/style.css?v=20260503-fallback">
 <script type="module" src="https://playground.wordpress.net/php-code-snippet.js"></script>
 <script id="toolkit-setup" type="application/json"></script>
-<script src="../assets/page.js?v=20260429-rewrite" defer></script>
+<script src="../assets/page.js?v=20260503-fallback" defer></script>
 </head>
 <body>
 <header class="site">
@@ -63,6 +63,24 @@
 <p>Find each <code><book></code>, read its price, write a new one, emit the updated document.</p>
 
 <php-snippet blueprint="toolkit-setup" name="bump-prices.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+use WordPress\XML\XMLProcessor;
+
+$xml = &#x27;&lt;catalog&gt;&#x27;
+	. &#x27;&lt;book sku=&quot;A1&quot; price=&quot;29.99&quot;&gt;&lt;title&gt;PHP Internals&lt;/title&gt;&lt;/book&gt;&#x27;
+	. &#x27;&lt;book sku=&quot;A2&quot; price=&quot;14.50&quot;&gt;&lt;title&gt;WordPress at Scale&lt;/title&gt;&lt;/book&gt;&#x27;
+	. &#x27;&lt;/catalog&gt;&#x27;;
+
+$p = XMLProcessor::create_from_string( $xml );
+while ( $p-&gt;next_tag( &#x27;book&#x27; ) ) {
+	$old = (float) $p-&gt;get_attribute( &#x27;&#x27;, &#x27;price&#x27; );
+	$new = number_format( $old * 1.10, 2, &#x27;.&#x27;, &#x27;&#x27; );
+	$p-&gt;set_attribute( &#x27;&#x27;, &#x27;price&#x27;, $new );
+}
+
+echo $p-&gt;get_updated_xml();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -93,6 +111,36 @@ echo $p->get_updated_xml();
 <p>WordPress's WXR commonly uses <code>wp:</code>, <code>dc:</code>, and <code>content:</code> prefixes bound to namespace names such as <code>http://wordpress.org/export/1.2/</code>. Pass that expanded namespace name, not the prefix; the processor handles whichever prefix the document actually uses.</p>
 
 <php-snippet blueprint="toolkit-setup" name="wxr-namespaces.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+use WordPress\XML\XMLProcessor;
+
+$wxr = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&#x27;
+	. &#x27;&lt;rss xmlns:wp=&quot;http://wordpress.org/export/1.2/&quot; xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot;&gt;&#x27;
+	. &#x27;&lt;channel&gt;&lt;item&gt;&#x27;
+	. &#x27;&lt;title&gt;Hello World&lt;/title&gt;&#x27;
+	. &#x27;&lt;dc:creator&gt;admin&lt;/dc:creator&gt;&#x27;
+	. &#x27;&lt;wp:post_id&gt;42&lt;/wp:post_id&gt;&#x27;
+	. &#x27;&lt;wp:status&gt;publish&lt;/wp:status&gt;&#x27;
+	. &#x27;&lt;/item&gt;&lt;/channel&gt;&lt;/rss&gt;&#x27;;
+
+$WP = &#x27;http://wordpress.org/export/1.2/&#x27;;
+$DC = &#x27;http://purl.org/dc/elements/1.1/&#x27;;
+
+$p = XMLProcessor::create_from_string( $wxr );
+while ( $p-&gt;next_tag( &#x27;item&#x27; ) ) {
+	while ( $p-&gt;next_token() ) {
+		if ( $p-&gt;is_tag_closer() &amp;&amp; &#x27;item&#x27; === $p-&gt;get_tag_local_name() ) break;
+		if ( ! $p-&gt;is_tag_opener() ) continue;
+		$ns = $p-&gt;get_tag_namespace();
+		$local = $p-&gt;get_tag_local_name();
+		$prefix = ( $WP === $ns ) ? &#x27;wp/&#x27; : ( ( $DC === $ns ) ? &#x27;dc/&#x27; : &#x27;&#x27; );
+		echo &quot;{$prefix}{$local}: &quot;;
+		while ( $p-&gt;next_token() &amp;&amp; &#x27;#text&#x27; !== $p-&gt;get_token_name() ) {}
+		echo trim( $p-&gt;get_modifiable_text() ) . &quot;\n&quot;;
+	}
+}</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -138,6 +186,33 @@ wp/status: publish
 <p>Large WXR exports can hold many URLs in <code><link></code>, <code><guid></code>, and post content. Streaming the file lets you rewrite large exports without loading the whole XML document into memory.</p>
 
 <php-snippet blueprint="toolkit-setup" name="rewrite-wxr-urls.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+use WordPress\XML\XMLProcessor;
+
+$wxr = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&lt;rss xmlns:wp=&quot;http://wordpress.org/export/1.2/&quot;&gt;&lt;channel&gt;&#x27;
+	. &#x27;&lt;wp:base_site_url&gt;https://old.example.com&lt;/wp:base_site_url&gt;&#x27;
+	. &#x27;&lt;item&gt;&lt;link&gt;https://old.example.com/2024/post-1&lt;/link&gt;&#x27;
+	. &#x27;&lt;guid&gt;https://old.example.com/?p=1&lt;/guid&gt;&lt;/item&gt;&#x27;
+	. &#x27;&lt;/channel&gt;&lt;/rss&gt;&#x27;;
+
+$from = &#x27;https://old.example.com&#x27;;
+$to   = &#x27;https://new.example.com&#x27;;
+
+$p = XMLProcessor::create_from_string( $wxr );
+$rewritten = 0;
+
+while ( $p-&gt;next_token() ) {
+	if ( &#x27;#text&#x27; !== $p-&gt;get_token_name() ) continue;
+	$text = $p-&gt;get_modifiable_text();
+	if ( false === strpos( $text, $from ) ) continue;
+	$p-&gt;set_modifiable_text( str_replace( $from, $to, $text ) );
+	$rewritten++;
+}
+
+echo &quot;rewrote {$rewritten} text nodes\n\n&quot;;
+echo $p-&gt;get_updated_xml();</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
@@ -179,6 +254,24 @@ rewrote 3 text nodes
 <p>OPML is the format Feedly and many readers use to import/export feed lists. Flat, attribute-heavy XML — exactly what a tag processor handles best.</p>
 
 <php-snippet blueprint="toolkit-setup" name="opml.php">
+<pre class="snippet-fallback"><code class="language-php">&lt;?php
+require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
+
+use WordPress\XML\XMLProcessor;
+
+$opml = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&lt;opml version=&quot;2.0&quot;&gt;&lt;head&gt;&lt;title&gt;My Feeds&lt;/title&gt;&lt;/head&gt;&#x27;
+	. &#x27;&lt;body&gt;&#x27;
+	. &#x27;&lt;outline text=&quot;Tech&quot;&gt;&lt;outline text=&quot;Hacker News&quot; type=&quot;rss&quot; xmlUrl=&quot;https://news.ycombinator.com/rss&quot;/&gt;&#x27;
+	. &#x27;&lt;outline text=&quot;LWN&quot; type=&quot;rss&quot; xmlUrl=&quot;https://lwn.net/headlines/rss&quot;/&gt;&lt;/outline&gt;&#x27;
+	. &#x27;&lt;outline text=&quot;WordPress&quot; type=&quot;rss&quot; xmlUrl=&quot;https://wordpress.org/news/feed/&quot;/&gt;&#x27;
+	. &#x27;&lt;/body&gt;&lt;/opml&gt;&#x27;;
+
+$p = XMLProcessor::create_from_string( $opml );
+while ( $p-&gt;next_tag( &#x27;outline&#x27; ) ) {
+	$url = $p-&gt;get_attribute( &#x27;&#x27;, &#x27;xmlUrl&#x27; );
+	if ( null === $url ) continue;
+	echo $p-&gt;get_attribute( &#x27;&#x27;, &#x27;text&#x27; ) . &quot;\t&quot; . $url . &quot;\n&quot;;
+}</code></pre>
 <script type="application/x-php">
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
