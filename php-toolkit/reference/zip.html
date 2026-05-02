@@ -60,7 +60,7 @@
 
 <h2 id="a-minimal-example">A minimal example</h2>
 
-<p><code>ZipFilesystem</code> implements this toolkit's <code>Filesystem</code> interface, so once you wrap the byte reader you can call <code>get_contents()</code>, <code>ls()</code>, and <code>is_dir()</code> just like the other filesystem backends.</p><p><strong>Try this:</strong> after <em>Run</em>, add a second <code>append_file()</code> call before <code>$enc->close()</code> for a <code>notes.md</code> entry, then call <code>print_r( $zip->ls( '/' ) )</code> at the end. The directory listing reflects the new entry without re-reading the file.</p>
+<p><code>ZipFilesystem</code> implements this toolkit's <code>Filesystem</code> interface, so once you wrap the byte reader you can call <code>get_contents()</code>, <code>ls()</code>, and <code>is_dir()</code> just like the other filesystem backends.</p><p><strong>Try this:</strong> after <em>Run</em>, add a second <code>append_file()</code> call before <code>$enc-&gt;close()</code> for a <code>notes.md</code> entry, then call <code>print_r( $zip-&gt;ls( '/' ) )</code> at the end. The directory listing reflects the new entry without re-reading the file.</p>
 
 <php-snippet blueprint="toolkit-setup" name="teaser-read.php">
 <pre class="snippet-fallback"><code class="language-php">&lt;?php

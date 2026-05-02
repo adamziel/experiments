@@ -60,11 +60,11 @@
 	<strong>Ported from WordPress core.</strong> The HTML component is a port of WordPress core's <code>WP_HTML_Tag_Processor</code> and <code>WP_HTML_Processor</code>. Source: <a href="https://github.com/WordPress/wordpress-develop/tree/trunk/src/wp-includes/html-api">WordPress/wordpress-develop</a>. Bug fixes flow in both directions.
 </aside>
 
-<p>WordPress runs HTML fragments through filters every time a request renders: post content, block markup, comments, excerpts, widgets, feeds, imported documents. Those fragments can omit <code><html></code> and <code><body></code>, close tags implicitly, or mix browser-correct markup with author mistakes that <code>DOMDocument</code> and regular expressions do not model well.</p><p>The HTML component gives WordPress-style code the same parsing model WordPress core uses: a browser-compatible tokenizer and tree-aware processor that run in pure PHP. Choose it for exact-byte rewrites, imperfect fragments, and post-content filters where a full DOM would do too much work.</p><p>The component gives you two processors. <code>WP_HTML_Tag_Processor</code> is a forward-only cursor over tags and tokens — useful for attribute rewriting at scale. <code>WP_HTML_Processor</code> layers HTML5 tree construction on top so you can query by ancestry (breadcrumbs), serialize the parsed document, and trust that <code><p>one<p>two</code> parses as two paragraphs the way a browser sees it.</p>
+<p>WordPress runs HTML fragments through filters every time a request renders: post content, block markup, comments, excerpts, widgets, feeds, imported documents. Those fragments can omit <code>&lt;html&gt;</code> and <code>&lt;body&gt;</code>, close tags implicitly, or mix browser-correct markup with author mistakes that <code>DOMDocument</code> and regular expressions do not model well.</p><p>The HTML component gives WordPress-style code the same parsing model WordPress core uses: a browser-compatible tokenizer and tree-aware processor that run in pure PHP. Choose it for exact-byte rewrites, imperfect fragments, and post-content filters where a full DOM would do too much work.</p><p>The component gives you two processors. <code>WP_HTML_Tag_Processor</code> is a forward-only cursor over tags and tokens — useful for attribute rewriting at scale. <code>WP_HTML_Processor</code> layers HTML5 tree construction on top so you can query by ancestry (breadcrumbs), serialize the parsed document, and trust that <code>&lt;p&gt;one&lt;p&gt;two</code> parses as two paragraphs the way a browser sees it.</p>
 
 <h2 id="a-minimal-example">A minimal example</h2>
 
-<p>The "hello world" of tag rewriting. One linear pass, no DOM, no reserialization cost beyond the bytes you actually changed.</p><p><strong>Try this:</strong> click <em>Run</em>, then change <code>'lazy'</code> to <code>'eager'</code> on the first image only by guarding it with <code>$tags->get_attribute( 'src' ) === 'hero.jpg'</code>. Run again and notice that <code>get_updated_html()</code> only rewrites the bytes for that one tag.</p>
+<p>The "hello world" of tag rewriting. One linear pass, no DOM, no reserialization cost beyond the bytes you actually changed.</p><p><strong>Try this:</strong> click <em>Run</em>, then change <code>'lazy'</code> to <code>'eager'</code> on the first image only by guarding it with <code>$tags-&gt;get_attribute( 'src' ) === 'hero.jpg'</code>. Run again and notice that <code>get_updated_html()</code> only rewrites the bytes for that one tag.</p>
 
 <php-snippet blueprint="toolkit-setup" name="lazy-load-images.php">
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
@@ -226,7 +226,7 @@ echo $tags->get_updated_html();
 
 <h2 id="refinement-stamp-a-csp-nonce-on-inline-scripts-and-styles">Refinement: stamp a CSP nonce on inline scripts and styles</h2>
 
-<p>Content Security Policy in <code>nonce-</code> mode requires every inline <code><script></code> and <code><style></code> to carry a matching nonce attribute. Tag-by-tag is exactly the right granularity.</p>
+<p>Content Security Policy in <code>nonce-</code> mode requires every inline <code>&lt;script&gt;</code> and <code>&lt;style&gt;</code> to carry a matching nonce attribute. Tag-by-tag is exactly the right granularity.</p>
 
 <php-snippet blueprint="toolkit-setup" name="csp-nonce.php">
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
@@ -370,7 +370,7 @@ bool(false)
 
 <h2 id="refinement-find-images-by-ancestry-with-breadcrumbs">Refinement: find images by ancestry with breadcrumbs</h2>
 
-<p>The full <code>WP_HTML_Processor</code> understands HTML5 tree construction, so you can ask "find every <code><img></code> directly inside a <code><figure></code>" without writing your own DOM walker.</p>
+<p>The full <code>WP_HTML_Processor</code> understands HTML5 tree construction, so you can ask "find every <code>&lt;img&gt;</code> directly inside a <code>&lt;figure&gt;</code>" without writing your own DOM walker.</p>
 
 <php-snippet blueprint="toolkit-setup" name="breadcrumbs.php">
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
