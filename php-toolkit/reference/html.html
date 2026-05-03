@@ -70,11 +70,13 @@
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;article&gt;
+$html = &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;article&gt;
 	&lt;img src=&quot;hero.jpg&quot; alt=&quot;Hero&quot;&gt;
 	&lt;p&gt;Intro copy.&lt;/p&gt;
 	&lt;img src=&quot;inline.jpg&quot; alt=&quot;Inline&quot;&gt;
-&lt;/article&gt;&#x27;;
+&lt;/article&gt;
+HTML;
 
 $tags = new WP_HTML_Tag_Processor( $html );
 while ( $tags-&gt;next_tag( &#x27;img&#x27; ) ) {
@@ -90,11 +92,13 @@ echo $tags-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<article>
+$html = <<<'HTML'
+<article>
 	<img src="hero.jpg" alt="Hero">
 	<p>Intro copy.</p>
 	<img src="inline.jpg" alt="Inline">
-</article>';
+</article>
+HTML;
 
 $tags = new WP_HTML_Tag_Processor( $html );
 while ( $tags->next_tag( 'img' ) ) {
@@ -124,8 +128,10 @@ echo $tags->get_updated_html();
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;p&gt;See &lt;a href=&quot;/about&quot;&gt;about&lt;/a&gt;, &lt;a href=&quot;https://example.com/x&quot;&gt;x&lt;/a&gt;, 
-and &lt;a href=&quot;contact.html&quot;&gt;contact&lt;/a&gt;.&lt;/p&gt;&#x27;;
+$html = &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;p&gt;See &lt;a href=&quot;/about&quot;&gt;about&lt;/a&gt;, &lt;a href=&quot;https://example.com/x&quot;&gt;x&lt;/a&gt;, 
+and &lt;a href=&quot;contact.html&quot;&gt;contact&lt;/a&gt;.&lt;/p&gt;
+HTML;
 
 $base = &#x27;https://my-site.test/&#x27;;
 
@@ -146,8 +152,10 @@ echo $tags-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<p>See <a href="/about">about</a>, <a href="https://example.com/x">x</a>, 
-and <a href="contact.html">contact</a>.</p>';
+$html = <<<'HTML'
+<p>See <a href="/about">about</a>, <a href="https://example.com/x">x</a>, 
+and <a href="contact.html">contact</a>.</p>
+HTML;
 
 $base = 'https://my-site.test/';
 
@@ -179,9 +187,11 @@ and <a href="https://my-site.test/contact.html">contact</a>.</p>
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$untrusted = &#x27;&lt;p onclick=&quot;x()&quot;&gt;hi&lt;/p&gt;
+$untrusted = &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;p onclick=&quot;x()&quot;&gt;hi&lt;/p&gt;
 &lt;script&gt;evil()&lt;/script&gt;
-&lt;img src=&quot;x&quot; onerror=&quot;boom()&quot;&gt;&#x27;;
+&lt;img src=&quot;x&quot; onerror=&quot;boom()&quot;&gt;
+HTML;
 
 $tags = new WP_HTML_Tag_Processor( $untrusted );
 while ( $tags-&gt;next_tag() ) {
@@ -198,9 +208,11 @@ echo $tags-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$untrusted = '<p onclick="x()">hi</p>
+$untrusted = <<<'HTML'
+<p onclick="x()">hi</p>
 <script>evil()<\/script>
-<img src="x" onerror="boom()">';
+<img src="x" onerror="boom()">
+HTML;
 
 $tags = new WP_HTML_Tag_Processor( $untrusted );
 while ( $tags->next_tag() ) {
@@ -231,8 +243,10 @@ require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
 $nonce = bin2hex( random_bytes( 8 ) );
 
-$html = &#x27;&lt;head&gt;&lt;style&gt;body{font:16px sans-serif}&lt;/style&gt;&lt;/head&gt;
-&lt;body&gt;&lt;script&gt;console.log(&quot;hi&quot;)&lt;/script&gt;&lt;script src=&quot;vendor.js&quot;&gt;&lt;/script&gt;&lt;/body&gt;&#x27;;
+$html = &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;head&gt;&lt;style&gt;body{font:16px sans-serif}&lt;/style&gt;&lt;/head&gt;
+&lt;body&gt;&lt;script&gt;console.log(&quot;hi&quot;)&lt;/script&gt;&lt;script src=&quot;vendor.js&quot;&gt;&lt;/script&gt;&lt;/body&gt;
+HTML;
 
 $tags = new WP_HTML_Tag_Processor( $html );
 while ( $tags-&gt;next_tag() ) {
@@ -250,8 +264,10 @@ require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
 $nonce = bin2hex( random_bytes( 8 ) );
 
-$html = '<head><style>body{font:16px sans-serif}</style></head>
-<body><script>console.log("hi")<\/script><script src="vendor.js"><\/script></body>';
+$html = <<<'HTML'
+<head><style>body{font:16px sans-serif}</style></head>
+<body><script>console.log("hi")<\/script><script src="vendor.js"><\/script></body>
+HTML;
 
 $tags = new WP_HTML_Tag_Processor( $html );
 while ( $tags->next_tag() ) {
@@ -374,11 +390,13 @@ bool(false)
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;article&gt;
+$html = &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;article&gt;
 &lt;figure&gt;&lt;img src=&quot;hero.jpg&quot; alt=&quot;Hero&quot;&gt;&lt;figcaption&gt;Hero shot&lt;/figcaption&gt;&lt;/figure&gt;
 &lt;p&gt;Body copy &lt;img src=&quot;emoji.png&quot; alt=&quot;&quot;&gt; mid-paragraph.&lt;/p&gt;
 &lt;figure&gt;&lt;img src=&quot;diagram.png&quot; alt=&quot;Diagram&quot;&gt;&lt;/figure&gt;
-&lt;/article&gt;&#x27;;
+&lt;/article&gt;
+HTML;
 
 $p = WP_HTML_Processor::create_fragment( $html );
 $figure_images = 0;
@@ -393,11 +411,13 @@ echo $p-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<article>
+$html = <<<'HTML'
+<article>
 <figure><img src="hero.jpg" alt="Hero"><figcaption>Hero shot</figcaption></figure>
 <p>Body copy <img src="emoji.png" alt=""> mid-paragraph.</p>
 <figure><img src="diagram.png" alt="Diagram"></figure>
-</article>';
+</article>
+HTML;
 
 $p = WP_HTML_Processor::create_fragment( $html );
 $figure_images = 0;
@@ -427,10 +447,12 @@ found 2 figure images
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;section&gt;&lt;h1&gt;Title&lt;/h1&gt;
+$html = &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;section&gt;&lt;h1&gt;Title&lt;/h1&gt;
 &lt;section&gt;&lt;h2&gt;Chapter 1&lt;/h2&gt;&lt;p&gt;Body&lt;/p&gt;&lt;/section&gt;
 &lt;section&gt;&lt;h2&gt;Chapter 2&lt;/h2&gt;&lt;p&gt;More body&lt;/p&gt;&lt;/section&gt;
-&lt;/section&gt;&#x27;;
+&lt;/section&gt;
+HTML;
 
 $p = WP_HTML_Processor::create_fragment( $html );
 while ( $p-&gt;next_token() ) {
@@ -458,10 +480,12 @@ while ( $p-&gt;next_token() ) {
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<section><h1>Title</h1>
+$html = <<<'HTML'
+<section><h1>Title</h1>
 <section><h2>Chapter 1</h2><p>Body</p></section>
 <section><h2>Chapter 2</h2><p>More body</p></section>
-</section>';
+</section>
+HTML;
 
 $p = WP_HTML_Processor::create_fragment( $html );
 while ( $p->next_token() ) {
@@ -501,11 +525,13 @@ while ( $p->next_token() ) {
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;ul&gt;
+$html = &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;ul&gt;
 &lt;li&gt;&lt;input type=&quot;checkbox&quot; checked&gt; Buy milk&lt;/li&gt;
 &lt;li&gt;&lt;input type=&quot;checkbox&quot;&gt; Walk the dog&lt;/li&gt;
 &lt;li&gt;&lt;input type=&quot;checkbox&quot; checked&gt; Read book&lt;/li&gt;
-&lt;/ul&gt;&#x27;;
+&lt;/ul&gt;
+HTML;
 
 $tags = new WP_HTML_Tag_Processor( $html );
 $tags-&gt;next_tag( &#x27;ul&#x27; );
@@ -529,11 +555,13 @@ echo $tags-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<ul>
+$html = <<<'HTML'
+<ul>
 <li><input type="checkbox" checked> Buy milk</li>
 <li><input type="checkbox"> Walk the dog</li>
 <li><input type="checkbox" checked> Read book</li>
-</ul>';
+</ul>
+HTML;
 
 $tags = new WP_HTML_Tag_Processor( $html );
 $tags->next_tag( 'ul' );

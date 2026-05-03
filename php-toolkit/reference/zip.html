@@ -145,15 +145,20 @@ $enc-&gt;append_file( new FileEntry( array(
 	&#x27;body_reader&#x27;        =&gt; new MemoryPipe( &#x27;application/epub+zip&#x27; ),
 ) ) );
 
-$container = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;
+$container = &lt;&lt;&lt;&#x27;XML&#x27;
+&lt;?xml version=&quot;1.0&quot;?&gt;
 &lt;container version=&quot;1.0&quot; xmlns=&quot;urn:oasis:names:tc:opendocument:xmlns:container&quot;&gt;
 &lt;rootfiles&gt;&lt;rootfile full-path=&quot;EPUB/package.opf&quot; media-type=&quot;application/oebps-package+xml&quot;/&gt;&lt;/rootfiles&gt;
-&lt;/container&gt;&#x27;;
+&lt;/container&gt;
+XML;
 
 foreach ( array(
 	&#x27;META-INF/container.xml&#x27; =&gt; $container,
-	&#x27;EPUB/package.opf&#x27;       =&gt; &#x27;&lt;package version=&quot;3.0&quot; xmlns=&quot;http://www.idpf.org/2007/opf&quot;&gt;&lt;metadata/&gt;&lt;manifest/&gt;&lt;spine/&gt;&lt;/package&gt;&#x27;,
-	&#x27;EPUB/chapter1.xhtml&#x27;    =&gt; &#x27;&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;&lt;body&gt;&lt;h1&gt;Chapter 1&lt;/h1&gt;&lt;p&gt;It was a dark and stormy night.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;&#x27;,
+	&#x27;EPUB/package.opf&#x27;       =&gt; &lt;&lt;&lt;&#x27;XML&#x27;
+&lt;package version=&quot;3.0&quot; xmlns=&quot;http://www.idpf.org/2007/opf&quot;&gt;&lt;metadata/&gt;&lt;manifest/&gt;&lt;spine/&gt;&lt;/package&gt;&#x27;,
+	&#x27;EPUB/chapter1.xhtml&#x27;    =&gt; &lt;&lt;&lt;&#x27;XML&#x27;
+&lt;html xmlns=&quot;http://www.w3.org/1999/xhtml&quot;&gt;&lt;body&gt;&lt;h1&gt;Chapter 1&lt;/h1&gt;&lt;p&gt;It was a dark and stormy night.&lt;/p&gt;&lt;/body&gt;&lt;/html&gt;
+XML,
 ) as $name =&gt; $body ) {
 	$enc-&gt;append_file( new FileEntry( array(
 		&#x27;path&#x27;               =&gt; $name,
@@ -190,15 +195,20 @@ $enc->append_file( new FileEntry( array(
 	'body_reader'        => new MemoryPipe( 'application/epub+zip' ),
 ) ) );
 
-$container = '<?xml version="1.0"?>
+$container = <<<'XML'
+<?xml version="1.0"?>
 <container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
 <rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles>
-</container>';
+</container>
+XML;
 
 foreach ( array(
 	'META-INF/container.xml' => $container,
-	'EPUB/package.opf'       => '<package version="3.0" xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest/><spine/></package>',
-	'EPUB/chapter1.xhtml'    => '<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter 1</h1><p>It was a dark and stormy night.</p></body></html>',
+	'EPUB/package.opf'       => <<<'XML'
+<package version="3.0" xmlns="http://www.idpf.org/2007/opf"><metadata/><manifest/><spine/></package>',
+	'EPUB/chapter1.xhtml'    => <<<'XML'
+<html xmlns="http://www.w3.org/1999/xhtml"><body><h1>Chapter 1</h1><p>It was a dark and stormy night.</p></body></html>
+XML,
 ) as $name => $body ) {
 	$enc->append_file( new FileEntry( array(
 		'path'               => $name,
@@ -215,7 +225,7 @@ printf( "size on disk: %d bytes\n", filesize( $path ) );
 </script>
 <script type="text/expected-output">
 mimetype: application/epub+zip
-size on disk: 843 bytes
+size on disk: 726 bytes
 </script>
 </php-snippet>
 
@@ -328,8 +338,11 @@ $src_out  = FileWriteStream::from_path( $src_path, &#x27;truncate&#x27; );
 $src_enc  = new ZipEncoder( $src_out );
 foreach ( array(
 	&#x27;config.json&#x27;   =&gt; &#x27;{&quot;debug&quot;:false,&quot;version&quot;:&quot;1.0&quot;}&#x27;,
-	&#x27;app/index.php&#x27; =&gt; &#x27;&lt;?php echo &quot;hello&quot;;&#x27;,
-	&#x27;app/style.css&#x27; =&gt; &#x27;body{color:#333}&#x27;,
+	&#x27;app/index.php&#x27; =&gt; &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;?php echo &quot;hello&quot;;
+XML,
+	&#x27;app/style.css&#x27; =&gt; &#x27;body{color:#333}
+HTML,
 ) as $name =&gt; $body ) {
 	$src_enc-&gt;append_file( new FileEntry( array(
 		&#x27;path&#x27;               =&gt; $name,
@@ -388,8 +401,11 @@ $src_out  = FileWriteStream::from_path( $src_path, 'truncate' );
 $src_enc  = new ZipEncoder( $src_out );
 foreach ( array(
 	'config.json'   => '{"debug":false,"version":"1.0"}',
-	'app/index.php' => '<?php echo "hello";',
-	'app/style.css' => 'body{color:#333}',
+	'app/index.php' => <<<'HTML'
+<?php echo "hello";
+XML,
+	'app/style.css' => 'body{color:#333}
+HTML,
 ) as $name => $body ) {
 	$src_enc->append_file( new FileEntry( array(
 		'path'               => $name,
@@ -435,6 +451,8 @@ echo "untouched: " . $repacked->get_contents( 'app/index.php' ) . "\n";
 <script type="text/expected-output">
 new config.json: {"debug":true,"version":"1.0.1"}
 untouched: <?php echo "hello";
+XML,
+	'app/style.css' => 'body{color:#333}
 </script>
 </php-snippet>
 
@@ -506,8 +524,10 @@ $path = tempnam( sys_get_temp_dir(), &#x27;app&#x27; ) . &#x27;.zip&#x27;;
 $out  = FileWriteStream::from_path( $path, &#x27;truncate&#x27; );
 $enc  = new ZipEncoder( $out );
 foreach ( array(
-	&#x27;app/index.php&#x27;        =&gt; &#x27;&lt;?php echo &quot;ok&quot;;&#x27;,
-	&#x27;app/lib/util.php&#x27;     =&gt; &#x27;&lt;?php // util&#x27;,
+	&#x27;app/index.php&#x27;        =&gt; &lt;&lt;&lt;&#x27;HTML&#x27;
+&lt;?php echo &quot;ok&quot;;&#x27;,
+	&#x27;app/lib/util.php&#x27;     =&gt; &#x27;&lt;?php // util
+HTML,
 	&#x27;app/assets/style.css&#x27; =&gt; &#x27;body{margin:0}&#x27;,
 	&#x27;app/README.md&#x27;        =&gt; &#x27;# App&#x27;,
 ) as $name =&gt; $body ) {
@@ -566,8 +586,10 @@ $path = tempnam( sys_get_temp_dir(), 'app' ) . '.zip';
 $out  = FileWriteStream::from_path( $path, 'truncate' );
 $enc  = new ZipEncoder( $out );
 foreach ( array(
-	'app/index.php'        => '<?php echo "ok";',
-	'app/lib/util.php'     => '<?php // util',
+	'app/index.php'        => <<<'HTML'
+<?php echo "ok";',
+	'app/lib/util.php'     => '<?php // util
+HTML,
 	'app/assets/style.css' => 'body{margin:0}',
 	'app/README.md'        => '# App',
 ) as $name => $body ) {
@@ -615,7 +637,6 @@ files now in memory:
   /app/VERSION
   /app/assets/style.css
   /app/index.php
-  /app/lib/util.php
 </script>
 </php-snippet>
 
