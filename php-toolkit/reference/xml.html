@@ -68,10 +68,10 @@ require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
 use WordPress\XML\XMLProcessor;
 
-$xml = &#x27;&lt;catalog&gt;&#x27;
-	. &#x27;&lt;book sku=&quot;A1&quot; price=&quot;29.99&quot;&gt;&lt;title&gt;PHP Internals&lt;/title&gt;&lt;/book&gt;&#x27;
-	. &#x27;&lt;book sku=&quot;A2&quot; price=&quot;14.50&quot;&gt;&lt;title&gt;WordPress at Scale&lt;/title&gt;&lt;/book&gt;&#x27;
-	. &#x27;&lt;/catalog&gt;&#x27;;
+$xml = &#x27;&lt;catalog&gt;
+&lt;book sku=&quot;A1&quot; price=&quot;29.99&quot;&gt;&lt;title&gt;PHP Internals&lt;/title&gt;&lt;/book&gt;
+&lt;book sku=&quot;A2&quot; price=&quot;14.50&quot;&gt;&lt;title&gt;WordPress at Scale&lt;/title&gt;&lt;/book&gt;
+&lt;/catalog&gt;&#x27;;
 
 $p = XMLProcessor::create_from_string( $xml );
 while ( $p-&gt;next_tag( &#x27;book&#x27; ) ) {
@@ -87,10 +87,10 @@ require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
 use WordPress\XML\XMLProcessor;
 
-$xml = '<catalog>'
-	. '<book sku="A1" price="29.99"><title>PHP Internals</title></book>'
-	. '<book sku="A2" price="14.50"><title>WordPress at Scale</title></book>'
-	. '</catalog>';
+$xml = '<catalog>
+<book sku="A1" price="29.99"><title>PHP Internals</title></book>
+<book sku="A2" price="14.50"><title>WordPress at Scale</title></book>
+</catalog>';
 
 $p = XMLProcessor::create_from_string( $xml );
 while ( $p->next_tag( 'book' ) ) {
@@ -102,7 +102,10 @@ while ( $p->next_tag( 'book' ) ) {
 echo $p->get_updated_xml();
 </script>
 <script type="text/expected-output">
-<catalog><book sku="A1" price="32.99"><title>PHP Internals</title></book><book sku="A2" price="15.95"><title>WordPress at Scale</title></book></catalog>
+<catalog>
+<book sku="A1" price="32.99"><title>PHP Internals</title></book>
+<book sku="A2" price="15.95"><title>WordPress at Scale</title></book>
+</catalog>
 </script>
 </php-snippet>
 
@@ -116,14 +119,14 @@ require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
 use WordPress\XML\XMLProcessor;
 
-$wxr = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&#x27;
-	. &#x27;&lt;rss xmlns:wp=&quot;http://wordpress.org/export/1.2/&quot; xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot;&gt;&#x27;
-	. &#x27;&lt;channel&gt;&lt;item&gt;&#x27;
-	. &#x27;&lt;title&gt;Hello World&lt;/title&gt;&#x27;
-	. &#x27;&lt;dc:creator&gt;admin&lt;/dc:creator&gt;&#x27;
-	. &#x27;&lt;wp:post_id&gt;42&lt;/wp:post_id&gt;&#x27;
-	. &#x27;&lt;wp:status&gt;publish&lt;/wp:status&gt;&#x27;
-	. &#x27;&lt;/item&gt;&lt;/channel&gt;&lt;/rss&gt;&#x27;;
+$wxr = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;rss xmlns:wp=&quot;http://wordpress.org/export/1.2/&quot; xmlns:dc=&quot;http://purl.org/dc/elements/1.1/&quot;&gt;
+&lt;channel&gt;&lt;item&gt;
+&lt;title&gt;Hello World&lt;/title&gt;
+&lt;dc:creator&gt;admin&lt;/dc:creator&gt;
+&lt;wp:post_id&gt;42&lt;/wp:post_id&gt;
+&lt;wp:status&gt;publish&lt;/wp:status&gt;
+&lt;/item&gt;&lt;/channel&gt;&lt;/rss&gt;&#x27;;
 
 $WP = &#x27;http://wordpress.org/export/1.2/&#x27;;
 $DC = &#x27;http://purl.org/dc/elements/1.1/&#x27;;
@@ -147,14 +150,14 @@ require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
 use WordPress\XML\XMLProcessor;
 
-$wxr = '<?xml version="1.0"?>'
-	. '<rss xmlns:wp="http://wordpress.org/export/1.2/" xmlns:dc="http://purl.org/dc/elements/1.1/">'
-	. '<channel><item>'
-	. '<title>Hello World</title>'
-	. '<dc:creator>admin</dc:creator>'
-	. '<wp:post_id>42</wp:post_id>'
-	. '<wp:status>publish</wp:status>'
-	. '</item></channel></rss>';
+$wxr = '<?xml version="1.0"?>
+<rss xmlns:wp="http://wordpress.org/export/1.2/" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<channel><item>
+<title>Hello World</title>
+<dc:creator>admin</dc:creator>
+<wp:post_id>42</wp:post_id>
+<wp:status>publish</wp:status>
+</item></channel></rss>';
 
 $WP = 'http://wordpress.org/export/1.2/';
 $DC = 'http://purl.org/dc/elements/1.1/';
@@ -191,11 +194,11 @@ require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
 use WordPress\XML\XMLProcessor;
 
-$wxr = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&lt;rss xmlns:wp=&quot;http://wordpress.org/export/1.2/&quot;&gt;&lt;channel&gt;&#x27;
-	. &#x27;&lt;wp:base_site_url&gt;https://old.example.com&lt;/wp:base_site_url&gt;&#x27;
-	. &#x27;&lt;item&gt;&lt;link&gt;https://old.example.com/2024/post-1&lt;/link&gt;&#x27;
-	. &#x27;&lt;guid&gt;https://old.example.com/?p=1&lt;/guid&gt;&lt;/item&gt;&#x27;
-	. &#x27;&lt;/channel&gt;&lt;/rss&gt;&#x27;;
+$wxr = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&lt;rss xmlns:wp=&quot;http://wordpress.org/export/1.2/&quot;&gt;&lt;channel&gt;
+&lt;wp:base_site_url&gt;https://old.example.com&lt;/wp:base_site_url&gt;
+&lt;item&gt;&lt;link&gt;https://old.example.com/2024/post-1&lt;/link&gt;
+&lt;guid&gt;https://old.example.com/?p=1&lt;/guid&gt;&lt;/item&gt;
+&lt;/channel&gt;&lt;/rss&gt;&#x27;;
 
 $from = &#x27;https://old.example.com&#x27;;
 $to   = &#x27;https://new.example.com&#x27;;
@@ -219,11 +222,11 @@ require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
 use WordPress\XML\XMLProcessor;
 
-$wxr = '<?xml version="1.0"?><rss xmlns:wp="http://wordpress.org/export/1.2/"><channel>'
-	. '<wp:base_site_url>https://old.example.com</wp:base_site_url>'
-	. '<item><link>https://old.example.com/2024/post-1</link>'
-	. '<guid>https://old.example.com/?p=1</guid></item>'
-	. '</channel></rss>';
+$wxr = '<?xml version="1.0"?><rss xmlns:wp="http://wordpress.org/export/1.2/"><channel>
+<wp:base_site_url>https://old.example.com</wp:base_site_url>
+<item><link>https://old.example.com/2024/post-1</link>
+<guid>https://old.example.com/?p=1</guid></item>
+</channel></rss>';
 
 $from = 'https://old.example.com';
 $to   = 'https://new.example.com';
@@ -245,7 +248,11 @@ echo $p->get_updated_xml();
 <script type="text/expected-output">
 rewrote 3 text nodes
 
-<?xml version="1.0"?><rss xmlns:wp="http://wordpress.org/export/1.2/"><channel><wp:base_site_url>https://new.example.com</wp:base_site_url><item><link>https://new.example.com/2024/post-1</link><guid>https://new.example.com/?p=1</guid></item></channel></rss>
+<?xml version="1.0"?><rss xmlns:wp="http://wordpress.org/export/1.2/"><channel>
+<wp:base_site_url>https://new.example.com</wp:base_site_url>
+<item><link>https://new.example.com/2024/post-1</link>
+<guid>https://new.example.com/?p=1</guid></item>
+</channel></rss>
 </script>
 </php-snippet>
 
@@ -259,12 +266,12 @@ require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
 use WordPress\XML\XMLProcessor;
 
-$opml = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&lt;opml version=&quot;2.0&quot;&gt;&lt;head&gt;&lt;title&gt;My Feeds&lt;/title&gt;&lt;/head&gt;&#x27;
-	. &#x27;&lt;body&gt;&#x27;
-	. &#x27;&lt;outline text=&quot;Tech&quot;&gt;&lt;outline text=&quot;Hacker News&quot; type=&quot;rss&quot; xmlUrl=&quot;https://news.ycombinator.com/rss&quot;/&gt;&#x27;
-	. &#x27;&lt;outline text=&quot;LWN&quot; type=&quot;rss&quot; xmlUrl=&quot;https://lwn.net/headlines/rss&quot;/&gt;&lt;/outline&gt;&#x27;
-	. &#x27;&lt;outline text=&quot;WordPress&quot; type=&quot;rss&quot; xmlUrl=&quot;https://wordpress.org/news/feed/&quot;/&gt;&#x27;
-	. &#x27;&lt;/body&gt;&lt;/opml&gt;&#x27;;
+$opml = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&lt;opml version=&quot;2.0&quot;&gt;&lt;head&gt;&lt;title&gt;My Feeds&lt;/title&gt;&lt;/head&gt;
+&lt;body&gt;
+&lt;outline text=&quot;Tech&quot;&gt;&lt;outline text=&quot;Hacker News&quot; type=&quot;rss&quot; xmlUrl=&quot;https://news.ycombinator.com/rss&quot;/&gt;
+&lt;outline text=&quot;LWN&quot; type=&quot;rss&quot; xmlUrl=&quot;https://lwn.net/headlines/rss&quot;/&gt;&lt;/outline&gt;
+&lt;outline text=&quot;WordPress&quot; type=&quot;rss&quot; xmlUrl=&quot;https://wordpress.org/news/feed/&quot;/&gt;
+&lt;/body&gt;&lt;/opml&gt;&#x27;;
 
 $p = XMLProcessor::create_from_string( $opml );
 while ( $p-&gt;next_tag( &#x27;outline&#x27; ) ) {
@@ -278,12 +285,12 @@ require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
 use WordPress\XML\XMLProcessor;
 
-$opml = '<?xml version="1.0"?><opml version="2.0"><head><title>My Feeds</title></head>'
-	. '<body>'
-	. '<outline text="Tech"><outline text="Hacker News" type="rss" xmlUrl="https://news.ycombinator.com/rss"/>'
-	. '<outline text="LWN" type="rss" xmlUrl="https://lwn.net/headlines/rss"/></outline>'
-	. '<outline text="WordPress" type="rss" xmlUrl="https://wordpress.org/news/feed/"/>'
-	. '</body></opml>';
+$opml = '<?xml version="1.0"?><opml version="2.0"><head><title>My Feeds</title></head>
+<body>
+<outline text="Tech"><outline text="Hacker News" type="rss" xmlUrl="https://news.ycombinator.com/rss"/>
+<outline text="LWN" type="rss" xmlUrl="https://lwn.net/headlines/rss"/></outline>
+<outline text="WordPress" type="rss" xmlUrl="https://wordpress.org/news/feed/"/>
+</body></opml>';
 
 $p = XMLProcessor::create_from_string( $opml );
 while ( $p->next_tag( 'outline' ) ) {

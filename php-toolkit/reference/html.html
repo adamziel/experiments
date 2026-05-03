@@ -124,8 +124,8 @@ echo $tags->get_updated_html();
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;p&gt;See &lt;a href=&quot;/about&quot;&gt;about&lt;/a&gt;, &lt;a href=&quot;https://example.com/x&quot;&gt;x&lt;/a&gt;, &#x27;
-	. &#x27;and &lt;a href=&quot;contact.html&quot;&gt;contact&lt;/a&gt;.&lt;/p&gt;&#x27;;
+$html = &#x27;&lt;p&gt;See &lt;a href=&quot;/about&quot;&gt;about&lt;/a&gt;, &lt;a href=&quot;https://example.com/x&quot;&gt;x&lt;/a&gt;, 
+and &lt;a href=&quot;contact.html&quot;&gt;contact&lt;/a&gt;.&lt;/p&gt;&#x27;;
 
 $base = &#x27;https://my-site.test/&#x27;;
 
@@ -146,8 +146,8 @@ echo $tags-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<p>See <a href="/about">about</a>, <a href="https://example.com/x">x</a>, '
-	. 'and <a href="contact.html">contact</a>.</p>';
+$html = '<p>See <a href="/about">about</a>, <a href="https://example.com/x">x</a>, 
+and <a href="contact.html">contact</a>.</p>';
 
 $base = 'https://my-site.test/';
 
@@ -166,7 +166,8 @@ while ( $tags->next_tag( 'a' ) ) {
 echo $tags->get_updated_html();
 </script>
 <script type="text/expected-output">
-<p>See <a href="https://my-site.test/about">about</a>, <a href="https://example.com/x">x</a>, and <a href="https://my-site.test/contact.html">contact</a>.</p>
+<p>See <a href="https://my-site.test/about">about</a>, <a href="https://example.com/x">x</a>, 
+and <a href="https://my-site.test/contact.html">contact</a>.</p>
 </script>
 </php-snippet>
 
@@ -178,9 +179,9 @@ echo $tags->get_updated_html();
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$untrusted = &#x27;&lt;p onclick=&quot;x()&quot;&gt;hi&lt;/p&gt;&#x27;
-	. &#x27;&lt;script&gt;evil()&lt;/script&gt;&#x27;
-	. &#x27;&lt;img src=&quot;x&quot; onerror=&quot;boom()&quot;&gt;&#x27;;
+$untrusted = &#x27;&lt;p onclick=&quot;x()&quot;&gt;hi&lt;/p&gt;
+&lt;script&gt;evil()&lt;/script&gt;
+&lt;img src=&quot;x&quot; onerror=&quot;boom()&quot;&gt;&#x27;;
 
 $tags = new WP_HTML_Tag_Processor( $untrusted );
 while ( $tags-&gt;next_tag() ) {
@@ -197,9 +198,9 @@ echo $tags-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$untrusted = '<p onclick="x()">hi</p>'
-	. '<script>evil()<\/script>'
-	. '<img src="x" onerror="boom()">';
+$untrusted = '<p onclick="x()">hi</p>
+<script>evil()<\/script>
+<img src="x" onerror="boom()">';
 
 $tags = new WP_HTML_Tag_Processor( $untrusted );
 while ( $tags->next_tag() ) {
@@ -214,7 +215,9 @@ while ( $tags->next_tag() ) {
 echo $tags->get_updated_html();
 </script>
 <script type="text/expected-output">
-<p>hi</p><script><\/script><img src="x">
+<p >hi</p>
+<script><\/script>
+<img src="x" >
 </script>
 </php-snippet>
 
@@ -228,8 +231,8 @@ require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
 $nonce = bin2hex( random_bytes( 8 ) );
 
-$html = &#x27;&lt;head&gt;&lt;style&gt;body{font:16px sans-serif}&lt;/style&gt;&lt;/head&gt;&#x27;
-	. &#x27;&lt;body&gt;&lt;script&gt;console.log(&quot;hi&quot;)&lt;/script&gt;&lt;script src=&quot;vendor.js&quot;&gt;&lt;/script&gt;&lt;/body&gt;&#x27;;
+$html = &#x27;&lt;head&gt;&lt;style&gt;body{font:16px sans-serif}&lt;/style&gt;&lt;/head&gt;
+&lt;body&gt;&lt;script&gt;console.log(&quot;hi&quot;)&lt;/script&gt;&lt;script src=&quot;vendor.js&quot;&gt;&lt;/script&gt;&lt;/body&gt;&#x27;;
 
 $tags = new WP_HTML_Tag_Processor( $html );
 while ( $tags-&gt;next_tag() ) {
@@ -247,8 +250,8 @@ require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
 $nonce = bin2hex( random_bytes( 8 ) );
 
-$html = '<head><style>body{font:16px sans-serif}</style></head>'
-	. '<body><script>console.log("hi")<\/script><script src="vendor.js"><\/script></body>';
+$html = '<head><style>body{font:16px sans-serif}</style></head>
+<body><script>console.log("hi")<\/script><script src="vendor.js"><\/script></body>';
 
 $tags = new WP_HTML_Tag_Processor( $html );
 while ( $tags->next_tag() ) {
@@ -264,7 +267,8 @@ echo $tags->get_updated_html();
 <script type="text/expected-output">
 nonce: <random>
 
-<head><style nonce="<random>">body{font:16px sans-serif}</style></head><body><script nonce="<random>">console.log("hi")<\/script><script nonce="<random>" src="vendor.js"><\/script></body>
+<head><style nonce="<random>">body{font:16px sans-serif}</style></head>
+<body><script nonce="<random>">console.log("hi")<\/script><script nonce="<random>" src="vendor.js"><\/script></body>
 </script>
 </php-snippet>
 
@@ -370,11 +374,11 @@ bool(false)
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;article&gt;&#x27;
-	. &#x27;&lt;figure&gt;&lt;img src=&quot;hero.jpg&quot; alt=&quot;Hero&quot;&gt;&lt;figcaption&gt;Hero shot&lt;/figcaption&gt;&lt;/figure&gt;&#x27;
-	. &#x27;&lt;p&gt;Body copy &lt;img src=&quot;emoji.png&quot; alt=&quot;&quot;&gt; mid-paragraph.&lt;/p&gt;&#x27;
-	. &#x27;&lt;figure&gt;&lt;img src=&quot;diagram.png&quot; alt=&quot;Diagram&quot;&gt;&lt;/figure&gt;&#x27;
-	. &#x27;&lt;/article&gt;&#x27;;
+$html = &#x27;&lt;article&gt;
+&lt;figure&gt;&lt;img src=&quot;hero.jpg&quot; alt=&quot;Hero&quot;&gt;&lt;figcaption&gt;Hero shot&lt;/figcaption&gt;&lt;/figure&gt;
+&lt;p&gt;Body copy &lt;img src=&quot;emoji.png&quot; alt=&quot;&quot;&gt; mid-paragraph.&lt;/p&gt;
+&lt;figure&gt;&lt;img src=&quot;diagram.png&quot; alt=&quot;Diagram&quot;&gt;&lt;/figure&gt;
+&lt;/article&gt;&#x27;;
 
 $p = WP_HTML_Processor::create_fragment( $html );
 $figure_images = 0;
@@ -389,11 +393,11 @@ echo $p-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<article>'
-	. '<figure><img src="hero.jpg" alt="Hero"><figcaption>Hero shot</figcaption></figure>'
-	. '<p>Body copy <img src="emoji.png" alt=""> mid-paragraph.</p>'
-	. '<figure><img src="diagram.png" alt="Diagram"></figure>'
-	. '</article>';
+$html = '<article>
+<figure><img src="hero.jpg" alt="Hero"><figcaption>Hero shot</figcaption></figure>
+<p>Body copy <img src="emoji.png" alt=""> mid-paragraph.</p>
+<figure><img src="diagram.png" alt="Diagram"></figure>
+</article>';
 
 $p = WP_HTML_Processor::create_fragment( $html );
 $figure_images = 0;
@@ -407,7 +411,11 @@ echo $p->get_updated_html();
 </script>
 <script type="text/expected-output">
 found 2 figure images
-<article><figure><img class="figure-image" src="hero.jpg" alt="Hero"><figcaption>Hero shot</figcaption></figure><p>Body copy <img src="emoji.png" alt=""> mid-paragraph.</p><figure><img class="figure-image" src="diagram.png" alt="Diagram"></figure></article>
+<article>
+<figure><img class="figure-image" src="hero.jpg" alt="Hero"><figcaption>Hero shot</figcaption></figure>
+<p>Body copy <img src="emoji.png" alt=""> mid-paragraph.</p>
+<figure><img class="figure-image" src="diagram.png" alt="Diagram"></figure>
+</article>
 </script>
 </php-snippet>
 
@@ -419,10 +427,10 @@ found 2 figure images
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;section&gt;&lt;h1&gt;Title&lt;/h1&gt;&#x27;
-	. &#x27;&lt;section&gt;&lt;h2&gt;Chapter 1&lt;/h2&gt;&lt;p&gt;Body&lt;/p&gt;&lt;/section&gt;&#x27;
-	. &#x27;&lt;section&gt;&lt;h2&gt;Chapter 2&lt;/h2&gt;&lt;p&gt;More body&lt;/p&gt;&lt;/section&gt;&#x27;
-	. &#x27;&lt;/section&gt;&#x27;;
+$html = &#x27;&lt;section&gt;&lt;h1&gt;Title&lt;/h1&gt;
+&lt;section&gt;&lt;h2&gt;Chapter 1&lt;/h2&gt;&lt;p&gt;Body&lt;/p&gt;&lt;/section&gt;
+&lt;section&gt;&lt;h2&gt;Chapter 2&lt;/h2&gt;&lt;p&gt;More body&lt;/p&gt;&lt;/section&gt;
+&lt;/section&gt;&#x27;;
 
 $p = WP_HTML_Processor::create_fragment( $html );
 while ( $p-&gt;next_token() ) {
@@ -450,10 +458,10 @@ while ( $p-&gt;next_token() ) {
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<section><h1>Title</h1>'
-	. '<section><h2>Chapter 1</h2><p>Body</p></section>'
-	. '<section><h2>Chapter 2</h2><p>More body</p></section>'
-	. '</section>';
+$html = '<section><h1>Title</h1>
+<section><h2>Chapter 1</h2><p>Body</p></section>
+<section><h2>Chapter 2</h2><p>More body</p></section>
+</section>';
 
 $p = WP_HTML_Processor::create_fragment( $html );
 while ( $p->next_token() ) {
@@ -493,11 +501,11 @@ while ( $p->next_token() ) {
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$html = &#x27;&lt;ul&gt;&#x27;
-	. &#x27;&lt;li&gt;&lt;input type=&quot;checkbox&quot; checked&gt; Buy milk&lt;/li&gt;&#x27;
-	. &#x27;&lt;li&gt;&lt;input type=&quot;checkbox&quot;&gt; Walk the dog&lt;/li&gt;&#x27;
-	. &#x27;&lt;li&gt;&lt;input type=&quot;checkbox&quot; checked&gt; Read book&lt;/li&gt;&#x27;
-	. &#x27;&lt;/ul&gt;&#x27;;
+$html = &#x27;&lt;ul&gt;
+&lt;li&gt;&lt;input type=&quot;checkbox&quot; checked&gt; Buy milk&lt;/li&gt;
+&lt;li&gt;&lt;input type=&quot;checkbox&quot;&gt; Walk the dog&lt;/li&gt;
+&lt;li&gt;&lt;input type=&quot;checkbox&quot; checked&gt; Read book&lt;/li&gt;
+&lt;/ul&gt;&#x27;;
 
 $tags = new WP_HTML_Tag_Processor( $html );
 $tags-&gt;next_tag( &#x27;ul&#x27; );
@@ -521,11 +529,11 @@ echo $tags-&gt;get_updated_html();</code></pre>
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$html = '<ul>'
-	. '<li><input type="checkbox" checked> Buy milk</li>'
-	. '<li><input type="checkbox"> Walk the dog</li>'
-	. '<li><input type="checkbox" checked> Read book</li>'
-	. '</ul>';
+$html = '<ul>
+<li><input type="checkbox" checked> Buy milk</li>
+<li><input type="checkbox"> Walk the dog</li>
+<li><input type="checkbox" checked> Read book</li>
+</ul>';
 
 $tags = new WP_HTML_Tag_Processor( $html );
 $tags->next_tag( 'ul' );
@@ -547,7 +555,11 @@ $tags->release_bookmark( 'list' );
 echo $tags->get_updated_html();
 </script>
 <script type="text/expected-output">
-<ul data-progress="2/3"><li><input type="checkbox" checked> Buy milk</li><li><input type="checkbox"> Walk the dog</li><li><input type="checkbox" checked> Read book</li></ul>
+<ul data-progress="2/3">
+<li><input type="checkbox" checked> Buy milk</li>
+<li><input type="checkbox"> Walk the dog</li>
+<li><input type="checkbox" checked> Read book</li>
+</ul>
 </script>
 </php-snippet>
 

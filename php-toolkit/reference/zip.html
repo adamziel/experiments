@@ -145,10 +145,10 @@ $enc-&gt;append_file( new FileEntry( array(
 	&#x27;body_reader&#x27;        =&gt; new MemoryPipe( &#x27;application/epub+zip&#x27; ),
 ) ) );
 
-$container = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;&#x27;
-	. &#x27;&lt;container version=&quot;1.0&quot; xmlns=&quot;urn:oasis:names:tc:opendocument:xmlns:container&quot;&gt;&#x27;
-	. &#x27;&lt;rootfiles&gt;&lt;rootfile full-path=&quot;EPUB/package.opf&quot; media-type=&quot;application/oebps-package+xml&quot;/&gt;&lt;/rootfiles&gt;&#x27;
-	. &#x27;&lt;/container&gt;&#x27;;
+$container = &#x27;&lt;?xml version=&quot;1.0&quot;?&gt;
+&lt;container version=&quot;1.0&quot; xmlns=&quot;urn:oasis:names:tc:opendocument:xmlns:container&quot;&gt;
+&lt;rootfiles&gt;&lt;rootfile full-path=&quot;EPUB/package.opf&quot; media-type=&quot;application/oebps-package+xml&quot;/&gt;&lt;/rootfiles&gt;
+&lt;/container&gt;&#x27;;
 
 foreach ( array(
 	&#x27;META-INF/container.xml&#x27; =&gt; $container,
@@ -190,10 +190,10 @@ $enc->append_file( new FileEntry( array(
 	'body_reader'        => new MemoryPipe( 'application/epub+zip' ),
 ) ) );
 
-$container = '<?xml version="1.0"?>'
-	. '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
-	. '<rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles>'
-	. '</container>';
+$container = '<?xml version="1.0"?>
+<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">
+<rootfiles><rootfile full-path="EPUB/package.opf" media-type="application/oebps-package+xml"/></rootfiles>
+</container>';
 
 foreach ( array(
 	'META-INF/container.xml' => $container,
@@ -215,7 +215,7 @@ printf( "size on disk: %d bytes\n", filesize( $path ) );
 </script>
 <script type="text/expected-output">
 mimetype: application/epub+zip
-size on disk: 839 bytes
+size on disk: 843 bytes
 </script>
 </php-snippet>
 

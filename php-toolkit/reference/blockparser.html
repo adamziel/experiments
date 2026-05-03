@@ -426,9 +426,9 @@ foreach ( $testimonials as $i => $b ) {
 <pre class="snippet-fallback"><code class="language-php">&lt;?php
 require &#x27;/wordpress/wp-content/php-toolkit/vendor/autoload.php&#x27;;
 
-$document = &#x27;&lt;!-- wp:embed {&quot;url&quot;:&quot;https://twitter.com/wordpress/status/1&quot;,&quot;providerNameSlug&quot;:&quot;twitter&quot;} /--&gt;&#x27;
-	. &#x27;&lt;!-- wp:embed {&quot;url&quot;:&quot;https://youtube.com/watch?v=abc&quot;,&quot;providerNameSlug&quot;:&quot;youtube&quot;} /--&gt;&#x27;
-	. &#x27;&lt;!-- wp:embed {&quot;url&quot;:&quot;https://vine.co/v/xyz&quot;,&quot;providerNameSlug&quot;:&quot;vine&quot;} /--&gt;&#x27;;
+$document = &#x27;&lt;!-- wp:embed {&quot;url&quot;:&quot;https://twitter.com/wordpress/status/1&quot;,&quot;providerNameSlug&quot;:&quot;twitter&quot;} /--&gt;
+&lt;!-- wp:embed {&quot;url&quot;:&quot;https://youtube.com/watch?v=abc&quot;,&quot;providerNameSlug&quot;:&quot;youtube&quot;} /--&gt;
+&lt;!-- wp:embed {&quot;url&quot;:&quot;https://vine.co/v/xyz&quot;,&quot;providerNameSlug&quot;:&quot;vine&quot;} /--&gt;&#x27;;
 
 $retired = array( &#x27;vine.co&#x27;, &#x27;plus.google.com&#x27; );
 
@@ -445,9 +445,9 @@ foreach ( ( new WP_Block_Parser() )-&gt;parse( $document ) as $b ) {
 <?php
 require '/wordpress/wp-content/php-toolkit/vendor/autoload.php';
 
-$document = '<!-- wp:embed {"url":"https://twitter.com/wordpress/status/1","providerNameSlug":"twitter"} /-->'
-	. '<!-- wp:embed {"url":"https://youtube.com/watch?v=abc","providerNameSlug":"youtube"} /-->'
-	. '<!-- wp:embed {"url":"https://vine.co/v/xyz","providerNameSlug":"vine"} /-->';
+$document = '<!-- wp:embed {"url":"https://twitter.com/wordpress/status/1","providerNameSlug":"twitter"} /-->
+<!-- wp:embed {"url":"https://youtube.com/watch?v=abc","providerNameSlug":"youtube"} /-->
+<!-- wp:embed {"url":"https://vine.co/v/xyz","providerNameSlug":"vine"} /-->';
 
 $retired = array( 'vine.co', 'plus.google.com' );
 
