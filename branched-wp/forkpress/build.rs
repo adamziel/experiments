@@ -8,6 +8,13 @@ use tar::Builder;
 use walkdir::WalkDir;
 
 fn main() -> Result<()> {
+    // Allow bypassing the bundle build for type-checking (e.g. cargo check) via:
+    //   FORKPRESS_RUNTIME_BUNDLE=/dev/null cargo check -p forkpress
+    if let Ok(bundle) = env::var("FORKPRESS_RUNTIME_BUNDLE") {
+        println!("cargo:rustc-env=FORKPRESS_RUNTIME_BUNDLE={bundle}");
+        return Ok(());
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let repo_root = manifest_dir
         .parent()
@@ -29,6 +36,13 @@ fn main() -> Result<()> {
         if !path.is_file() {
             bail!("missing {} (required for runtime bundle)", path.display());
         }
+    }
+
+    // fileserver binary is optional — built separately from branched-wp/fileserver/.
+    // If present in dist it gets bundled; if absent, SFTP/WebDAV just won't start.
+    let fileserver_src = repo_root.join("fileserver/fileserver");
+    if fileserver_src.is_file() {
+        println!("cargo:rerun-if-changed={}", fileserver_src.display());
     }
 
     println!("cargo:rerun-if-changed={}", dist_dir.display());
@@ -75,6 +89,20 @@ fn build_bundle(repo_root: &Path, dist_dir: &Path, out: &Path) -> Result<()> {
 
     add_file_as(&mut tar, &dist_dir.join("bin/php"), "portable-runtime/bin/php")?;
     add_file_as(&mut tar, &dist_dir.join("bin/dolt"), "portable-runtime/bin/dolt")?;
+
+    // Bundle the fileserver binary when available (built from branched-wp/fileserver/).
+    let fileserver_in_dist = dist_dir.join("bin/fileserver");
+    let fileserver_in_repo = repo_root.join("fileserver/fileserver");
+    let fileserver_path = if fileserver_in_dist.is_file() {
+        Some(fileserver_in_dist)
+    } else if fileserver_in_repo.is_file() {
+        Some(fileserver_in_repo)
+    } else {
+        None
+    };
+    if let Some(ref p) = fileserver_path {
+        add_file_as(&mut tar, p, "portable-runtime/bin/fileserver")?;
+    }
 
     tar.finish()?;
     let encoder = tar.into_inner()?;

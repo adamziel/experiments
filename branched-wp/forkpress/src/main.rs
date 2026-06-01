@@ -1,11 +1,13 @@
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{ArgAction, Args, Parser, Subcommand};
 use flate2::read::GzDecoder;
+use rusqlite::{Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Cursor, Write};
 use std::net::{TcpStream, ToSocketAddrs};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +31,7 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    Init(InitArgs),
     Start(StartArgs),
     Branch(BranchPassthrough),
     #[command(alias = "branchctl")]
@@ -36,10 +39,7 @@ enum Commands {
 }
 
 #[derive(Args, Debug, Clone)]
-struct SharedPaths {
-    #[arg(long, default_value = ".forkpress")]
-    work_dir: PathBuf,
-
+struct BinOverrides {
     #[arg(long)]
     php_bin: Option<PathBuf>,
 
@@ -51,9 +51,22 @@ struct SharedPaths {
 }
 
 #[derive(Args, Debug, Clone)]
+struct InitArgs {
+    site_fp: PathBuf,
+
+    #[arg(long, default_value = "ForkPress")]
+    title: String,
+
+    #[arg(long, default_value = "localhost")]
+    root_host: String,
+}
+
+#[derive(Args, Debug, Clone)]
 struct StartArgs {
+    site_fp: PathBuf,
+
     #[command(flatten)]
-    shared: SharedPaths,
+    bins: BinOverrides,
 
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
@@ -61,31 +74,28 @@ struct StartArgs {
     #[arg(long, default_value_t = 18080)]
     port: u16,
 
-    #[arg(long, default_value = "localhost")]
-    root_host: String,
-
-    #[arg(long, default_value = "ForkPress")]
-    site_title: String,
-
     #[arg(long, default_value_t = 2222)]
     sftp_port: u16,
 
     #[arg(long, default_value_t = 8888)]
     smb_port: u16,
 
-    #[arg(long, default_value = false)]
+    #[arg(long)]
     no_fileserver: bool,
 
-    /// Bind address for the Dolt MySQL server. Use 0.0.0.0 to allow
-    /// connections from other machines (e.g. remote MySQL clients).
     #[arg(long, default_value = "127.0.0.1")]
     dolt_bind: String,
+
+    #[arg(long)]
+    logs: Option<PathBuf>,
 }
 
 #[derive(Args, Debug, Clone)]
 struct BranchPassthrough {
+    site_fp: PathBuf,
+
     #[command(flatten)]
-    shared: SharedPaths,
+    bins: BinOverrides,
 
     #[arg(trailing_var_arg = true, allow_hyphen_values = true, action = ArgAction::Append)]
     args: Vec<String>,
@@ -93,18 +103,18 @@ struct BranchPassthrough {
 
 #[derive(Debug, Clone)]
 struct Layout {
-    work_dir: PathBuf,
+    site_fp: PathBuf,
+    runtime_base: PathBuf,
     runtime_dir: PathBuf,
     logs_dir: PathBuf,
-    db_path: PathBuf,
-    wp_root: PathBuf,
     dolt_data_dir: PathBuf,
     dolt_repo_dir: PathBuf,
-    debug_log: PathBuf,
-    php_error_log: PathBuf,
+    wp_root: PathBuf,
     php_server_log: PathBuf,
     dolt_server_log: PathBuf,
     fileserver_log: PathBuf,
+    php_error_log: PathBuf,
+    debug_log: PathBuf,
     runtime_ready_marker: PathBuf,
     bootstrap_marker: PathBuf,
 }
@@ -152,50 +162,102 @@ fn main() {
 fn run() -> Result<i32> {
     let cli = Cli::parse();
     match cli.command {
+        Commands::Init(args) => init_command(args),
         Commands::Start(args) => start_command(args),
         Commands::Branch(args) | Commands::Branchctl(args) => branch_command(args),
     }
 }
 
+fn init_command(args: InitArgs) -> Result<i32> {
+    let site_fp = absolutize(args.site_fp)?;
+
+    if site_fp.exists() {
+        bail!("{} already exists", site_fp.display());
+    }
+
+    let conn = Connection::open(&site_fp)
+        .with_context(|| format!("failed to create {}", site_fp.display()))?;
+
+    conn.execute_batch(include_str!("../../sql/schema.sql"))
+        .context("failed to initialize schema")?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO dolt_archive(id, data, updated_at) VALUES(1, NULL, 0)",
+        [],
+    )
+    .context("failed to insert dolt_archive placeholder")?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO site_config(key, value) VALUES('site_title', ?1)",
+        rusqlite::params![args.title],
+    )
+    .context("failed to insert site_title")?;
+
+    conn.execute(
+        "INSERT OR IGNORE INTO site_config(key, value) VALUES('root_host', ?1)",
+        rusqlite::params![args.root_host],
+    )
+    .context("failed to insert root_host")?;
+
+    println!(
+        "Created {} — run 'forkpress start {}' to boot.",
+        site_fp.display(),
+        site_fp.display()
+    );
+    Ok(0)
+}
+
 fn start_command(args: StartArgs) -> Result<i32> {
-    let layout = Layout::new(args.shared.work_dir.clone())?;
+    let site_fp = absolutize(args.site_fp.clone())?;
+    let layout = Layout::new(site_fp, args.logs.clone())?;
+
+    if !layout.site_fp.exists() {
+        bail!(
+            "{} not found. Run `forkpress init {}` first.",
+            layout.site_fp.display(),
+            layout.site_fp.display()
+        );
+    }
+
     prepare_runtime(&layout)?;
+    extract_dolt(&layout)?;
     ensure_ports_available(&args)?;
 
     let runtime = PortableRuntime::from_layout(&layout);
     let mut dolt = start_dolt_server(
         &layout,
         &runtime,
-        &args.shared,
+        &args.bins,
         &args.dolt_bind,
-        args.shared.dolt_port,
+        args.bins.dolt_port,
         false,
     )?;
 
-    ensure_bootstrapped(&layout, &runtime, &args)?;
+    let root_host = read_site_config(&layout.site_fp, "root_host")
+        .unwrap_or_else(|_| "localhost".to_string());
 
-    let mut php = start_php_server(&layout, &runtime, &args)?;
+    ensure_bootstrapped(&layout, &runtime, &args.bins)?;
+
+    let mut php = start_php_server(&layout, &runtime, &args, &root_host)?;
     let mut fileserver = if args.no_fileserver {
         None
     } else {
         start_fileserver(&layout, &runtime, &args)?
     };
 
-    println!("Main site:  http://{}:{}/", args.root_host, args.port);
-    println!(
-        "Branch site: http://<branch>.{}:{}/",
-        args.root_host, args.port
-    );
-    println!(
-        "Git remote: http://{}:{}/site.git",
-        args.root_host, args.port
-    );
+    println!("Site file:   {}", layout.site_fp.display());
+    println!("Main site:   http://localhost:{}/", args.port);
+    println!("Branch site: http://<branch>.localhost:{}/", args.port);
+    println!("Git remote:  http://localhost:{}/site.git", args.port);
     if fileserver.is_some() {
-        println!("SFTP:       sftp://<branch>@{}:{}/", args.root_host, args.sftp_port);
-        println!("SMB:        smb://{}:{}/branch-name/", args.root_host, args.smb_port);
+        println!("SFTP:        sftp://<branch>@localhost:{}/", args.sftp_port);
+        println!("SMB:         smb://localhost:{}/branch-name/", args.smb_port);
     }
-    println!("MySQL:      mysql -h {} -P {} -u root wordpress/<branch>", args.dolt_bind, args.shared.dolt_port);
-    println!("Logs:       {}", layout.logs_dir.display());
+    println!(
+        "MySQL:       mysql -h {} -P {} -u root wordpress/<branch>",
+        args.dolt_bind, args.bins.dolt_port
+    );
+    println!("Logs:        {}", layout.logs_dir.display());
     println!("Press Ctrl+C to stop.");
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -208,6 +270,7 @@ fn start_command(args: StartArgs) -> Result<i32> {
     loop {
         if stop.load(Ordering::SeqCst) {
             println!("Stopping servers...");
+            pack_dolt(&layout)?;
             break;
         }
 
@@ -218,8 +281,8 @@ fn start_command(args: StartArgs) -> Result<i32> {
             );
         }
 
-        if let Some(dolt) = dolt.as_mut() {
-            if let Some(status) = dolt.try_wait()? {
+        if let Some(d) = dolt.as_mut() {
+            if let Some(status) = d.try_wait()? {
                 bail!(
                     "dolt sql-server exited unexpectedly with status {status}. Check {}",
                     layout.dolt_server_log.display()
@@ -247,27 +310,35 @@ fn branch_command(args: BranchPassthrough) -> Result<i32> {
         bail!("branch requires branchctl arguments, e.g. `forkpress branch create marketing`");
     }
 
-    let layout = Layout::new(args.shared.work_dir.clone())?;
+    let site_fp = absolutize(args.site_fp.clone())?;
+    let layout = Layout::new(site_fp, None)?;
     prepare_runtime(&layout)?;
     let runtime = PortableRuntime::from_layout(&layout);
 
-    if !layout.db_path.exists() || !layout.bootstrap_marker.exists() {
+    if !layout.site_fp.exists() || !layout.bootstrap_marker.exists() {
         bail!(
-            "no bootstrapped site found in {}. Run `forkpress start` first",
-            layout.work_dir.display()
+            "no bootstrapped site found at {}. Run `forkpress start` first",
+            layout.site_fp.display()
         );
     }
 
-    let _dolt = start_dolt_server(&layout, &runtime, &args.shared, "127.0.0.1", args.shared.dolt_port, true)?;
+    let _dolt = start_dolt_server(
+        &layout,
+        &runtime,
+        &args.bins,
+        "127.0.0.1",
+        args.bins.dolt_port,
+        true,
+    )?;
 
-    let mut command = php_base_command(&layout, &runtime, &args.shared);
+    let mut command = php_base_command(&layout, &runtime, &args.bins);
     command.arg(layout.runtime_dir.join("scripts/branchctl.php"));
     for arg in &args.args {
         command.arg(arg);
     }
-    command.env("BRANCHFS_DB", &layout.db_path);
+    command.env("BRANCHFS_DB", &layout.site_fp);
     command.env("DOLT_HOST", "127.0.0.1");
-    command.env("DOLT_PORT", args.shared.dolt_port.to_string());
+    command.env("DOLT_PORT", args.bins.dolt_port.to_string());
     command.env("DOLT_DB", "wordpress");
     command.env("BRANCHFS_ROOT_HOST", "localhost");
     command.env("PORT", "80");
@@ -282,23 +353,46 @@ fn branch_command(args: BranchPassthrough) -> Result<i32> {
 }
 
 impl Layout {
-    fn new(work_dir: PathBuf) -> Result<Self> {
-        let work_dir = absolutize(work_dir)?;
+    fn new(site_fp: PathBuf, logs_override: Option<PathBuf>) -> Result<Self> {
+        let site_fp = absolutize(site_fp)?;
+
+        let hash: String = {
+            let mut hasher = Sha256::new();
+            hasher.update(site_fp.to_string_lossy().as_bytes());
+            hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect()
+        };
+
+        let runtime_base = std::env::temp_dir().join("forkpress").join(&hash);
+
+        let logs_dir = match logs_override {
+            Some(l) => absolutize(l)?,
+            None => {
+                let stem = site_fp
+                    .file_stem()
+                    .map(|s| format!("{}.logs", s.to_string_lossy()))
+                    .unwrap_or_else(|| "site.logs".to_string());
+                site_fp
+                    .parent()
+                    .unwrap_or_else(|| Path::new("."))
+                    .join(stem)
+            }
+        };
+
         Ok(Self {
-            runtime_dir: work_dir.join("runtime"),
-            logs_dir: work_dir.join("logs"),
-            db_path: work_dir.join("branchfs.db"),
-            wp_root: work_dir.join("wproot"),
-            dolt_data_dir: work_dir.join("dolt-data"),
-            dolt_repo_dir: work_dir.join("dolt-data/wordpress"),
-            debug_log: work_dir.join("logs/wp-debug.log"),
-            php_error_log: work_dir.join("logs/php-errors.log"),
-            php_server_log: work_dir.join("logs/php-server.log"),
-            dolt_server_log: work_dir.join("logs/dolt-server.log"),
-            fileserver_log: work_dir.join("logs/fileserver.log"),
-            runtime_ready_marker: work_dir.join("runtime/.forkpress-runtime-ready"),
-            bootstrap_marker: work_dir.join(".forkpress-bootstrap-complete"),
-            work_dir,
+            runtime_dir: runtime_base.join("runtime"),
+            dolt_data_dir: runtime_base.join("dolt-data"),
+            dolt_repo_dir: runtime_base.join("dolt-data/wordpress"),
+            wp_root: runtime_base.join("wproot"),
+            debug_log: logs_dir.join("wp-debug.log"),
+            php_error_log: logs_dir.join("php-errors.log"),
+            php_server_log: logs_dir.join("php-server.log"),
+            dolt_server_log: logs_dir.join("dolt-server.log"),
+            fileserver_log: logs_dir.join("fileserver.log"),
+            runtime_ready_marker: runtime_base.join("runtime/.forkpress-runtime-ready"),
+            bootstrap_marker: runtime_base.join(".forkpress-bootstrap-complete"),
+            runtime_base,
+            logs_dir,
+            site_fp,
         })
     }
 }
@@ -342,10 +436,9 @@ fn absolutize(path: PathBuf) -> Result<PathBuf> {
 }
 
 fn prepare_runtime(layout: &Layout) -> Result<()> {
-    fs::create_dir_all(&layout.work_dir)?;
+    fs::create_dir_all(&layout.runtime_base)?;
     fs::create_dir_all(&layout.logs_dir)?;
     fs::create_dir_all(&layout.wp_root)?;
-    fs::create_dir_all(&layout.dolt_repo_dir)?;
 
     if !layout.runtime_ready_marker.exists() {
         if layout.runtime_dir.exists() {
@@ -368,6 +461,103 @@ fn prepare_runtime(layout: &Layout) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn extract_dolt(layout: &Layout) -> Result<()> {
+    if layout.dolt_repo_dir.join(".dolt").exists() {
+        return Ok(());
+    }
+
+    let conn = Connection::open(&layout.site_fp)
+        .with_context(|| format!("failed to open {} for dolt extraction", layout.site_fp.display()))?;
+
+    let data_opt = conn
+        .query_row(
+            "SELECT data FROM dolt_archive WHERE id = 1",
+            [],
+            |row| row.get::<_, Option<Vec<u8>>>(0),
+        )
+        .optional()
+        .context("failed to read dolt_archive")?;
+
+    let data = data_opt.flatten();
+
+    if let Some(bytes) = data {
+        let tmp_path = layout.runtime_base.join("dolt-archive.tar.gz");
+        fs::write(&tmp_path, &bytes).context("failed to write dolt tar to temp file")?;
+
+        let status = Command::new("tar")
+            .arg("-xzf")
+            .arg(&tmp_path)
+            .arg("-C")
+            .arg(&layout.runtime_base)
+            .status()
+            .context("failed to run tar to extract dolt data")?;
+
+        if !status.success() {
+            bail!("tar extraction of dolt data failed");
+        }
+
+        fs::remove_file(&tmp_path).ok();
+    } else {
+        fs::create_dir_all(&layout.dolt_repo_dir)
+            .context("failed to create dolt repo directory")?;
+    }
+
+    Ok(())
+}
+
+fn pack_dolt(layout: &Layout) -> Result<()> {
+    if !layout.dolt_data_dir.exists() {
+        return Ok(());
+    }
+
+    let output = Command::new("tar")
+        .arg("-czf")
+        .arg("-")
+        .arg("-C")
+        .arg(&layout.runtime_base)
+        .arg("dolt-data")
+        .output()
+        .context("failed to run tar to pack dolt data")?;
+
+    if !output.status.success() {
+        bail!(
+            "tar failed packing dolt data: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let data = output.stdout;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs() as i64;
+
+    let conn = Connection::open(&layout.site_fp)
+        .context("failed to open site.fp for packing")?;
+
+    conn.execute(
+        "UPDATE dolt_archive SET data = ?1, updated_at = ?2 WHERE id = 1",
+        rusqlite::params![data, now],
+    )
+    .context("failed to update dolt_archive")?;
+
+    println!("Packed Dolt state into site.fp");
+    Ok(())
+}
+
+fn read_site_config(site_fp: &Path, key: &str) -> Result<String> {
+    let conn = Connection::open(site_fp)
+        .with_context(|| format!("failed to open {}", site_fp.display()))?;
+    let value: String = conn
+        .query_row(
+            "SELECT value FROM site_config WHERE key = ?1",
+            rusqlite::params![key],
+            |row| row.get(0),
+        )
+        .with_context(|| format!("site_config key '{key}' not found"))?;
+    Ok(value)
 }
 
 fn ensure_wp_source_unzipped(layout: &Layout) -> Result<()> {
@@ -413,9 +603,13 @@ fn ensure_wp_source_unzipped(layout: &Layout) -> Result<()> {
 }
 
 fn ensure_ports_available(args: &StartArgs) -> Result<()> {
-    let dolt_check = if args.dolt_bind == "0.0.0.0" { "127.0.0.1" } else { &args.dolt_bind };
-    if tcp_port_open(dolt_check, args.shared.dolt_port) {
-        bail!("dolt port {} is already in use", args.shared.dolt_port);
+    let dolt_check = if args.dolt_bind == "0.0.0.0" {
+        "127.0.0.1"
+    } else {
+        &args.dolt_bind
+    };
+    if tcp_port_open(dolt_check, args.bins.dolt_port) {
+        bail!("dolt port {} is already in use", args.bins.dolt_port);
     }
     if tcp_port_open(&args.host, args.port) {
         bail!(
@@ -435,26 +629,24 @@ fn ensure_ports_available(args: &StartArgs) -> Result<()> {
     Ok(())
 }
 
-fn ensure_bootstrapped(layout: &Layout, runtime: &PortableRuntime, args: &StartArgs) -> Result<()> {
-    if !layout.db_path.exists() {
-        run_php_script(
-            layout,
-            runtime,
-            &args.shared,
-            "scripts/init_db.php",
-            [layout.db_path.as_os_str()],
-        )?;
-    }
-
+fn ensure_bootstrapped(
+    layout: &Layout,
+    runtime: &PortableRuntime,
+    bins: &BinOverrides,
+) -> Result<()> {
     if !layout.bootstrap_marker.exists() {
+        let site_title = read_site_config(&layout.site_fp, "site_title")
+            .unwrap_or_else(|_| "ForkPress".to_string());
+        let dolt_port_str = bins.dolt_port.to_string();
+
         run_php_script(
             layout,
             runtime,
-            &args.shared,
+            bins,
             "scripts/import_wp.php",
             [
                 layout.runtime_dir.join("e2e/wp-src").as_os_str(),
-                layout.db_path.as_os_str(),
+                layout.site_fp.as_os_str(),
                 OsStr::new("main"),
             ],
         )?;
@@ -462,13 +654,13 @@ fn ensure_bootstrapped(layout: &Layout, runtime: &PortableRuntime, args: &StartA
         run_php_script(
             layout,
             runtime,
-            &args.shared,
+            bins,
             "e2e/bootstrap_wp.php",
             [
-                layout.db_path.as_os_str(),
+                layout.site_fp.as_os_str(),
                 layout.wp_root.as_os_str(),
-                OsStr::new(&args.shared.dolt_port.to_string()),
-                OsStr::new(&args.site_title),
+                OsStr::new(&dolt_port_str),
+                OsStr::new(&site_title),
                 layout
                     .runtime_dir
                     .join("wp-plugin/branchfs-wp.php")
@@ -486,7 +678,7 @@ fn ensure_bootstrapped(layout: &Layout, runtime: &PortableRuntime, args: &StartA
 fn start_dolt_server(
     layout: &Layout,
     runtime: &PortableRuntime,
-    shared: &SharedPaths,
+    bins: &BinOverrides,
     bind: &str,
     port: u16,
     allow_existing: bool,
@@ -499,7 +691,7 @@ fn start_dolt_server(
         bail!("dolt port {port} is already in use");
     }
 
-    ensure_dolt_repo(layout, runtime, shared)?;
+    ensure_dolt_repo(layout, runtime, bins)?;
 
     let log = OpenOptions::new()
         .create(true)
@@ -507,7 +699,7 @@ fn start_dolt_server(
         .open(&layout.dolt_server_log)?;
     let log_err = log.try_clone()?;
 
-    let mut command = dolt_command(runtime, shared);
+    let mut command = dolt_command(runtime, bins);
     let child = command
         .args([
             "sql-server",
@@ -526,21 +718,21 @@ fn start_dolt_server(
         child,
     };
 
-    wait_for_dolt(layout, runtime, shared, guard.child.id(), port)?;
+    wait_for_dolt(layout, runtime, bins, guard.child.id(), port)?;
     Ok(Some(guard))
 }
 
 fn ensure_dolt_repo(
     layout: &Layout,
     runtime: &PortableRuntime,
-    shared: &SharedPaths,
+    bins: &BinOverrides,
 ) -> Result<()> {
     if layout.dolt_repo_dir.join(".dolt").exists() {
         return Ok(());
     }
 
     fs::create_dir_all(&layout.dolt_repo_dir)?;
-    let output = dolt_command(runtime, shared)
+    let output = dolt_command(runtime, bins)
         .args(["init", "--name", "forkpress", "--email", "forkpress@local"])
         .current_dir(&layout.dolt_repo_dir)
         .output()
@@ -559,7 +751,7 @@ fn ensure_dolt_repo(
 fn wait_for_dolt(
     layout: &Layout,
     runtime: &PortableRuntime,
-    shared: &SharedPaths,
+    bins: &BinOverrides,
     pid: u32,
     port: u16,
 ) -> Result<()> {
@@ -572,7 +764,7 @@ fn wait_for_dolt(
             );
         }
 
-        let status = php_command(runtime, shared)
+        let status = php_command(runtime, bins)
             .arg("-r")
             .arg(format!(
                 "mysqli_report(MYSQLI_REPORT_OFF); $c = @mysqli_init(); if(!$c) exit(1); if(!@mysqli_real_connect($c, '127.0.0.1', 'root', '', 'wordpress', {})) exit(1); $c->close();",
@@ -596,6 +788,7 @@ fn start_php_server(
     layout: &Layout,
     runtime: &PortableRuntime,
     args: &StartArgs,
+    root_host: &str,
 ) -> Result<ChildGuard> {
     let log = OpenOptions::new()
         .create(true)
@@ -603,7 +796,7 @@ fn start_php_server(
         .open(&layout.php_server_log)?;
     let log_err = log.try_clone()?;
 
-    let child = php_base_command(layout, runtime, &args.shared)
+    let child = php_base_command(layout, runtime, &args.bins)
         .arg("-d")
         .arg("log_errors=On")
         .arg("-d")
@@ -617,11 +810,11 @@ fn start_php_server(
         .arg("-t")
         .arg(&layout.wp_root)
         .arg(layout.runtime_dir.join("e2e/router.php"))
-        .env("BRANCHFS_DB", &layout.db_path)
+        .env("BRANCHFS_DB", &layout.site_fp)
         .env("BRANCHFS_WP_ROOT", &layout.wp_root)
-        .env("BRANCHFS_ROOT_HOST", &args.root_host)
+        .env("BRANCHFS_ROOT_HOST", root_host)
         .env("DOLT_HOST", "127.0.0.1")
-        .env("DOLT_PORT", args.shared.dolt_port.to_string())
+        .env("DOLT_PORT", args.bins.dolt_port.to_string())
         .env("DOLT_DB", "wordpress")
         .stdout(Stdio::from(log))
         .stderr(Stdio::from(log_err))
@@ -668,7 +861,7 @@ fn start_fileserver(
 
     let child = Command::new(&runtime.fileserver)
         .arg("--db")
-        .arg(&layout.db_path)
+        .arg(&layout.site_fp)
         .arg("--sftp-addr")
         .arg(format!("{}:{}", args.host, args.sftp_port))
         .arg("--smb-addr")
@@ -695,10 +888,10 @@ fn start_fileserver(
     Ok(Some(guard))
 }
 
-fn php_base_command(_layout: &Layout, runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
+fn php_base_command(_layout: &Layout, runtime: &PortableRuntime, bins: &BinOverrides) -> Command {
     // branchfs is compiled into the php binary as a builtin extension
     // (see scripts/build-dist.sh), so no -d extension=... flag is needed.
-    let mut command = php_command(runtime, shared);
+    let mut command = php_command(runtime, bins);
     command
         .arg("-d")
         .arg("display_errors=Off")
@@ -710,7 +903,7 @@ fn php_base_command(_layout: &Layout, runtime: &PortableRuntime, shared: &Shared
 fn run_php_script<I, S>(
     layout: &Layout,
     runtime: &PortableRuntime,
-    shared: &SharedPaths,
+    bins: &BinOverrides,
     script_rel: &str,
     args: I,
 ) -> Result<()>
@@ -718,7 +911,7 @@ where
     I: IntoIterator<Item = S>,
     S: AsRef<OsStr>,
 {
-    let mut command = php_base_command(layout, runtime, shared);
+    let mut command = php_base_command(layout, runtime, bins);
     command.arg(layout.runtime_dir.join(script_rel));
     for arg in args {
         command.arg(arg);
@@ -737,8 +930,8 @@ where
     Ok(())
 }
 
-fn php_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
-    if let Some(php_bin) = &shared.php_bin {
+fn php_command(runtime: &PortableRuntime, bins: &BinOverrides) -> Command {
+    if let Some(php_bin) = &bins.php_bin {
         return Command::new(php_bin);
     }
     // Static-php-cli produces a self-contained php binary (static on Linux,
@@ -746,11 +939,10 @@ fn php_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
     Command::new(&runtime.php)
 }
 
-fn dolt_command(runtime: &PortableRuntime, shared: &SharedPaths) -> Command {
-    if let Some(dolt_bin) = &shared.dolt_bin {
+fn dolt_command(runtime: &PortableRuntime, bins: &BinOverrides) -> Command {
+    if let Some(dolt_bin) = &bins.dolt_bin {
         return Command::new(dolt_bin);
     }
-
     Command::new(&runtime.dolt)
 }
 

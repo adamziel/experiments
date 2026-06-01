@@ -10,7 +10,16 @@
  */
 
 // Configuration - adjust for your environment
-define('BRANCHFS_DB',      getenv('BRANCHFS_DB')      ?: __DIR__ . '/../branchfs.db');
+function branchfs_find_db(): string {
+    $env = getenv('BRANCHFS_DB');
+    if ($env) return $env;
+    // Look for *.fp next to this file
+    $fps = glob(__DIR__ . '/*.fp') ?: [];
+    if ($fps) return $fps[0];
+    // Fall back to legacy name
+    return __DIR__ . '/../branchfs.db';
+}
+define('BRANCHFS_DB', branchfs_find_db());
 define('BRANCHFS_WP_ROOT', getenv('BRANCHFS_WP_ROOT') ?: dirname(__DIR__) . '/wproot');
 define('BRANCHFS_SECRET',  getenv('BRANCHFS_SECRET')  ?: 'dev-secret-change-in-production');
 define('BRANCHFS_DEFAULT', 'main');

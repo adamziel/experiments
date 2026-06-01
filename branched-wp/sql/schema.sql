@@ -67,3 +67,18 @@ CREATE TABLE IF NOT EXISTS fs_commit_files (
 
 -- Seed the 'main' branch
 INSERT OR IGNORE INTO branches (name, parent_branch) VALUES ('main', NULL);
+
+-- Dolt data directory packed as a gzip'd tar blob.
+-- Extracted to a temp dir on start, repacked on clean stop.
+CREATE TABLE IF NOT EXISTS dolt_archive (
+    id         INTEGER PRIMARY KEY DEFAULT 1,
+    data       BLOB,        -- gzip'd tar of dolt-data/wordpress/ directory
+    updated_at INTEGER      -- unix timestamp of last pack
+);
+
+-- Site-level configuration key-value store.
+CREATE TABLE IF NOT EXISTS site_config (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+-- Keys used: site_title, root_host, php_ini_extra (newline-separated ini lines)
