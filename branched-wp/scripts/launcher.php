@@ -1,4 +1,5 @@
 <?php
+/* : <<'__END__' */
 /**
  * BranchFS Launcher - The single real file on disk.
  *
@@ -78,6 +79,26 @@ if (!extension_loaded('branchfs')) {
 
 $branch = branchfs_resolve_branch();
 
+// Resolve branch_id for table prefix
+$_fp_db = new SQLite3(BRANCHFS_DB, SQLITE3_OPEN_READONLY);
+$_branch_id = $_fp_db->querySingle(
+    "SELECT id FROM branches WHERE name = " . SQLite3::escapeString("'$branch'")
+);
+$_fp_db->close();
+$_branch_id = $_branch_id ?: 1;
+
+require_once __DIR__ . '/branched_pdo.php';
+
+// WordPress table prefix: b{branch_id}_wp_
+$GLOBALS['_branchfs_table_prefix'] = "b{$_branch_id}_wp_";
+
+// Configure Automattic sqlite-database-integration to use site.fp
+// so the WordPress database lives in the same file as the filesystem.
+$wp_db_path = getenv('BRANCHFS_SQLITE_WP_DB') ?: BRANCHFS_DB;
+define('FQDB', $wp_db_path);
+define('DB_DIR', dirname($wp_db_path));
+define('DB_FILE', basename($wp_db_path));
+
 // Initialize the branchfs extension
 branchfs_set_db(BRANCHFS_DB);
 branchfs_set_root(BRANCHFS_WP_ROOT);
@@ -99,3 +120,5 @@ $_SERVER['DOCUMENT_ROOT'] = BRANCHFS_WP_ROOT;
 $_SERVER['SCRIPT_FILENAME'] = BRANCHFS_WP_ROOT . '/index.php';
 
 require $wp_blog_header;
+?>
+__END__

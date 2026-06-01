@@ -80,7 +80,7 @@ test-all: ext/branchfs.so
 clean:
 	rm -f ext/branchfs.so /tmp/branchfs_test*.db /tmp/branchfs_wp*.db
 
-# Build the per-target runtime bundle (php + dolt + branchfs.so) consumed by
+# Build the per-target runtime bundle (php + branchfs builtin) consumed by
 # forkpress. First-time build compiles static PHP from source and takes
 # ~3-5 minutes on Apple Silicon; subsequent runs reuse the cached PHP.
 dist:

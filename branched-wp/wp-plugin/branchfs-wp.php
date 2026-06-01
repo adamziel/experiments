@@ -102,32 +102,3 @@ add_action('admin_head', function () {
     </style>';
 });
 
-/**
- * Configure Dolt branch for database operations.
- * When using Dolt as the MySQL backend, this ensures the DB connection
- * uses the correct branch.
- */
-add_action('init', function () {
-    if (!function_exists('branchfs_get_branch')) return;
-
-    $branch = branchfs_get_branch();
-    if (!$branch || $branch === 'main') return;
-
-    global $wpdb;
-
-    // For Dolt: use branch-scoped connection via dbname/branch
-    // This is configured in wp-config.php using the BRANCHFS_DB_BRANCH constant
-    if (defined('BRANCHFS_DOLT_ENABLED') && BRANCHFS_DOLT_ENABLED) {
-        try {
-            $wpdb->query("CALL DOLT_CHECKOUT('$branch')");
-        } catch (Exception $e) {
-            // Branch may not exist in Dolt yet; create it
-            try {
-                $wpdb->query("CALL DOLT_BRANCH('$branch', 'main')");
-                $wpdb->query("CALL DOLT_CHECKOUT('$branch')");
-            } catch (Exception $e2) {
-                error_log("BranchFS: Could not switch Dolt to branch $branch: " . $e2->getMessage());
-            }
-        }
-    }
-}, 0); // Priority 0 = run before anything else

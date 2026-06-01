@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Build the per-target runtime bundle (php + dolt + branchfs.so) consumed by
-# forkpress/forkpress at build time. Produces dist/<triple>/ ready for
+# Build the per-target runtime bundle (php + branchfs builtin) consumed by
+# forkpress at build time. Produces dist/<triple>/ ready for
 # `cargo build --release` to embed.
 #
 # Currently builds for the host target. CI matrix handles cross-targets
@@ -14,10 +14,10 @@ cd "$REPO_ROOT"
 UNAME_S=$(uname -s)
 UNAME_M=$(uname -m)
 case "$UNAME_S-$UNAME_M" in
-  Darwin-arm64)  TRIPLE=aarch64-apple-darwin;         DOLT_ASSET=dolt-darwin-arm64 ;;
-  Darwin-x86_64) TRIPLE=x86_64-apple-darwin;          DOLT_ASSET=dolt-darwin-amd64 ;;
-  Linux-x86_64)  TRIPLE=x86_64-unknown-linux-gnu;     DOLT_ASSET=dolt-linux-amd64 ;;
-  Linux-aarch64) TRIPLE=aarch64-unknown-linux-gnu;    DOLT_ASSET=dolt-linux-arm64 ;;
+  Darwin-arm64)  TRIPLE=aarch64-apple-darwin       ;;
+  Darwin-x86_64) TRIPLE=x86_64-apple-darwin        ;;
+  Linux-x86_64)  TRIPLE=x86_64-unknown-linux-gnu   ;;
+  Linux-aarch64) TRIPLE=aarch64-unknown-linux-gnu  ;;
   *) echo "unsupported host: $UNAME_S $UNAME_M" >&2; exit 1 ;;
 esac
 
@@ -34,7 +34,7 @@ SPC_DIR="$BUILD_DIR/static-php-cli"
 #            mbstring covers the same ground for WordPress.
 #   - opcache: PHP 8.3's JIT has a broken arm64-macos path (missing zend_jit_arm64.c);
 #              opcache is a perf optimization, not functionally required.
-EXTENSIONS="bcmath,ctype,curl,dom,exif,fileinfo,filter,mbstring,mysqli,mysqlnd,openssl,pcntl,pdo,pdo_mysql,pdo_sqlite,phar,posix,session,simplexml,sockets,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
+EXTENSIONS="bcmath,ctype,curl,dom,exif,fileinfo,filter,mbstring,openssl,pcntl,pdo,pdo_sqlite,phar,posix,session,simplexml,sockets,sqlite3,tokenizer,xml,xmlreader,xmlwriter,zip,zlib"
 
 mkdir -p "$DIST_DIR/bin"
 
@@ -116,25 +116,14 @@ if ! printf '%s\n' "$_php_modules" | grep -qi '^branchfs$'; then
   exit 1
 fi
 
-# --- 2. dolt ---------------------------------------------------------------
-if [ ! -x "$DIST_DIR/bin/dolt" ]; then
-  echo "==> Fetching dolt ($DOLT_ASSET)"
-  DOLT_DIR="$BUILD_DIR/dolt-$TRIPLE"
-  mkdir -p "$DOLT_DIR"
-  curl -sL "https://github.com/dolthub/dolt/releases/latest/download/$DOLT_ASSET.tar.gz" -o "$DOLT_DIR/dolt.tgz"
-  tar -C "$DOLT_DIR" -xzf "$DOLT_DIR/dolt.tgz"
-  install -m 0755 "$DOLT_DIR/$DOLT_ASSET/bin/dolt" "$DIST_DIR/bin/dolt"
-fi
-
-# --- 3. Ad-hoc codesign (Apple Silicon refuses unsigned ARM64 binaries) ----
+# --- 2. Ad-hoc codesign (Apple Silicon refuses unsigned ARM64 binaries) ----
 if [ "$UNAME_S" = "Darwin" ]; then
   echo "==> Ad-hoc codesigning mac binaries"
   codesign --force --sign - "$DIST_DIR/bin/php"
-  codesign --force --sign - "$DIST_DIR/bin/dolt"
 fi
 
 echo
 echo "dist/$TRIPLE/ ready:"
-ls -lh "$DIST_DIR/bin/php" "$DIST_DIR/bin/dolt"
+ls -lh "$DIST_DIR/bin/php"
 echo
 echo "Next: cargo build --release"
