@@ -1,0 +1,187 @@
+{
+	"$schema": "https://schemas.wp.org/wp/6.7/theme.json",
+	"version": 3,
+	"title": "Crown",
+	"settings": {
+		"color": {
+			"palette": [
+				{
+					"slug": "raw-yellow",
+					"color": "#FFB800",
+					"name": "Raw Yellow"
+				},
+				{
+					"slug": "crown-gold",
+					"color": "#B8860B",
+					"name": "Crown Gold"
+				},
+				{
+					"slug": "electric-blue",
+					"color": "#003399",
+					"name": "Electric Blue"
+				},
+				{
+					"slug": "fire-red",
+					"color": "#CC1100",
+					"name": "Fire Red"
+				},
+				{
+					"slug": "bone-white",
+					"color": "#E8E0D0",
+					"name": "Bone White"
+				},
+				{
+					"slug": "charcoal-black",
+					"color": "#0D0D0D",
+					"name": "Charcoal Black"
+				},
+				{
+					"slug": "graffiti-green",
+					"color": "#008844",
+					"name": "Graffiti Green"
+				}
+			]
+		},
+		"typography": {
+			"fontFamilies": [
+				{
+					"fontFamily": "'Caveat', cursive",
+					"slug": "caveat",
+					"name": "Caveat",
+					"fontFace": [
+						{
+							"fontFamily": "Caveat",
+							"fontWeight": "400 700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/caveat/v18/WnznHAc5bAfYB2QRah7pcpNvOx-pjcB9SIKjYBxPigs.woff2"
+							]
+						}
+					]
+				},
+				{
+					"fontFamily": "'Permanent Marker', cursive",
+					"slug": "permanent-marker",
+					"name": "Permanent Marker",
+					"fontFace": [
+						{
+							"fontFamily": "Permanent Marker",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/permanentmarker/v16/Fh4uPib9Iyv2ucM6pGQMWimMp004HaqIfrT5nlk.woff2"
+							]
+						}
+					]
+				},
+				{
+					"fontFamily": "'Space Mono', monospace",
+					"slug": "space-mono",
+					"name": "Space Mono",
+					"fontFace": [
+						{
+							"fontFamily": "Space Mono",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/spacemono/v13/i7dPIFZifjKcF5UAWdDRYEF8RXi4EwQ.woff2"
+							]
+						},
+						{
+							"fontFamily": "Space Mono",
+							"fontWeight": "700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/spacemono/v13/i7dMIFZifjKcF5UAWdDRaPpZYFKQHwyVd3U.woff2"
+							]
+						}
+					]
+				},
+				{
+					"fontFamily": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen-Sans, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif",
+					"slug": "system-sans",
+					"name": "System Sans"
+				}
+			]
+		}
+	},
+	"styles": {
+		"color": {
+			"background": "#0D0D0D",
+			"text": "#E8E0D0"
+		},
+		"elements": {
+			"heading": {
+				"typography": {
+					"fontFamily": "var(--wp--preset--font-family--caveat)",
+					"fontWeight": "700"
+				},
+				"color": {
+					"text": "#FFB800"
+				}
+			},
+			"link": {
+				"color": {
+					"text": "#003399"
+				},
+				":hover": {
+					"color": {
+						"text": "#CC1100"
+					}
+				}
+			},
+			"button": {
+				"color": {
+					"background": "#CC1100",
+					"text": "#E8E0D0"
+				},
+				"border": {
+					"color": "#FFB800",
+					"width": "3px",
+					"style": "solid",
+					"radius": "0"
+				},
+				":hover": {
+					"color": {
+						"background": "#FFB800",
+						"text": "#0D0D0D"
+					}
+				}
+			}
+		},
+		"blocks": {
+			"core/site-title": {
+				"color": {
+					"text": "#FFB800"
+				},
+				"typography": {
+					"fontFamily": "var(--wp--preset--font-family--caveat)",
+					"fontWeight": "700"
+				}
+			},
+			"core/quote": {
+				"color": {
+					"text": "#B8860B"
+				},
+				"border": {
+					"left": {
+						"color": "#CC1100",
+						"width": "4px",
+						"style": "solid"
+					}
+				}
+			},
+			"core/code": {
+				"color": {
+					"background": "#050505",
+					"text": "#008844"
+				},
+				"border": {
+					"color": "#008844",
+					"width": "2px",
+					"style": "solid"
+				}
+			}
+		}
+	}
+}

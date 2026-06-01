@@ -1,0 +1,146 @@
+{
+	"$schema": "https://schemas.wp.org/wp/6.7/theme.json",
+	"version": 3,
+	"title": "Sagrada",
+	"settings": {
+		"color": {
+			"palette": [
+				{
+					"slug": "nave-gold",
+					"color": "#B8860B",
+					"name": "Nave Gold"
+				},
+				{
+					"slug": "stained-glass-rose",
+					"color": "#8B2252",
+					"name": "Stained Glass Rose"
+				},
+				{
+					"slug": "sanctuary-stone",
+					"color": "#D2C6A5",
+					"name": "Sanctuary Stone"
+				},
+				{
+					"slug": "spire-grey",
+					"color": "#6B6B6B",
+					"name": "Spire Grey"
+				},
+				{
+					"slug": "altar-white",
+					"color": "#F5F0EB",
+					"name": "Altar White"
+				},
+				{
+					"slug": "crypt-green",
+					"color": "#3B5E3B",
+					"name": "Crypt Green"
+				},
+				{
+					"slug": "nativity-blue",
+					"color": "#2A4D7F",
+					"name": "Nativity Blue"
+				},
+				{
+					"slug": "passion-charcoal",
+					"color": "#1E1E1E",
+					"name": "Passion Charcoal"
+				}
+			]
+		},
+		"typography": {
+			"fontFamilies": [
+				{
+					"fontFamily": "'Cormorant Garamond', Garamond, serif",
+					"slug": "cormorant-garamond",
+					"name": "Cormorant Garamond",
+					"fontFace": [
+						{
+							"fontFamily": "Cormorant Garamond",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/cormorantgaramond/v16/co3bmX5slCNuHLi8bLeY9MK7whWMhyjYrEtFmSu5.woff2"
+							]
+						},
+						{
+							"fontFamily": "Cormorant Garamond",
+							"fontWeight": "700",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/cormorantgaramond/v16/co3YmX5slCNuHLi8bLeY9MK7whWMhyjQAllvuQWJ5heb.woff2"
+							]
+						}
+					]
+				},
+				{
+					"fontFamily": "'Source Serif 4', 'Times New Roman', serif",
+					"slug": "source-serif",
+					"name": "Source Serif 4",
+					"fontFace": [
+						{
+							"fontFamily": "Source Serif 4",
+							"fontWeight": "400",
+							"fontStyle": "normal",
+							"src": [
+								"https://fonts.gstatic.com/s/sourceserif4/v8/vEFy2_tTDB4M7-auWDN0ahZJW3IX2ih5nk3AucvUHf64.woff2"
+							]
+						}
+					]
+				},
+				{
+					"fontFamily": "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Helvetica Neue', sans-serif",
+					"slug": "system-sans",
+					"name": "System Sans"
+				}
+			]
+		}
+	},
+	"styles": {
+		"color": {
+			"background": "var(--wp--preset--color--altar-white)",
+			"text": "var(--wp--preset--color--passion-charcoal)"
+		},
+		"typography": {
+			"fontFamily": "var(--wp--preset--font-family--source-serif)",
+			"fontSize": "var(--wp--preset--font-size--medium)",
+			"lineHeight": "1.75"
+		},
+		"elements": {
+			"link": {
+				"color": {
+					"text": "var(--wp--preset--color--nativity-blue)"
+				},
+				":hover": {
+					"color": {
+						"text": "var(--wp--preset--color--stained-glass-rose)"
+					}
+				}
+			},
+			"heading": {
+				"typography": {
+					"fontFamily": "var(--wp--preset--font-family--cormorant-garamond)",
+					"fontWeight": "700",
+					"lineHeight": "1.15"
+				},
+				"color": {
+					"text": "var(--wp--preset--color--passion-charcoal)"
+				}
+			},
+			"button": {
+				"color": {
+					"background": "var(--wp--preset--color--nativity-blue)",
+					"text": "var(--wp--preset--color--altar-white)"
+				},
+				"border": {
+					"radius": "2px"
+				},
+				":hover": {
+					"color": {
+						"background": "var(--wp--preset--color--stained-glass-rose)",
+						"text": "var(--wp--preset--color--altar-white)"
+					}
+				}
+			}
+		}
+	}
+}

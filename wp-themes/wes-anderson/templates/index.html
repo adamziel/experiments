@@ -1,0 +1,45 @@
+<!-- wp:template-part {"slug":"header","area":"header"} /-->
+
+<!-- wp:group {"tagName":"main","layout":{"type":"constrained"}} -->
+<main class="wp-block-group">
+	<!-- wp:heading {"level":1,"textAlign":"center","style":{"spacing":{"margin":{"top":"3rem","bottom":"2rem"}}}} -->
+	<h1 class="has-text-align-center" style="margin-top:3rem;margin-bottom:2rem">The Journal</h1>
+	<!-- /wp:heading -->
+
+	<!-- wp:separator {"className":"is-style-wide","backgroundColor":"mustard-yellow","style":{"spacing":{"margin":{"bottom":"3rem"}}}} -->
+	<hr class="wp-block-separator has-text-color has-mustard-yellow-color has-alpha-channel-opacity has-mustard-yellow-background-color has-background is-style-wide" style="margin-bottom:3rem"/>
+	<!-- /wp:separator -->
+
+	<!-- wp:query {"queryId":1,"query":{"perPage":6,"pages":0,"offset":0,"postType":"post","order":"desc","orderBy":"date","inherit":true},"layout":{"type":"constrained"}} -->
+	<div class="wp-block-query">
+		<!-- wp:post-template {"layout":{"type":"default"}} -->
+			<!-- wp:group {"style":{"spacing":{"blockGap":"0.75rem","padding":{"bottom":"2.5rem"}}},"layout":{"type":"constrained"}} -->
+			<div class="wp-block-group" style="padding-bottom:2.5rem">
+				<!-- wp:post-title {"textAlign":"center","isLink":true,"style":{"typography":{"fontSize":"var(--wp--preset--font-size--x-large)"}}} /-->
+
+				<!-- wp:post-date {"textAlign":"center","style":{"typography":{"fontFamily":"var(--wp--preset--font-family--jost)","fontSize":"var(--wp--preset--font-size--small)","letterSpacing":"0.1em","textTransform":"uppercase"}}} /-->
+
+				<!-- wp:post-excerpt {"textAlign":"center","moreText":"Continue Reading","excerptLength":30} /-->
+
+				<!-- wp:separator {"backgroundColor":"blush-pink","style":{"spacing":{"margin":{"top":"2.5rem"}}}} -->
+				<hr class="wp-block-separator has-text-color has-blush-pink-color has-alpha-channel-opacity has-blush-pink-background-color has-background" style="margin-top:2.5rem"/>
+				<!-- /wp:separator -->
+			</div>
+			<!-- /wp:group -->
+		<!-- /wp:post-template -->
+
+		<!-- wp:group {"layout":{"type":"constrained"},"style":{"spacing":{"margin":{"top":"2rem"}}}} -->
+		<div class="wp-block-group" style="margin-top:2rem">
+			<!-- wp:query-pagination {"paginationArrow":"arrow","layout":{"type":"flex","justifyContent":"center"}} -->
+				<!-- wp:query-pagination-previous /-->
+				<!-- wp:query-pagination-numbers /-->
+				<!-- wp:query-pagination-next /-->
+			<!-- /wp:query-pagination -->
+		</div>
+		<!-- /wp:group -->
+	</div>
+	<!-- /wp:query -->
+</main>
+<!-- /wp:group -->
+
+<!-- wp:template-part {"slug":"footer","area":"footer"} /-->

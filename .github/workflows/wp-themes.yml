@@ -1,0 +1,31 @@
+name: wp-themes
+
+on:
+  pull_request:
+    paths:
+      - 'wp-themes/**'
+      - '.github/workflows/wp-themes.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'wp-themes/**'
+      - '.github/workflows/wp-themes.yml'
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate 10 artist themes
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: wp-themes
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          extensions: mbstring, intl, json
+          coverage: none
+          tools: none
+      - run: php --version
+      - run: ./run-tests.sh
