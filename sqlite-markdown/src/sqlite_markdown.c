@@ -1586,7 +1586,20 @@ static int write_post_record(const char *root, Dataset *dataset, PostRecord *pos
         rc = ensure_parent_directories(root, path);
     }
     if (rc == SQLITE_OK) {
-        rc = write_text_file_atomic(path, buffer.data, buffer.length);
+        /* Skip the write entirely when the on-disk bytes already match what we
+         * would produce. This avoids touching files (and their mtimes) when an
+         * UPDATE leaves the rendered markdown identical — e.g. a no-op write
+         * or a tool re-issuing the same row values. */
+        char *existing = NULL;
+        size_t existing_length = 0;
+        int read_rc = read_text_file(path, &existing, &existing_length);
+        bool unchanged = read_rc == SQLITE_OK
+            && existing_length == buffer.length
+            && (buffer.length == 0 || memcmp(existing, buffer.data, buffer.length) == 0);
+        free(existing);
+        if (!unchanged) {
+            rc = write_text_file_atomic(path, buffer.data, buffer.length);
+        }
     }
     if (rc == SQLITE_OK && old_path != NULL && strcmp(old_path, path) != 0) {
         unlink(old_path);
