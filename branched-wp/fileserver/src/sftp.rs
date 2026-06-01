@@ -13,6 +13,9 @@ struct SftpSession {
     store: Arc<Store>,
     handles: HashMap<String, FileHandle>,
     next_handle: u64,
+    /// Authenticated role ("admin"/"write"/"read"/"anon"). Writes are
+    /// rejected when the role is "read".
+    role: String,
 }
 
 struct FileHandle {
@@ -26,8 +29,12 @@ struct FileHandle {
 }
 
 impl SftpSession {
-    fn new(store: Arc<Store>) -> Self {
-        Self { store, handles: HashMap::new(), next_handle: 1 }
+    fn new(store: Arc<Store>, role: String) -> Self {
+        Self { store, handles: HashMap::new(), next_handle: 1, role }
+    }
+
+    fn is_read_only(&self) -> bool {
+        self.role == "read"
     }
 
     fn alloc_handle(&mut self) -> String {
@@ -109,6 +116,9 @@ impl russh_sftp::server::Handler for SftpSession {
     async fn close(&mut self, id: u32, handle: String) -> Result<Status, Self::Error> {
         if let Some(h) = self.handles.remove(&handle) {
             if h.did_write && !h.is_dir && !h.path.is_empty() {
+                if self.is_read_only() {
+                    return Err(StatusCode::PermissionDenied);
+                }
                 self.store
                     .write_file(&h.branch, &h.path, &h.write_buf, "sftp")
                     .map_err(|_| StatusCode::Failure)?;
@@ -150,6 +160,9 @@ impl russh_sftp::server::Handler for SftpSession {
         offset: u64,
         data: Vec<u8>,
     ) -> Result<Status, Self::Error> {
+        if self.is_read_only() {
+            return Err(StatusCode::PermissionDenied);
+        }
         let h = self.handles.get_mut(&handle).ok_or(StatusCode::NoSuchFile)?;
         let off = offset as usize;
         let needed = off + data.len();
@@ -263,6 +276,9 @@ impl russh_sftp::server::Handler for SftpSession {
         path: String,
         _attrs: FileAttributes,
     ) -> Result<Status, Self::Error> {
+        if self.is_read_only() {
+            return Err(StatusCode::PermissionDenied);
+        }
         let (branch, dir_path) = parse_branch_path(&path).ok_or(StatusCode::NoSuchFile)?;
         self.store
             .create_dir(&branch, dir_path.trim_matches('/'))
@@ -276,6 +292,9 @@ impl russh_sftp::server::Handler for SftpSession {
     }
 
     async fn remove(&mut self, id: u32, filename: String) -> Result<Status, Self::Error> {
+        if self.is_read_only() {
+            return Err(StatusCode::PermissionDenied);
+        }
         let (branch, path) = parse_branch_path(&filename).ok_or(StatusCode::NoSuchFile)?;
         self.store
             .delete_file(&branch, path.trim_matches('/'))
@@ -324,6 +343,8 @@ struct SshServer {
 struct SshHandler {
     store: Arc<Store>,
     channels: Arc<Mutex<HashMap<ChannelId, Channel<Msg>>>>,
+    /// Authenticated role carried forward to the SFTP subsystem.
+    role: Arc<Mutex<String>>,
 }
 
 #[async_trait::async_trait]
@@ -331,15 +352,32 @@ impl russh::server::Handler for SshHandler {
     type Error = anyhow::Error;
 
     async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+        if self.store.auth_enabled() {
+            // Force the client to send a password.
+            return Ok(Auth::Reject {
+                proceed_with_methods: Some(russh::MethodSet::PASSWORD),
+            });
+        }
+        *self.role.lock().await = "admin".to_string();
         Ok(Auth::Accept)
     }
 
     async fn auth_password(
         &mut self,
-        _user: &str,
-        _password: &str,
+        user: &str,
+        password: &str,
     ) -> Result<Auth, Self::Error> {
-        Ok(Auth::Accept)
+        if !self.store.auth_enabled() {
+            *self.role.lock().await = "admin".to_string();
+            return Ok(Auth::Accept);
+        }
+        match self.store.verify_user_password(user, password) {
+            Some(role) => {
+                *self.role.lock().await = role;
+                Ok(Auth::Accept)
+            }
+            None => Ok(Auth::Reject { proceed_with_methods: None }),
+        }
     }
 
     async fn channel_open_session(
@@ -368,7 +406,8 @@ impl russh::server::Handler for SshHandler {
     ) -> Result<(), Self::Error> {
         if name == "sftp" {
             let channel = self.channels.lock().await.remove(&channel_id).unwrap();
-            let sftp_handler = SftpSession::new(Arc::clone(&self.store));
+            let role = self.role.lock().await.clone();
+            let sftp_handler = SftpSession::new(Arc::clone(&self.store), role);
             let _ = session.channel_success(channel_id);
             russh_sftp::server::run(channel.into_stream(), sftp_handler).await;
         } else {
@@ -385,6 +424,7 @@ impl russh::server::Server for SshServer {
         SshHandler {
             store: Arc::clone(&self.store),
             channels: Arc::new(Mutex::new(HashMap::new())),
+            role: Arc::new(Mutex::new(String::new())),
         }
     }
 }
@@ -436,6 +476,17 @@ mod tests {
         let f = NamedTempFile::new().unwrap();
         let path = f.path().to_path_buf();
         std::mem::forget(f);
+        // Disable the auth gate on this fresh DB so the legacy SFTP
+        // integration tests (which use authenticate_none) still hit
+        // Auth::Accept. The production schema seeds auth_enabled='1'
+        // for new sites; these tests predate that feature and exercise
+        // the open-access code paths.
+        let pre = rusqlite::Connection::open(&path).unwrap();
+        pre.execute_batch(
+            "CREATE TABLE IF NOT EXISTS site_config (key TEXT PRIMARY KEY, value TEXT);
+             INSERT OR REPLACE INTO site_config(key,value) VALUES('auth_enabled','0');",
+        ).unwrap();
+        drop(pre);
         Arc::new(Store::open_and_init(&path).unwrap())
     }
 

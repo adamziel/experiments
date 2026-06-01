@@ -19,6 +19,10 @@
 #define BRANCHFS_PROTO "branchfs"
 #define BRANCHFS_MAX_PATH 4096
 #define BRANCHFS_HASH_LEN 17
+/* Blobs strictly larger than BRANCHFS_CHUNK_SIZE bytes are split across
+ * rows in `blob_chunks`; smaller blobs stay inline in `blobs.data`. Must
+ * match fileserver::store::CHUNK_SIZE in fileserver/src/store.rs. */
+#define BRANCHFS_CHUNK_SIZE (1024 * 1024)
 
 extern zend_module_entry branchfs_module_entry;
 #define phpext_branchfs_ptr &branchfs_module_entry

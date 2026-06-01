@@ -8,6 +8,12 @@ use tar::Builder;
 use walkdir::WalkDir;
 
 fn main() -> Result<()> {
+    // Allow skipping the dist build entirely for `cargo check` runs:
+    //   FORKPRESS_RUNTIME_BUNDLE=/dev/null cargo check -p forkpress
+    if env::var_os("FORKPRESS_RUNTIME_BUNDLE").is_some() {
+        return Ok(());
+    }
+
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR")?);
     let repo_root = manifest_dir
         .parent()
@@ -19,12 +25,12 @@ fn main() -> Result<()> {
         bail!(
             "dist/{target}/ not found at {}.\n\n\
              Build the bundled runtime first:\n\n    scripts/build-dist.sh\n\n\
-             This produces a per-target directory containing php, dolt, and branchfs.so.",
+             This produces a per-target directory containing php and branchfs.so.",
             dist_dir.display()
         );
     }
 
-    for required in ["bin/php", "bin/dolt"] {
+    for required in ["bin/php"] {
         let path = dist_dir.join(required);
         if !path.is_file() {
             bail!("missing {} (required for runtime bundle)", path.display());
@@ -74,7 +80,6 @@ fn build_bundle(repo_root: &Path, dist_dir: &Path, out: &Path) -> Result<()> {
     add_file(&mut tar, repo_root, "e2e/wp.zip")?;
 
     add_file_as(&mut tar, &dist_dir.join("bin/php"), "portable-runtime/bin/php")?;
-    add_file_as(&mut tar, &dist_dir.join("bin/dolt"), "portable-runtime/bin/dolt")?;
 
     tar.finish()?;
     let encoder = tar.into_inner()?;
