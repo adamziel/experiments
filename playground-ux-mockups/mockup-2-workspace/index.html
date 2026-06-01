@@ -1,0 +1,2956 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WordPress Playground — Workspace</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   CSS Custom Properties
+   ============================================================ */
+:root {
+  /* Colors */
+  --bg: #F6F5F8;
+  --surface: #FFFFFF;
+  --surface-2: #EEEDF2;
+  --border: #DCDAE3;
+  --text: #1A1825;
+  --text-muted: #7A7790;
+  --accent: #6C5CE7;
+  --accent-fg: #FFFFFF;
+  --accent-hover: #5A4BD6;
+  --accent-light: rgba(108, 92, 231, 0.08);
+  --accent-light-2: rgba(108, 92, 231, 0.14);
+  --success: #27AE60;
+  --success-light: rgba(39, 174, 96, 0.1);
+  --warning: #E2A03F;
+  --warning-light: rgba(226, 160, 63, 0.12);
+  --danger: #E74C3C;
+  --danger-light: rgba(231, 76, 60, 0.1);
+
+  /* Typography */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', monospace;
+  --fs-xs: 12px;
+  --fs-sm: 13px;
+  --fs-base: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 20px;
+  --fs-2xl: 28px;
+  --fs-3xl: 40px;
+
+  /* Spacing (4px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 24px;
+  --space-6: 32px;
+  --space-7: 48px;
+  --space-8: 64px;
+
+  /* Radii */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 24px;
+
+  /* Shadows */
+  --shadow-sm: 0 1px 2px rgba(26, 24, 37, 0.04), 0 1px 4px rgba(26, 24, 37, 0.03);
+  --shadow-md: 0 2px 4px rgba(26, 24, 37, 0.04), 0 4px 12px rgba(26, 24, 37, 0.06);
+  --shadow-lg: 0 4px 8px rgba(26, 24, 37, 0.04), 0 8px 24px rgba(26, 24, 37, 0.08);
+  --shadow-xl: 0 8px 16px rgba(26, 24, 37, 0.06), 0 16px 48px rgba(26, 24, 37, 0.1);
+}
+
+/* ============================================================
+   Reset & Base
+   ============================================================ */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+body {
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: 1.5;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  color: inherit;
+  line-height: 1;
+}
+
+input, textarea {
+  font-family: inherit;
+  font-size: inherit;
+  border: none;
+  outline: none;
+  color: inherit;
+  background: none;
+}
+
+/* Focus rings */
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+/* Reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   Scrollbar
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* ============================================================
+   Layout: Grid View
+   ============================================================ */
+.view-grid {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+.grid-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5) var(--space-6);
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.grid-header-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-weight: 600;
+  font-size: var(--fs-lg);
+  color: var(--text);
+  text-decoration: none;
+}
+
+.logo-icon {
+  width: 28px;
+  height: 28px;
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-fg);
+  flex-shrink: 0;
+}
+
+.grid-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.btn-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+  border-radius: var(--radius-sm);
+  height: 36px;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.btn-primary:hover {
+  background: var(--accent-hover);
+}
+
+.btn-ghost {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+  border-radius: var(--radius-sm);
+  height: 36px;
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.btn-ghost:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.kbd {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px 6px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--font-sans);
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  color: var(--text-muted);
+  line-height: 1;
+  height: 22px;
+}
+
+.grid-body {
+  display: flex;
+  flex: 1;
+  padding: 0 var(--space-6) var(--space-6);
+  gap: var(--space-6);
+}
+
+/* Left Rail */
+.left-rail {
+  width: 200px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding-top: var(--space-2);
+}
+
+.rail-section-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: var(--space-3) var(--space-3) var(--space-2);
+}
+
+.rail-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.rail-item:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+.rail-item.active {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+.rail-item-count {
+  margin-left: auto;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
+/* Subtitle */
+.grid-subtitle {
+  padding: 0 var(--space-6) var(--space-4);
+  font-size: var(--fs-sm);
+  color: var(--text-muted);
+  word-wrap: break-word;
+  overflow-wrap: break-word;
+}
+
+/* Cards grid */
+.cards-area {
+  flex: 1;
+  min-width: 0;
+}
+
+.cards-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: var(--space-5);
+}
+
+/* Site card */
+.site-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  overflow: hidden;
+  cursor: pointer;
+  transition: box-shadow 0.2s, border-color 0.2s, transform 0.15s;
+  position: relative;
+}
+.site-card:hover {
+  box-shadow: var(--shadow-md);
+  border-color: transparent;
+  transform: translateY(-1px);
+}
+.site-card:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.card-preview {
+  height: 140px;
+  position: relative;
+  overflow: hidden;
+}
+
+.card-preview-bg {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Mini WP admin thumbnails */
+.mini-wp {
+  width: 90%;
+  height: 85%;
+  background: #f0f0f1;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  display: flex;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+.mini-wp-sidebar {
+  width: 24%;
+  background: #1d2327;
+  padding: 6px 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mini-wp-sidebar-item {
+  height: 4px;
+  margin: 0 6px;
+  background: rgba(255,255,255,0.12);
+  border-radius: 1px;
+}
+.mini-wp-sidebar-item.active {
+  background: rgba(255,255,255,0.3);
+}
+.mini-wp-main {
+  flex: 1;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mini-wp-bar {
+  height: 4px;
+  background: #ddd;
+  border-radius: 1px;
+}
+.mini-wp-bar.title {
+  width: 40%;
+  background: #bbb;
+  height: 5px;
+}
+.mini-wp-content-block {
+  flex: 1;
+  background: white;
+  border-radius: 2px;
+  border: 1px solid #e0e0e0;
+}
+
+.card-badge-overlay {
+  position: absolute;
+  top: var(--space-2);
+  left: var(--space-2);
+}
+
+.card-menu-btn {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  background: rgba(255,255,255,0.9);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.site-card:hover .card-menu-btn {
+  opacity: 1;
+}
+.card-menu-btn:hover {
+  background: white;
+  color: var(--text);
+}
+
+.card-info {
+  padding: var(--space-3) var(--space-4) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.card-name {
+  font-weight: 600;
+  font-size: var(--fs-base);
+  color: var(--text);
+  line-height: 1.3;
+}
+
+.card-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 100px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+.badge-warning {
+  background: var(--warning-light);
+  color: #9a6c1a;
+}
+.badge-success {
+  background: var(--success-light);
+  color: #1a7a3c;
+}
+.badge-accent {
+  background: var(--accent-light);
+  color: var(--accent);
+}
+.badge-muted {
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+/* Create new card */
+.card-create {
+  background: transparent;
+  border: 2px dashed var(--border);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: 200px;
+  cursor: pointer;
+  transition: border-color 0.2s, background 0.2s;
+  color: var(--text-muted);
+}
+.card-create:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  color: var(--accent);
+}
+.card-create-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+}
+.card-create:hover .card-create-icon {
+  background: var(--accent-light-2);
+}
+.card-create-label {
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+
+/* ============================================================
+   Layout: Editor View
+   ============================================================ */
+.view-editor {
+  display: none;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+}
+
+.editor-topbar {
+  display: flex;
+  align-items: center;
+  height: 52px;
+  padding: 0 var(--space-4);
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  gap: var(--space-3);
+  flex-shrink: 0;
+}
+
+.editor-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  min-width: 0;
+  flex: 1;
+}
+
+.btn-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+.btn-icon:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.site-title-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.site-title-editable {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  color: var(--text);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  line-height: 1.4;
+  cursor: text;
+  transition: border-color 0.15s, background 0.15s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+.site-title-editable:hover {
+  border-color: var(--border);
+  background: var(--surface-2);
+}
+.site-title-editable:focus {
+  border-color: var(--accent);
+  background: var(--surface);
+  outline: none;
+}
+
+.editor-topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.btn-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+  border-radius: var(--radius-sm);
+  height: 36px;
+  color: var(--text-muted);
+  transition: background 0.15s, color 0.15s;
+  white-space: nowrap;
+}
+.btn-toolbar:hover {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
+.btn-save {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--accent);
+  color: var(--accent-fg);
+  font-weight: 500;
+  font-size: var(--fs-sm);
+  border-radius: var(--radius-sm);
+  height: 36px;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+.btn-save:hover {
+  background: var(--accent-hover);
+}
+
+/* Editor main area */
+.editor-main {
+  flex: 1;
+  padding: var(--space-5);
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+}
+
+.wp-preview-frame {
+  width: 100%;
+  max-width: 1200px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Mock WP Admin */
+.wp-admin-chrome {
+  display: flex;
+  flex: 1;
+  min-height: 600px;
+}
+
+.wp-sidebar {
+  width: 200px;
+  background: #1d2327;
+  color: #c3c4c7;
+  padding: var(--space-4) 0;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.wp-sidebar-logo {
+  padding: 0 var(--space-4) var(--space-4);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: white;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  border-bottom: 1px solid rgba(255,255,255,0.06);
+  margin-bottom: var(--space-2);
+}
+.wp-sidebar-logo svg {
+  opacity: 0.8;
+}
+
+.wp-sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--fs-sm);
+  color: #c3c4c7;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  border-left: 3px solid transparent;
+}
+.wp-sidebar-item:hover {
+  background: rgba(255,255,255,0.04);
+  color: #fff;
+}
+.wp-sidebar-item.wp-active {
+  background: #2271b1;
+  color: #fff;
+  border-left-color: #72aee6;
+}
+
+.wp-main {
+  flex: 1;
+  background: #f0f0f1;
+  padding: var(--space-5);
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.wp-main-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.wp-main-title {
+  font-size: var(--fs-xl);
+  font-weight: 600;
+  color: #1d2327;
+  line-height: 1.25;
+}
+
+.wp-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-3);
+  background: #2271b1;
+  color: white;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  border-radius: 3px;
+  height: 30px;
+}
+
+.wp-stats-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--space-4);
+}
+
+.wp-stat-card {
+  background: white;
+  border-radius: 4px;
+  padding: var(--space-4);
+  border: 1px solid #c3c4c7;
+  border-left: 4px solid #2271b1;
+}
+
+.wp-stat-number {
+  font-size: var(--fs-2xl);
+  font-weight: 600;
+  color: #1d2327;
+  line-height: 1.2;
+}
+.wp-stat-label {
+  font-size: var(--fs-sm);
+  color: #50575e;
+  margin-top: 2px;
+}
+
+.wp-recent {
+  background: white;
+  border-radius: 4px;
+  border: 1px solid #c3c4c7;
+  overflow: hidden;
+}
+
+.wp-recent-header {
+  padding: var(--space-3) var(--space-4);
+  font-weight: 600;
+  font-size: var(--fs-base);
+  color: #1d2327;
+  border-bottom: 1px solid #c3c4c7;
+}
+
+.wp-recent-list {
+  list-style: none;
+}
+
+.wp-recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid #f0f0f1;
+  font-size: var(--fs-sm);
+  color: #1d2327;
+}
+.wp-recent-item:last-child {
+  border-bottom: none;
+}
+
+.wp-recent-item-title {
+  color: #2271b1;
+  font-weight: 500;
+}
+
+.wp-recent-item-meta {
+  color: #50575e;
+  font-size: var(--fs-xs);
+}
+
+/* ============================================================
+   Panels (slide-out from right)
+   ============================================================ */
+.panel-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 24, 37, 0.3);
+  z-index: 200;
+}
+.panel-overlay.open {
+  display: block;
+}
+
+.panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 420px;
+  max-width: 100vw;
+  background: var(--surface);
+  box-shadow: var(--shadow-xl);
+  z-index: 210;
+  display: none;
+  flex-direction: column;
+  transform: translateX(100%);
+  transition: transform 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.panel.open {
+  display: flex;
+  transform: translateX(0);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.panel-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.panel-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.panel-section-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  margin-bottom: var(--space-2);
+}
+
+/* Form controls inside panels */
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.form-label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text);
+}
+
+.form-select, .form-input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  background: var(--surface);
+  color: var(--text);
+  height: 36px;
+  transition: border-color 0.15s;
+}
+.form-select:focus, .form-input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.form-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) 0;
+}
+
+.toggle {
+  width: 40px;
+  height: 22px;
+  background: var(--border);
+  border-radius: 11px;
+  position: relative;
+  cursor: pointer;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.toggle.on {
+  background: var(--accent);
+}
+.toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  background: white;
+  border-radius: 50%;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.15);
+}
+.toggle.on::after {
+  transform: translateX(18px);
+}
+
+/* Search input inside panels */
+.search-input-wrap {
+  position: relative;
+}
+.search-input-wrap svg {
+  position: absolute;
+  left: var(--space-3);
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-muted);
+}
+.search-input-wrap input {
+  width: 100%;
+  padding: var(--space-2) var(--space-3) var(--space-2) 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: var(--fs-sm);
+  background: var(--surface);
+  color: var(--text);
+  height: 36px;
+}
+.search-input-wrap input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* ===== Address Bar ===== */
+.address-bar{
+  display:flex;
+  align-items:center;
+  gap:var(--space-2);
+  padding:var(--space-1) var(--space-3);
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+}
+.address-bar-nav{
+  display:flex;
+  align-items:center;
+  gap:2px;
+}
+.address-bar-nav button{
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  border-radius:var(--radius-sm);
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all .15s;
+  padding:0;
+}
+.address-bar-nav button:hover{background:var(--surface-2);color:var(--text);}
+.address-bar-nav button svg{width:16px;height:16px;}
+.address-bar-url{
+  flex:1;min-width:0;
+  display:flex;align-items:center;
+  gap:var(--space-2);
+  padding:var(--space-1) var(--space-3);
+  background:var(--surface-2);
+  border-radius:var(--radius-sm);
+  height:32px;
+}
+.address-bar-input{
+  flex:1;min-width:0;
+  border:none;background:transparent;
+  font-family:var(--font-mono);
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+  outline:none;
+}
+.address-bar-input:focus{color:var(--text);}
+.address-bar-copy{
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  border-radius:var(--radius-sm);
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all .15s;
+  padding:0;
+}
+.address-bar-copy:hover{color:var(--text);}
+.address-bar-copy svg{width:14px;height:14px;}
+@media(max-width:600px){
+  .address-bar-nav .ab-back,.address-bar-nav .ab-fwd{display:none;}
+}
+
+/* ============================================================
+   Modals
+   ============================================================ */
+.modal-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 24, 37, 0.4);
+  z-index: 300;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+}
+.modal-overlay.open {
+  display: flex;
+}
+
+.modal {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  width: 100%;
+  max-width: 520px;
+  max-height: 90vh;
+  overflow: auto;
+}
+
+.modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-5);
+  border-bottom: 1px solid var(--border);
+}
+
+.modal-title {
+  font-size: var(--fs-lg);
+  font-weight: 600;
+}
+
+.modal-body {
+  padding: var(--space-5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-top: 1px solid var(--border);
+}
+
+/* ============================================================
+   New Site Picker (2-step)
+   ============================================================ */
+.template-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: var(--space-3);
+}
+
+.template-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+  text-align: center;
+}
+.template-card:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+.template-card.selected {
+  border-color: var(--accent);
+  background: var(--accent-light);
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.template-icon {
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+}
+.template-card:hover .template-icon,
+.template-card.selected .template-icon {
+  background: var(--accent-light-2);
+  color: var(--accent);
+}
+
+.template-label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+}
+
+.storage-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.storage-option {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.storage-option:hover {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+.storage-option.selected {
+  border-color: var(--accent);
+  background: var(--accent-light);
+}
+
+.storage-radio {
+  width: 18px;
+  height: 18px;
+  border: 2px solid var(--border);
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 1px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s;
+}
+.storage-option.selected .storage-radio {
+  border-color: var(--accent);
+}
+.storage-option.selected .storage-radio::after {
+  content: '';
+  width: 8px;
+  height: 8px;
+  background: var(--accent);
+  border-radius: 50%;
+}
+
+.storage-option-info {
+  flex: 1;
+}
+
+.storage-option-name {
+  font-weight: 500;
+  font-size: var(--fs-sm);
+}
+.storage-option-desc {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+/* ============================================================
+   Command Palette (Cmd+K)
+   ============================================================ */
+.cmdk-overlay {
+  display: none;
+  position: fixed;
+  inset: 0;
+  background: rgba(26, 24, 37, 0.4);
+  z-index: 400;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 15vh;
+}
+.cmdk-overlay.open {
+  display: flex;
+}
+
+.cmdk {
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
+}
+
+.cmdk-input-wrap {
+  display: flex;
+  align-items: center;
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--border);
+  gap: var(--space-3);
+}
+
+.cmdk-input-wrap svg {
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.cmdk-input {
+  flex: 1;
+  font-size: var(--fs-lg);
+  padding: var(--space-1) 0;
+}
+
+.cmdk-list {
+  max-height: 340px;
+  overflow-y: auto;
+  padding: var(--space-2);
+}
+
+.cmdk-group-label {
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: var(--space-2) var(--space-3) var(--space-1);
+}
+
+.cmdk-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: var(--fs-sm);
+  color: var(--text);
+  transition: background 0.1s;
+}
+.cmdk-item:hover, .cmdk-item.highlighted {
+  background: var(--accent-light);
+}
+
+.cmdk-item-icon {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.cmdk-item-label {
+  flex: 1;
+}
+
+.cmdk-item-shortcut {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   Blueprint Panel
+   ============================================================ */
+.blueprint-editor {
+  width: 100%;
+  min-height: 200px;
+  padding: var(--space-3);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  background: #1d2327;
+  color: #e5e7eb;
+  resize: vertical;
+  line-height: 1.6;
+}
+.blueprint-editor:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* ============================================================
+   Save Dropdown
+   ============================================================ */
+.save-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  width: 220px;
+  z-index: 100;
+  display: none;
+  overflow: hidden;
+}
+.save-dropdown.open {
+  display: block;
+}
+
+.save-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background 0.1s;
+  color: var(--text);
+}
+.save-dropdown-item:hover {
+  background: var(--accent-light);
+}
+.save-dropdown-item-desc {
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+/* ============================================================
+   Export/Actions Dropdown
+   ============================================================ */
+.actions-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: var(--space-2);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  width: 200px;
+  z-index: 100;
+  display: none;
+  overflow: hidden;
+}
+.actions-dropdown.open {
+  display: block;
+}
+
+.actions-dropdown-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: background 0.1s;
+  color: var(--text);
+}
+.actions-dropdown-item:hover {
+  background: var(--accent-light);
+}
+
+/* ============================================================
+   Toast
+   ============================================================ */
+.toast-container {
+  position: fixed;
+  bottom: var(--space-5);
+  right: var(--space-5);
+  z-index: 500;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  animation: toastIn 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: auto;
+  max-width: 360px;
+}
+
+.toast-success {
+  border-left: 3px solid var(--success);
+}
+.toast-info {
+  border-left: 3px solid var(--accent);
+}
+.toast-warning {
+  border-left: 3px solid var(--warning);
+}
+.toast-error {
+  border-left: 3px solid var(--danger);
+}
+
+.toast-icon {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+}
+.toast-success .toast-icon { color: var(--success); }
+.toast-info .toast-icon { color: var(--accent); }
+.toast-warning .toast-icon { color: var(--warning); }
+.toast-error .toast-icon { color: var(--danger); }
+
+@keyframes toastIn {
+  from { opacity: 0; transform: translateX(40px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes toastOut {
+  from { opacity: 1; transform: translateX(0); }
+  to { opacity: 0; transform: translateX(40px); }
+}
+
+/* ============================================================
+   GitHub PR Modal
+   ============================================================ */
+.pr-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 10px;
+  background: var(--success-light);
+  color: var(--success);
+  border-radius: 100px;
+  font-size: var(--fs-xs);
+  font-weight: 500;
+}
+
+/* ============================================================
+   Mobile: Horizontal Tabs
+   ============================================================ */
+.mobile-tabs {
+  display: none;
+  overflow-x: auto;
+  gap: var(--space-1);
+  padding: 0 var(--space-4) var(--space-3);
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-tab {
+  flex-shrink: 0;
+  padding: var(--space-2) var(--space-3);
+  border-radius: 100px;
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.mobile-tab:hover {
+  background: var(--surface-2);
+}
+.mobile-tab.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+  border-color: var(--accent);
+}
+
+/* ============================================================
+   Step Indicator
+   ============================================================ */
+.step-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--border);
+  margin-bottom: var(--space-4);
+}
+
+.step-dot {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  flex-shrink: 0;
+}
+.step-dot.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+.step-dot.done {
+  background: var(--success);
+  color: white;
+}
+
+.step-line {
+  flex: 1;
+  height: 2px;
+  background: var(--border);
+}
+.step-line.active {
+  background: var(--accent);
+}
+
+.step-label {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--text-muted);
+}
+.step-label.active {
+  color: var(--text);
+}
+
+/* ============================================================
+   Mobile Responsive
+   ============================================================ */
+@media (max-width: 768px) {
+  .grid-header {
+    padding: var(--space-4);
+  }
+
+  .grid-body {
+    padding: 0 var(--space-4) var(--space-4);
+  }
+
+  .left-rail {
+    display: none;
+  }
+
+  .mobile-tabs {
+    display: flex;
+  }
+
+  .cards-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-4);
+  }
+
+  .grid-subtitle {
+    padding: 0 var(--space-4) var(--space-3);
+  }
+
+  .editor-topbar {
+    padding: 0 var(--space-3);
+    gap: var(--space-2);
+  }
+
+  .site-title-editable {
+    font-size: var(--fs-base);
+    max-width: 140px;
+  }
+
+  .editor-topbar-right .btn-toolbar .btn-label {
+    display: none;
+  }
+
+  .editor-main {
+    padding: var(--space-3);
+  }
+
+  .wp-sidebar {
+    width: 48px;
+    align-items: center;
+    overflow: hidden;
+  }
+  .wp-sidebar-logo span {
+    display: none;
+  }
+  .wp-sidebar-item span {
+    display: none;
+  }
+  .wp-sidebar-item {
+    padding: var(--space-2);
+    justify-content: center;
+    border-left: none;
+  }
+  .wp-sidebar-item.wp-active {
+    border-left: none;
+    border-radius: var(--radius-sm);
+    margin: 0 4px;
+  }
+
+  .wp-stats-row {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-3);
+  }
+
+  .panel {
+    width: 100vw;
+    border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    top: auto;
+    max-height: 85vh;
+  }
+
+  .template-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .kbd {
+    display: none;
+  }
+
+  .toast-container {
+    left: var(--space-4);
+    right: var(--space-4);
+    bottom: var(--space-4);
+  }
+  .toast {
+    max-width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .grid-subtitle {
+    font-size: var(--fs-xs);
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+    hyphens: auto;
+  }
+
+  .grid-subtitle .subtitle-long {
+    display: none;
+  }
+  .grid-subtitle .subtitle-short {
+    display: inline;
+  }
+
+  .grid-header-left .logo-text {
+    font-size: var(--fs-base);
+  }
+
+  .btn-primary .btn-label {
+    display: none;
+  }
+
+  .site-title-editable {
+    max-width: 120px;
+  }
+}
+
+/* Desktop: hide short subtitle */
+.grid-subtitle .subtitle-short {
+  display: none;
+}
+.grid-subtitle .subtitle-long {
+  display: inline;
+}
+
+@media (max-width: 420px) {
+  .grid-subtitle .subtitle-long {
+    display: none;
+  }
+  .grid-subtitle .subtitle-short {
+    display: inline;
+  }
+}
+
+/* ============================================================
+   Utility
+   ============================================================ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0,0,0,0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.relative {
+  position: relative;
+}
+
+.hidden {
+  display: none !important;
+}
+
+/* Divider */
+.divider {
+  height: 1px;
+  background: var(--border);
+}
+</style>
+</head>
+<body>
+
+<!-- ================================================================
+     VIEW: WORKSPACE GRID
+     ================================================================ -->
+<div class="view-grid" id="viewGrid">
+  <!-- Header -->
+  <header class="grid-header">
+    <div class="grid-header-left">
+      <a href="#" class="logo" aria-label="WordPress Playground home">
+        <span class="logo-icon">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="10" cy="10" r="8"/>
+            <path d="M3 10h14M10 2c2 2.5 3 5 3 8s-1 5.5-3 8c-2-2.5-3-5-3-8s1-5.5 3-8z"/>
+          </svg>
+        </span>
+        <span class="logo-text">WordPress Playground</span>
+      </a>
+    </div>
+    <div class="grid-header-right">
+      <button class="btn-ghost" onclick="openCmdK()" aria-label="Open command palette">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="6"/><path d="m14 14 4 4"/></svg>
+        <span class="kbd">Cmd+K</span>
+      </button>
+      <button class="btn-primary" onclick="openNewSiteModal()" aria-label="Create new site">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4v12M4 10h12"/></svg>
+        <span class="btn-label">New Site</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Subtitle -->
+  <div class="grid-subtitle" aria-live="polite">
+    <span class="subtitle-long">4 sites across browser storage and device folders</span>
+    <span class="subtitle-short">4 sites in your workspace</span>
+  </div>
+
+  <!-- Mobile Tabs -->
+  <nav class="mobile-tabs" aria-label="Site categories">
+    <button class="mobile-tab active" onclick="filterRail(this, 'all')">All</button>
+    <button class="mobile-tab" onclick="filterRail(this, 'drafts')">Drafts</button>
+    <button class="mobile-tab" onclick="filterRail(this, 'saved')">Saved</button>
+    <button class="mobile-tab" onclick="filterRail(this, 'cloned')">Cloned</button>
+  </nav>
+
+  <!-- Body: Rail + Cards -->
+  <div class="grid-body">
+    <!-- Left Rail -->
+    <nav class="left-rail" aria-label="Site categories">
+      <div class="rail-section-label">Filter</div>
+      <button class="rail-item active" onclick="filterRail(this, 'all')" aria-current="true">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1.5"/><rect x="11" y="3" width="6" height="6" rx="1.5"/><rect x="3" y="11" width="6" height="6" rx="1.5"/><rect x="11" y="11" width="6" height="6" rx="1.5"/></svg>
+        All Sites
+        <span class="rail-item-count">4</span>
+      </button>
+      <button class="rail-item" onclick="filterRail(this, 'drafts')">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M12 3v5h5"/></svg>
+        Drafts
+        <span class="rail-item-count">1</span>
+      </button>
+      <button class="rail-item" onclick="filterRail(this, 'saved')">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h10a2 2 0 0 1 2 2v12l-7-4-7 4V5a2 2 0 0 1 2-2z"/></svg>
+        Saved
+        <span class="rail-item-count">2</span>
+      </button>
+      <button class="rail-item" onclick="filterRail(this, 'cloned')">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3"/><rect x="8" y="3" width="9" height="9" rx="1"/></svg>
+        Cloned from URL
+        <span class="rail-item-count">1</span>
+      </button>
+    </nav>
+
+    <!-- Cards -->
+    <main class="cards-area" aria-label="Your sites">
+      <div class="cards-grid">
+        <!-- Card 1: Current Draft (unsaved) -->
+        <article class="site-card" data-category="drafts" tabindex="0" onclick="openEditor('Current Draft', 'unsaved')" role="button" aria-label="Open Current Draft">
+          <div class="card-preview">
+            <div class="card-preview-bg" style="background: linear-gradient(135deg, #f0e6ff 0%, #e6f0ff 100%);">
+              <div class="mini-wp">
+                <div class="mini-wp-sidebar">
+                  <div class="mini-wp-sidebar-item active"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                </div>
+                <div class="mini-wp-main">
+                  <div class="mini-wp-bar title"></div>
+                  <div class="mini-wp-bar" style="width:70%"></div>
+                  <div class="mini-wp-content-block"></div>
+                </div>
+              </div>
+            </div>
+            <div class="card-badge-overlay">
+              <span class="badge badge-warning">
+                <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><path d="M10 7v4M10 13.5v.5"/></svg>
+                Unsaved
+              </span>
+            </div>
+            <button class="card-menu-btn" aria-label="Site actions" onclick="event.stopPropagation();">
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="5" r="1"/><circle cx="10" cy="10" r="1"/><circle cx="10" cy="15" r="1"/></svg>
+            </button>
+          </div>
+          <div class="card-info">
+            <div class="card-name">Current Draft</div>
+            <div class="card-meta">
+              <span class="badge badge-warning" style="padding:1px 6px; font-size:11px;">Memory</span>
+              <span>Edited just now</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 2: My Blog -->
+        <article class="site-card" data-category="saved" tabindex="0" onclick="openEditor('My Blog', 'browser')" role="button" aria-label="Open My Blog">
+          <div class="card-preview">
+            <div class="card-preview-bg" style="background: linear-gradient(135deg, #e0f7e9 0%, #e6f0ff 100%);">
+              <div class="mini-wp">
+                <div class="mini-wp-sidebar">
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item active"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                </div>
+                <div class="mini-wp-main">
+                  <div class="mini-wp-bar title"></div>
+                  <div class="mini-wp-bar" style="width:55%"></div>
+                  <div class="mini-wp-bar" style="width:85%"></div>
+                  <div class="mini-wp-content-block"></div>
+                </div>
+              </div>
+            </div>
+            <button class="card-menu-btn" aria-label="Site actions" onclick="event.stopPropagation();">
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="5" r="1"/><circle cx="10" cy="10" r="1"/><circle cx="10" cy="15" r="1"/></svg>
+            </button>
+          </div>
+          <div class="card-info">
+            <div class="card-name">My Blog</div>
+            <div class="card-meta">
+              <span class="badge badge-success" style="padding:1px 6px; font-size:11px;">Browser</span>
+              <span>2 hours ago</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 3: Client Project -->
+        <article class="site-card" data-category="saved" tabindex="0" onclick="openEditor('Client Project', 'device')" role="button" aria-label="Open Client Project">
+          <div class="card-preview">
+            <div class="card-preview-bg" style="background: linear-gradient(135deg, #fff3e0 0%, #fce4ec 100%);">
+              <div class="mini-wp">
+                <div class="mini-wp-sidebar">
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item active"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                </div>
+                <div class="mini-wp-main">
+                  <div class="mini-wp-bar title" style="width:50%"></div>
+                  <div class="mini-wp-bar" style="width:65%"></div>
+                  <div class="mini-wp-content-block"></div>
+                </div>
+              </div>
+            </div>
+            <button class="card-menu-btn" aria-label="Site actions" onclick="event.stopPropagation();">
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="5" r="1"/><circle cx="10" cy="10" r="1"/><circle cx="10" cy="15" r="1"/></svg>
+            </button>
+          </div>
+          <div class="card-info">
+            <div class="card-name">Client Project</div>
+            <div class="card-meta">
+              <span class="badge badge-accent" style="padding:1px 6px; font-size:11px;">Device</span>
+              <span>Yesterday</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Card 4: API Testing (cloned) -->
+        <article class="site-card" data-category="cloned" tabindex="0" onclick="openEditor('API Testing', 'browser')" role="button" aria-label="Open API Testing">
+          <div class="card-preview">
+            <div class="card-preview-bg" style="background: linear-gradient(135deg, #ede7f6 0%, #e1f5fe 100%);">
+              <div class="mini-wp">
+                <div class="mini-wp-sidebar">
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item"></div>
+                  <div class="mini-wp-sidebar-item active"></div>
+                </div>
+                <div class="mini-wp-main">
+                  <div class="mini-wp-bar title"></div>
+                  <div class="mini-wp-bar" style="width:80%"></div>
+                  <div class="mini-wp-content-block"></div>
+                </div>
+              </div>
+            </div>
+            <div class="card-badge-overlay">
+              <span class="badge badge-muted">
+                <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7H4a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1v-3"/><rect x="8" y="3" width="9" height="9" rx="1"/></svg>
+                Cloned
+              </span>
+            </div>
+            <button class="card-menu-btn" aria-label="Site actions" onclick="event.stopPropagation();">
+              <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="10" cy="5" r="1"/><circle cx="10" cy="10" r="1"/><circle cx="10" cy="15" r="1"/></svg>
+            </button>
+          </div>
+          <div class="card-info">
+            <div class="card-name">API Testing</div>
+            <div class="card-meta">
+              <span class="badge badge-success" style="padding:1px 6px; font-size:11px;">Browser</span>
+              <span>3 days ago</span>
+            </div>
+          </div>
+        </article>
+
+        <!-- Create New Card -->
+        <div class="card-create" tabindex="0" onclick="openNewSiteModal()" role="button" aria-label="Create new site">
+          <div class="card-create-icon">
+            <svg width="24" height="24" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4v12M4 10h12"/></svg>
+          </div>
+          <span class="card-create-label">Create New Site</span>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- ================================================================
+     VIEW: EDITOR
+     ================================================================ -->
+<div class="view-editor" id="viewEditor">
+  <!-- Top Bar -->
+  <header class="editor-topbar">
+    <div class="editor-topbar-left">
+      <button class="btn-icon" onclick="backToGrid()" aria-label="Back to workspace">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M13 4l-6 6 6 6"/></svg>
+      </button>
+      <div class="site-title-wrap">
+        <input
+          type="text"
+          class="site-title-editable"
+          id="editorSiteTitle"
+          value="Current Draft"
+          aria-label="Site title (click to edit)"
+          spellcheck="false"
+        />
+        <span class="badge badge-warning" id="editorStorageBadge" style="cursor:pointer" onclick="openSaveDropdown()" aria-label="Storage type: unsaved, click to change">Unsaved</span>
+      </div>
+    </div>
+    <div class="editor-topbar-right">
+      <!-- Settings -->
+      <button class="btn-icon" onclick="openPanel('settings')" aria-label="Settings">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 2v2M10 16v2M3.5 5.5l1.4 1.4M15.1 15.1l1.4 1.4M2 10h2M16 10h2M3.5 14.5l1.4-1.4M15.1 4.9l1.4-1.4"/></svg>
+      </button>
+      <!-- Blueprint -->
+      <button class="btn-icon" onclick="openPanel('blueprint')" aria-label="Blueprint">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 8 10 12 14 16 6"/></svg>
+      </button>
+
+      <div class="divider" style="width:1px; height:24px; margin:0 var(--space-1);"></div>
+
+      <!-- Share -->
+      <button class="btn-toolbar" onclick="shareUrl()" aria-label="Share site URL">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v4a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-4M10 3v10M7 6l3-3 3 3"/></svg>
+        <span class="btn-label">Share</span>
+      </button>
+
+      <!-- Save (with dropdown) -->
+      <div class="relative">
+        <button class="btn-save" id="saveBtn" onclick="toggleSaveDropdown()" aria-label="Save site">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h9l3 3v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><rect x="7" y="12" width="6" height="5"/><rect x="7" y="3" width="5" height="4"/></svg>
+          Save
+          <svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 8l4 4 4-4"/></svg>
+        </button>
+        <div class="save-dropdown" id="saveDropdown">
+          <div class="save-dropdown-item" onclick="saveTo('memory')">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 3v2M10 15v2M4.2 5.6l1.4 1M14.4 13.4l1.4 1M3 10h2M15 10h2M4.2 14.4l1.4-1M14.4 6.6l1.4-1"/></svg>
+            <div>
+              <div>Memory</div>
+              <div class="save-dropdown-item-desc">Gone on page close</div>
+            </div>
+          </div>
+          <div class="save-dropdown-item" onclick="saveTo('browser')">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="12" rx="2"/><path d="M3 8h14"/></svg>
+            <div>
+              <div>Browser Storage</div>
+              <div class="save-dropdown-item-desc">Persists across sessions</div>
+            </div>
+          </div>
+          <div class="save-dropdown-item" onclick="saveTo('device')">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><path d="M8 16h4"/></svg>
+            <div>
+              <div>Device Folder</div>
+              <div class="save-dropdown-item-desc">Synced with your filesystem</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- More actions -->
+      <div class="relative">
+        <button class="btn-icon" onclick="toggleActionsDropdown()" aria-label="More actions">
+          <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="10" r="1"/><circle cx="10" cy="10" r="1"/><circle cx="15" cy="10" r="1"/></svg>
+        </button>
+        <div class="actions-dropdown" id="actionsDropdown">
+          <div class="actions-dropdown-item" onclick="downloadZip()">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10M7 10l3 3 3-3M4 15h12"/></svg>
+            Download as ZIP
+          </div>
+          <div class="actions-dropdown-item" onclick="exportWxr()">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M8 8h4M8 11h4M8 14h2"/></svg>
+            Export as WXR
+          </div>
+          <div class="actions-dropdown-item" onclick="openGithubModal()">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.39v-1.4c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.82 1.23.82.71 1.22 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 10 5.5c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.74.54 1.5v2.22c0 .21.14.46.55.38A8 8 0 0 0 10 2z"/></svg>
+            Push to GitHub
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Editor Main -->
+  <div class="editor-main">
+    <!-- Address Bar -->
+    <div class="address-bar" id="addressBar">
+      <div class="address-bar-nav">
+        <button class="ab-back" aria-label="Back" onclick="navBack()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l-6 6 6 6"/></svg>
+        </button>
+        <button class="ab-fwd" aria-label="Forward" onclick="navForward()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4l6 6-6 6"/></svg>
+        </button>
+        <button aria-label="Refresh" onclick="navRefresh()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a7 7 0 0112.9-3.7M17 10a7 7 0 01-12.9 3.7"/><path d="M17 3v4h-4M3 17v-4h4"/></svg>
+        </button>
+      </div>
+      <div class="address-bar-url">
+        <input class="address-bar-input" id="addressInput" type="text" value="playground.wordpress.net/scope:abc123/wp-admin/" spellcheck="false" aria-label="Site URL">
+      </div>
+      <button class="address-bar-copy" aria-label="Copy URL" onclick="copyAddressUrl()">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="10" height="10" rx="2"/><path d="M6 14H5a2 2 0 01-2-2V5a2 2 0 012-2h7a2 2 0 012 2v1"/></svg>
+      </button>
+    </div>
+    <div class="wp-preview-frame">
+      <div class="wp-admin-chrome">
+        <!-- WP Sidebar -->
+        <nav class="wp-sidebar" aria-label="WordPress admin menu">
+          <div class="wp-sidebar-logo">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><path d="M3 10h14"/></svg>
+            <span>My Blog</span>
+          </div>
+          <div class="wp-sidebar-item wp-active">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="6" rx="1"/><rect x="11" y="3" width="6" height="6" rx="1"/><rect x="3" y="11" width="6" height="6" rx="1"/><rect x="11" y="11" width="6" height="6" rx="1"/></svg>
+            <span>Dashboard</span>
+          </div>
+          <div class="wp-sidebar-item">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12M4 8h12M4 12h8"/></svg>
+            <span>Posts</span>
+          </div>
+          <div class="wp-sidebar-item">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="2"/><path d="M3 8h14"/></svg>
+            <span>Media</span>
+          </div>
+          <div class="wp-sidebar-item">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M8 7h4M8 10h4M8 13h2"/></svg>
+            <span>Pages</span>
+          </div>
+          <div class="wp-sidebar-item">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10l7-7 7 7M5 8v8a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V8"/></svg>
+            <span>Appearance</span>
+          </div>
+          <div class="wp-sidebar-item">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="7" r="4"/><path d="M3 17c0-3 3-5 7-5s7 2 7 5"/></svg>
+            <span>Users</span>
+          </div>
+          <div class="wp-sidebar-item">
+            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 2v2M10 16v2M3.5 5.5l1.4 1.4M15.1 15.1l1.4 1.4M2 10h2M16 10h2M3.5 14.5l1.4-1.4M15.1 4.9l1.4-1.4"/></svg>
+            <span>Settings</span>
+          </div>
+        </nav>
+
+        <!-- WP Main Content -->
+        <div class="wp-main">
+          <div class="wp-main-header">
+            <h1 class="wp-main-title">Dashboard</h1>
+            <button class="wp-btn">Customize</button>
+          </div>
+
+          <!-- Stats -->
+          <div class="wp-stats-row">
+            <div class="wp-stat-card">
+              <div class="wp-stat-number">12</div>
+              <div class="wp-stat-label">Posts</div>
+            </div>
+            <div class="wp-stat-card" style="border-left-color: #d63638;">
+              <div class="wp-stat-number">4</div>
+              <div class="wp-stat-label">Pages</div>
+            </div>
+            <div class="wp-stat-card" style="border-left-color: #dba617;">
+              <div class="wp-stat-number">28</div>
+              <div class="wp-stat-label">Comments</div>
+            </div>
+            <div class="wp-stat-card" style="border-left-color: #00a32a;">
+              <div class="wp-stat-number">3</div>
+              <div class="wp-stat-label">Drafts</div>
+            </div>
+          </div>
+
+          <!-- Recent Posts -->
+          <div class="wp-recent">
+            <div class="wp-recent-header">Recent Posts</div>
+            <ul class="wp-recent-list">
+              <li class="wp-recent-item">
+                <span class="wp-recent-item-title">Introducing our spring menu</span>
+                <span class="wp-recent-item-meta">Published, 2 hours ago</span>
+              </li>
+              <li class="wp-recent-item">
+                <span class="wp-recent-item-title">Quarterly design review</span>
+                <span class="wp-recent-item-meta">Draft, Yesterday</span>
+              </li>
+              <li class="wp-recent-item">
+                <span class="wp-recent-item-title">Team offsite recap and highlights</span>
+                <span class="wp-recent-item-meta">Published, 3 days ago</span>
+              </li>
+              <li class="wp-recent-item">
+                <span class="wp-recent-item-title">Building accessible navigation patterns</span>
+                <span class="wp-recent-item-meta">Published, 1 week ago</span>
+              </li>
+              <li class="wp-recent-item">
+                <span class="wp-recent-item-title">Performance benchmarks for Q1</span>
+                <span class="wp-recent-item-meta">Published, 2 weeks ago</span>
+              </li>
+            </ul>
+          </div>
+
+          <!-- Recent Activity -->
+          <div class="wp-recent">
+            <div class="wp-recent-header">Activity</div>
+            <ul class="wp-recent-list">
+              <li class="wp-recent-item">
+                <span class="wp-recent-item-title">admin approved a comment on "Spring menu"</span>
+                <span class="wp-recent-item-meta">1 hour ago</span>
+              </li>
+              <li class="wp-recent-item">
+                <span class="wp-recent-item-title">PHP updated to 8.3</span>
+                <span class="wp-recent-item-meta">Yesterday</span>
+              </li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     PANEL: Settings
+     ================================================================ -->
+<div class="panel-overlay" id="panelOverlay" onclick="closeAllPanels()"></div>
+
+<aside class="panel" id="panelSettings" role="dialog" aria-label="Site settings">
+  <div class="panel-header">
+    <h2 class="panel-title">Settings</h2>
+    <button class="btn-icon" onclick="closeAllPanels()" aria-label="Close settings">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l10 10M15 5L5 15"/></svg>
+    </button>
+  </div>
+  <div class="panel-body">
+    <div class="form-group">
+      <label class="form-label" for="phpVersion">PHP Version</label>
+      <select class="form-select" id="phpVersion" onchange="applySettingAnim(this)">
+        <option>8.0</option>
+        <option selected>8.2</option>
+        <option>8.3</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="wpVersion">WordPress Version</label>
+      <select class="form-select" id="wpVersion" onchange="applySettingAnim(this)">
+        <option>6.4</option>
+        <option selected>6.5</option>
+        <option>6.6 (Beta)</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="phpExtensions">PHP Extensions</label>
+      <select class="form-select" id="phpExtensions">
+        <option selected>Default (mbstring, xml, zip)</option>
+        <option>Full (+ gd, intl, soap)</option>
+      </select>
+    </div>
+    <div class="divider"></div>
+    <div class="form-toggle-row">
+      <div>
+        <div class="form-label">Networking</div>
+        <div style="font-size: var(--fs-xs); color: var(--text-muted);">Allow HTTP requests to external hosts</div>
+      </div>
+      <div class="toggle on" tabindex="0" role="switch" aria-checked="true" aria-label="Toggle networking" onclick="this.classList.toggle('on'); this.setAttribute('aria-checked', this.classList.contains('on'))"></div>
+    </div>
+    <div class="form-toggle-row">
+      <div>
+        <div class="form-label">Multisite</div>
+        <div style="font-size: var(--fs-xs); color: var(--text-muted);">Enable WordPress multisite network</div>
+      </div>
+      <div class="toggle" tabindex="0" role="switch" aria-checked="false" aria-label="Toggle multisite" onclick="this.classList.toggle('on'); this.setAttribute('aria-checked', this.classList.contains('on'))"></div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="siteLanguage">Language</label>
+      <select class="form-select" id="siteLanguage">
+        <option selected>English (US)</option>
+        <option>Spanish</option>
+        <option>French</option>
+        <option>German</option>
+        <option>Japanese</option>
+      </select>
+    </div>
+  </div>
+</aside>
+
+<!-- ================================================================
+     PANEL: Blueprint
+     ================================================================ -->
+<aside class="panel" id="panelBlueprint" role="dialog" aria-label="Blueprint">
+  <div class="panel-header">
+    <h2 class="panel-title">Blueprint</h2>
+    <button class="btn-icon" onclick="closeAllPanels()" aria-label="Close blueprint">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l10 10M15 5L5 15"/></svg>
+    </button>
+  </div>
+  <div class="panel-body">
+    <div>
+      <div class="panel-section-label">Import Blueprint</div>
+      <div class="form-group" style="margin-top: var(--space-2);">
+        <label class="form-label" for="blueprintUrl">From URL</label>
+        <div style="display:flex; gap: var(--space-2);">
+          <input type="text" class="form-input" id="blueprintUrl" placeholder="https://example.com/blueprint.json" style="flex:1;" />
+          <button class="btn-sm btn-sm-primary" style="height:36px; padding: 0 var(--space-3);">Load</button>
+        </div>
+      </div>
+    </div>
+    <div>
+      <div class="panel-section-label">Edit Blueprint</div>
+      <textarea class="blueprint-editor" aria-label="Blueprint JSON editor" spellcheck="false">{
+  "landingPage": "/wp-admin/",
+  "phpExtensionBundles": ["kitchen-sink"],
+  "steps": [
+    {
+      "step": "login",
+      "username": "admin",
+      "password": "password"
+    }
+  ]
+}</textarea>
+    </div>
+    <div style="display:flex; gap: var(--space-3);">
+      <button class="btn-primary" style="flex:1;" onclick="showToast('Blueprint applied', 'success')">
+        Apply Blueprint
+      </button>
+      <button class="btn-ghost" style="border: 1px solid var(--border);" onclick="exportBlueprint()">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v4a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-4M10 3v10M7 6l3-3 3 3"/></svg>
+        Export
+      </button>
+    </div>
+  </div>
+</aside>
+
+<!-- ================================================================
+     MODAL: New Site (2-step picker)
+     ================================================================ -->
+<div class="modal-overlay" id="newSiteModal">
+  <div class="modal" role="dialog" aria-label="Create new site" aria-modal="true">
+    <div class="modal-header">
+      <h2 class="modal-title">Create New Site</h2>
+      <button class="btn-icon" onclick="closeNewSiteModal()" aria-label="Close">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <!-- Step Indicator -->
+      <div class="step-indicator">
+        <span class="step-dot active" id="stepDot1">1</span>
+        <span class="step-label active" id="stepLabel1">Template</span>
+        <div class="step-line" id="stepLine"></div>
+        <span class="step-dot" id="stepDot2">2</span>
+        <span class="step-label" id="stepLabel2">Storage</span>
+      </div>
+
+      <!-- Step 1: Template -->
+      <div id="newSiteStep1">
+        <p style="font-size: var(--fs-sm); color: var(--text-muted); margin-bottom: var(--space-3);">Choose a starting template for your site.</p>
+        <div class="template-grid">
+          <div class="template-card selected" onclick="selectTemplate(this)" tabindex="0" role="button">
+            <div class="template-icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="2"/></svg>
+            </div>
+            <span class="template-label">Blank</span>
+          </div>
+          <div class="template-card" onclick="selectTemplate(this)" tabindex="0" role="button">
+            <div class="template-icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12M4 8h12M4 12h8"/></svg>
+            </div>
+            <span class="template-label">Blog</span>
+          </div>
+          <div class="template-card" onclick="selectTemplate(this)" tabindex="0" role="button">
+            <div class="template-icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="6" height="8" rx="1"/><rect x="11" y="3" width="6" height="5" rx="1"/><rect x="11" y="10" width="6" height="7" rx="1"/><rect x="3" y="13" width="6" height="4" rx="1"/></svg>
+            </div>
+            <span class="template-label">Portfolio</span>
+          </div>
+          <div class="template-card" onclick="selectTemplate(this)" tabindex="0" role="button">
+            <div class="template-icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l3 4H3l3-4zM3 7h14v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M8 11h4"/></svg>
+            </div>
+            <span class="template-label">Store</span>
+          </div>
+          <div class="template-card" onclick="selectTemplate(this)" tabindex="0" role="button">
+            <div class="template-icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"/><path d="M8 7h4M8 10h4M8 13h2"/></svg>
+            </div>
+            <span class="template-label">Docs Site</span>
+          </div>
+          <div class="template-card" onclick="selectTemplate(this)" tabindex="0" role="button">
+            <div class="template-icon">
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 14 8 10 12 14 16 6"/></svg>
+            </div>
+            <span class="template-label">From Blueprint</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Step 2: Storage (hidden by default) -->
+      <div id="newSiteStep2" class="hidden">
+        <p style="font-size: var(--fs-sm); color: var(--text-muted); margin-bottom: var(--space-3);">Where should this site be stored?</p>
+        <div class="storage-options">
+          <div class="storage-option selected" onclick="selectStorage(this)" tabindex="0" role="button">
+            <div class="storage-radio"></div>
+            <div class="storage-option-info">
+              <div class="storage-option-name">Temporary (Memory)</div>
+              <div class="storage-option-desc">Exists only during this session. Great for quick testing.</div>
+            </div>
+          </div>
+          <div class="storage-option" onclick="selectStorage(this)" tabindex="0" role="button">
+            <div class="storage-radio"></div>
+            <div class="storage-option-info">
+              <div class="storage-option-name">Browser Storage</div>
+              <div class="storage-option-desc">Saved in your browser. Persists across sessions.</div>
+            </div>
+          </div>
+          <div class="storage-option" onclick="selectStorage(this)" tabindex="0" role="button">
+            <div class="storage-radio"></div>
+            <div class="storage-option-info">
+              <div class="storage-option-name">Device Folder</div>
+              <div class="storage-option-desc">Synced with a folder on your computer via File System Access API.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" style="border:1px solid var(--border);" id="newSiteBackBtn" class="hidden" onclick="newSiteBack()">Back</button>
+      <button class="btn-primary" id="newSiteNextBtn" onclick="newSiteNext()">
+        Next
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     MODAL: Push to GitHub
+     ================================================================ -->
+<div class="modal-overlay" id="githubModal">
+  <div class="modal" role="dialog" aria-label="Push to GitHub" aria-modal="true">
+    <div class="modal-header">
+      <h2 class="modal-title">Push to GitHub</h2>
+      <button class="btn-icon" onclick="closeGithubModal()" aria-label="Close">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label" for="ghRepo">Repository</label>
+        <input type="text" class="form-input" id="ghRepo" placeholder="wordpress/playground-site" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="ghBranch">Branch</label>
+        <input type="text" class="form-input" id="ghBranch" value="playground/update" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="ghPrTitle">PR Title</label>
+        <input type="text" class="form-input" id="ghPrTitle" placeholder="Update from WordPress Playground" />
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="ghPrDesc">PR Description</label>
+        <textarea class="form-input" id="ghPrDesc" rows="3" style="height:auto; resize:vertical; padding: var(--space-3);" placeholder="Describe your changes..."></textarea>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" style="border:1px solid var(--border);" onclick="closeGithubModal()">Cancel</button>
+      <button class="btn-primary" onclick="createPr()">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.39v-1.4c-2.22.48-2.69-1.07-2.69-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.82 1.23.82.71 1.22 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82A7.65 7.65 0 0 1 10 5.5c.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.74.54 1.5v2.22c0 .21.14.46.55.38A8 8 0 0 0 10 2z"/></svg>
+        Create PR
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     MODAL: Export Blueprint
+     ================================================================ -->
+<div class="modal-overlay" id="exportBlueprintModal">
+  <div class="modal" role="dialog" aria-label="Export Blueprint" aria-modal="true">
+    <div class="modal-header">
+      <h2 class="modal-title">Export Blueprint</h2>
+      <button class="btn-icon" onclick="closeExportBlueprintModal()" aria-label="Close">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size: var(--fs-sm); color: var(--text-muted);">Copy this JSON to reproduce this site configuration anywhere.</p>
+      <textarea class="blueprint-editor" readonly style="min-height: 160px;" aria-label="Blueprint JSON output">{
+  "landingPage": "/wp-admin/",
+  "phpExtensionBundles": ["kitchen-sink"],
+  "steps": [
+    { "step": "login", "username": "admin", "password": "password" }
+  ]
+}</textarea>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-ghost" style="border:1px solid var(--border);" onclick="closeExportBlueprintModal()">Close</button>
+      <button class="btn-primary" onclick="copyBlueprintJson()">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="11" height="11" rx="2"/><path d="M4 14V4a2 2 0 0 1 2-2h10"/></svg>
+        Copy JSON
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     COMMAND PALETTE (Cmd+K)
+     ================================================================ -->
+<div class="cmdk-overlay" id="cmdkOverlay" onclick="closeCmdK()">
+  <div class="cmdk" onclick="event.stopPropagation()" role="dialog" aria-label="Command palette" aria-modal="true">
+    <div class="cmdk-input-wrap">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="6"/><path d="m14 14 4 4"/></svg>
+      <input type="text" class="cmdk-input" id="cmdkInput" placeholder="Search actions and sites..." aria-label="Search actions and sites" />
+    </div>
+    <div class="cmdk-list">
+      <div class="cmdk-group-label">Sites</div>
+      <div class="cmdk-item highlighted" onclick="openEditorFromCmdk('Current Draft', 'unsaved')">
+        <span class="cmdk-item-icon">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/></svg>
+        </span>
+        <span class="cmdk-item-label">Switch to Current Draft</span>
+      </div>
+      <div class="cmdk-item" onclick="openEditorFromCmdk('My Blog', 'browser')">
+        <span class="cmdk-item-icon">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/></svg>
+        </span>
+        <span class="cmdk-item-label">Switch to My Blog</span>
+      </div>
+      <div class="cmdk-item" onclick="openEditorFromCmdk('Client Project', 'device')">
+        <span class="cmdk-item-icon">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/></svg>
+        </span>
+        <span class="cmdk-item-label">Switch to Client Project</span>
+      </div>
+
+      <div class="cmdk-group-label">Actions</div>
+      <div class="cmdk-item" onclick="closeCmdK(); openNewSiteModal();">
+        <span class="cmdk-item-icon">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 4v12M4 10h12"/></svg>
+        </span>
+        <span class="cmdk-item-label">Create New Site</span>
+        <span class="cmdk-item-shortcut">N</span>
+      </div>
+      <div class="cmdk-item" onclick="closeCmdK(); if(viewEditor.style.display!=='none'&&viewEditor.style.display) saveTo('browser'); else openEditor('Current Draft','unsaved');">
+        <span class="cmdk-item-icon">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h9l3 3v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/></svg>
+        </span>
+        <span class="cmdk-item-label">Save Site</span>
+        <span class="cmdk-item-shortcut">Cmd+S</span>
+      </div>
+      <div class="cmdk-item" onclick="closeCmdK(); if(viewEditor.style.display==='flex') openPanel('settings');">
+        <span class="cmdk-item-icon">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 2v2M10 16v2"/></svg>
+        </span>
+        <span class="cmdk-item-label">Open Settings</span>
+      </div>
+      <div class="cmdk-item" onclick="closeCmdK(); if(viewEditor.style.display==='flex') shareUrl();">
+        <span class="cmdk-item-icon">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12v4a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1v-4"/></svg>
+        </span>
+        <span class="cmdk-item-label">Share URL</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ================================================================
+     TOAST CONTAINER
+     ================================================================ -->
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+<!-- ================================================================
+     JAVASCRIPT
+     ================================================================ -->
+<script>
+/* ---- References ---- */
+const viewGrid = document.getElementById('viewGrid');
+const viewEditor = document.getElementById('viewEditor');
+const editorSiteTitle = document.getElementById('editorSiteTitle');
+const editorStorageBadge = document.getElementById('editorStorageBadge');
+const saveDropdown = document.getElementById('saveDropdown');
+const actionsDropdown = document.getElementById('actionsDropdown');
+const toastContainer = document.getElementById('toastContainer');
+const panelOverlay = document.getElementById('panelOverlay');
+
+let currentNewSiteStep = 1;
+
+/* ---- View Switching ---- */
+function openEditor(name, storageType) {
+  viewGrid.style.display = 'none';
+  viewEditor.style.display = 'flex';
+  editorSiteTitle.value = name;
+  updateStorageBadge(storageType);
+  // Update WP sidebar logo
+  const sidebarLogo = document.querySelector('.wp-sidebar-logo span');
+  if (sidebarLogo) sidebarLogo.textContent = name;
+}
+
+function backToGrid() {
+  viewEditor.style.display = 'none';
+  viewGrid.style.display = 'flex';
+  closeAllPanels();
+  closeSaveDropdown();
+  closeActionsDropdown();
+}
+
+/* ---- Storage Badge ---- */
+function updateStorageBadge(type) {
+  editorStorageBadge.className = 'badge';
+  switch (type) {
+    case 'unsaved':
+      editorStorageBadge.classList.add('badge-warning');
+      editorStorageBadge.textContent = 'Unsaved';
+      break;
+    case 'memory':
+      editorStorageBadge.classList.add('badge-warning');
+      editorStorageBadge.textContent = 'Memory';
+      break;
+    case 'browser':
+      editorStorageBadge.classList.add('badge-success');
+      editorStorageBadge.textContent = 'Browser';
+      break;
+    case 'device':
+      editorStorageBadge.classList.add('badge-accent');
+      editorStorageBadge.textContent = 'Device';
+      break;
+  }
+}
+
+/* ---- Save Dropdown ---- */
+function toggleSaveDropdown() {
+  saveDropdown.classList.toggle('open');
+  closeActionsDropdown();
+}
+function closeSaveDropdown() {
+  saveDropdown.classList.remove('open');
+}
+function openSaveDropdown() {
+  saveDropdown.classList.add('open');
+}
+
+function saveTo(type) {
+  closeSaveDropdown();
+  updateStorageBadge(type);
+  const labels = { memory: 'Memory', browser: 'Browser Storage', device: 'Device Folder' };
+  showToast('Saved to ' + labels[type], 'success');
+}
+
+/* ---- Actions Dropdown ---- */
+function toggleActionsDropdown() {
+  actionsDropdown.classList.toggle('open');
+  closeSaveDropdown();
+}
+function closeActionsDropdown() {
+  actionsDropdown.classList.remove('open');
+}
+
+function downloadZip() {
+  closeActionsDropdown();
+  showToast('Downloading site as ZIP...', 'info');
+}
+function exportWxr() {
+  closeActionsDropdown();
+  showToast('Exported as WXR', 'success');
+}
+
+/* ---- GitHub PR Modal ---- */
+function openGithubModal() {
+  closeActionsDropdown();
+  document.getElementById('githubModal').classList.add('open');
+}
+function closeGithubModal() {
+  document.getElementById('githubModal').classList.remove('open');
+}
+function createPr() {
+  closeGithubModal();
+  showToast('PR #42 opened successfully', 'success');
+}
+
+/* ---- Share ---- */
+function shareUrl() {
+  const url = 'https://playground.wordpress.net/?blueprint=abc123';
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => {
+      showToast('URL copied to clipboard', 'success');
+    }).catch(() => {
+      showToast('URL copied to clipboard', 'success');
+    });
+  } else {
+    showToast('URL copied to clipboard', 'success');
+  }
+}
+
+/* ---- Address Bar Navigation ---- */
+let navHistory = ['playground.wordpress.net/scope:abc123/wp-admin/'];
+let navIndex = 0;
+
+function navigatePreview(path) {
+  const frame = document.querySelector('.wp-preview-frame');
+  frame.style.opacity = '0.4';
+  frame.style.transition = 'opacity .2s';
+  setTimeout(() => { frame.style.opacity = '1'; }, 400);
+}
+
+function navBack() {
+  if (navIndex > 0) {
+    navIndex--;
+    document.getElementById('addressInput').value = navHistory[navIndex];
+    navigatePreview(navHistory[navIndex]);
+  }
+}
+
+function navForward() {
+  if (navIndex < navHistory.length - 1) {
+    navIndex++;
+    document.getElementById('addressInput').value = navHistory[navIndex];
+    navigatePreview(navHistory[navIndex]);
+  }
+}
+
+function navRefresh() {
+  navigatePreview(document.getElementById('addressInput').value);
+}
+
+function copyAddressUrl() {
+  const url = 'https://' + document.getElementById('addressInput').value;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => showToast('Link copied', 'success')).catch(() => showToast('Link copied', 'success'));
+  } else {
+    showToast('Link copied', 'success');
+  }
+}
+
+document.getElementById('addressInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const val = this.value.trim();
+    if (val) {
+      navIndex++;
+      navHistory = navHistory.slice(0, navIndex);
+      navHistory.push(val);
+      navigatePreview(val);
+    }
+  }
+});
+
+/* ---- Panels ---- */
+function openPanel(name) {
+  closeAllPanels();
+  panelOverlay.classList.add('open');
+  const panel = document.getElementById('panel' + name.charAt(0).toUpperCase() + name.slice(1));
+  if (panel) {
+    panel.classList.add('open');
+  }
+}
+
+function closeAllPanels() {
+  panelOverlay.classList.remove('open');
+  document.querySelectorAll('.panel').forEach(p => p.classList.remove('open'));
+}
+
+/* ---- Settings Apply Animation ---- */
+function applySettingAnim(el) {
+  const label = el.closest('.form-group').querySelector('.form-label');
+  if (!label) return;
+  const orig = label.textContent;
+  label.textContent = 'Applying...';
+  label.style.color = 'var(--accent)';
+  setTimeout(() => {
+    label.textContent = orig;
+    label.style.color = '';
+    showToast('Setting applied', 'success');
+  }, 800);
+}
+
+/* ---- Blueprint Export ---- */
+function exportBlueprint() {
+  document.getElementById('exportBlueprintModal').classList.add('open');
+}
+function closeExportBlueprintModal() {
+  document.getElementById('exportBlueprintModal').classList.remove('open');
+}
+function copyBlueprintJson() {
+  const json = document.querySelector('#exportBlueprintModal textarea').value;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(json).then(() => {
+      showToast('Blueprint JSON copied', 'success');
+    }).catch(() => {
+      showToast('Blueprint JSON copied', 'success');
+    });
+  } else {
+    showToast('Blueprint JSON copied', 'success');
+  }
+}
+
+/* ---- New Site Modal ---- */
+function openNewSiteModal() {
+  currentNewSiteStep = 1;
+  updateNewSiteSteps();
+  document.getElementById('newSiteModal').classList.add('open');
+}
+function closeNewSiteModal() {
+  document.getElementById('newSiteModal').classList.remove('open');
+  currentNewSiteStep = 1;
+  updateNewSiteSteps();
+}
+function newSiteNext() {
+  if (currentNewSiteStep === 1) {
+    currentNewSiteStep = 2;
+    updateNewSiteSteps();
+  } else {
+    closeNewSiteModal();
+    showToast('New site created', 'success');
+    // Open the new site in editor
+    openEditor('New Site', 'memory');
+  }
+}
+function newSiteBack() {
+  if (currentNewSiteStep === 2) {
+    currentNewSiteStep = 1;
+    updateNewSiteSteps();
+  }
+}
+function updateNewSiteSteps() {
+  const step1 = document.getElementById('newSiteStep1');
+  const step2 = document.getElementById('newSiteStep2');
+  const dot1 = document.getElementById('stepDot1');
+  const dot2 = document.getElementById('stepDot2');
+  const label1 = document.getElementById('stepLabel1');
+  const label2 = document.getElementById('stepLabel2');
+  const line = document.getElementById('stepLine');
+  const nextBtn = document.getElementById('newSiteNextBtn');
+  const backBtn = document.getElementById('newSiteBackBtn');
+
+  if (currentNewSiteStep === 1) {
+    step1.classList.remove('hidden');
+    step2.classList.add('hidden');
+    dot1.className = 'step-dot active';
+    dot2.className = 'step-dot';
+    label1.className = 'step-label active';
+    label2.className = 'step-label';
+    line.className = 'step-line';
+    nextBtn.textContent = 'Next';
+    backBtn.style.display = 'none';
+  } else {
+    step1.classList.add('hidden');
+    step2.classList.remove('hidden');
+    dot1.className = 'step-dot done';
+    dot1.innerHTML = '<svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10l3 3 7-7"/></svg>';
+    dot2.className = 'step-dot active';
+    label1.className = 'step-label';
+    label2.className = 'step-label active';
+    line.className = 'step-line active';
+    nextBtn.textContent = 'Create Site';
+    backBtn.style.display = '';
+  }
+}
+
+function selectTemplate(card) {
+  document.querySelectorAll('.template-card').forEach(c => c.classList.remove('selected'));
+  card.classList.add('selected');
+}
+function selectStorage(option) {
+  document.querySelectorAll('.storage-option').forEach(o => o.classList.remove('selected'));
+  option.classList.add('selected');
+}
+
+/* ---- Command Palette ---- */
+function openCmdK() {
+  document.getElementById('cmdkOverlay').classList.add('open');
+  setTimeout(() => document.getElementById('cmdkInput').focus(), 50);
+}
+function closeCmdK() {
+  document.getElementById('cmdkOverlay').classList.remove('open');
+  document.getElementById('cmdkInput').value = '';
+}
+function openEditorFromCmdk(name, storage) {
+  closeCmdK();
+  openEditor(name, storage);
+}
+
+/* ---- Rail Filter ---- */
+function filterRail(el, category) {
+  // Update rail active states
+  document.querySelectorAll('.rail-item').forEach(r => {
+    r.classList.remove('active');
+    r.removeAttribute('aria-current');
+  });
+  document.querySelectorAll('.mobile-tab').forEach(t => t.classList.remove('active'));
+  el.classList.add('active');
+  if (el.classList.contains('rail-item')) {
+    el.setAttribute('aria-current', 'true');
+  }
+  // Also sync mobile tabs
+  document.querySelectorAll('.mobile-tab').forEach(t => {
+    if (t.textContent.toLowerCase().replace(/\s/g, '') === category.replace('all', 'all')) {
+      t.classList.add('active');
+    }
+  });
+
+  // Filter cards
+  const cards = document.querySelectorAll('.site-card');
+  cards.forEach(card => {
+    if (category === 'all') {
+      card.style.display = '';
+    } else {
+      card.style.display = card.dataset.category === category ? '' : 'none';
+    }
+  });
+}
+
+/* ---- Inline-editable Title ---- */
+editorSiteTitle.addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    this.blur();
+    showToast('Site renamed to "' + this.value + '"', 'info');
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    this.blur();
+  }
+});
+
+/* ---- Toast System ---- */
+function showToast(message, type) {
+  type = type || 'info';
+  const toast = document.createElement('div');
+  toast.className = 'toast toast-' + type;
+
+  const iconSvg = {
+    success: '<svg class="toast-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><path d="M7 10l2 2 4-4"/></svg>',
+    info: '<svg class="toast-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><path d="M10 9v4M10 7h.01"/></svg>',
+    warning: '<svg class="toast-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3L2 17h16L10 3z"/><path d="M10 10v3M10 15h.01"/></svg>',
+    error: '<svg class="toast-icon" width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><path d="M7 7l6 6M13 7l-6 6"/></svg>'
+  };
+
+  toast.innerHTML = (iconSvg[type] || iconSvg.info) + '<span>' + message + '</span>';
+  toastContainer.appendChild(toast);
+
+  setTimeout(() => {
+    toast.style.animation = 'toastOut 0.3s forwards';
+    setTimeout(() => toast.remove(), 300);
+  }, 3000);
+}
+
+/* ---- Keyboard Shortcuts ---- */
+document.addEventListener('keydown', function(e) {
+  // Cmd+K or Ctrl+K: Command palette
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    e.preventDefault();
+    const overlay = document.getElementById('cmdkOverlay');
+    if (overlay.classList.contains('open')) {
+      closeCmdK();
+    } else {
+      openCmdK();
+    }
+  }
+
+  // Cmd+S or Ctrl+S: Save
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    e.preventDefault();
+    if (viewEditor.style.display === 'flex') {
+      saveTo('browser');
+    }
+  }
+
+  // Escape: close modals/panels/palettes
+  if (e.key === 'Escape') {
+    closeCmdK();
+    closeAllPanels();
+    closeNewSiteModal();
+    closeGithubModal();
+    closeExportBlueprintModal();
+    closeSaveDropdown();
+    closeActionsDropdown();
+  }
+});
+
+/* ---- Click outside to close dropdowns ---- */
+document.addEventListener('click', function(e) {
+  if (!e.target.closest('.relative') && !e.target.closest('.save-dropdown') && !e.target.closest('.actions-dropdown')) {
+    closeSaveDropdown();
+    closeActionsDropdown();
+  }
+});
+</script>
+</body>
+</html>

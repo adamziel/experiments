@@ -1,0 +1,833 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WordPress Playground — UX Explorations (v3)</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg: #FAFAF8;
+      --surface: #FFFFFF;
+      --surface-2: #F2F1EE;
+      --border: #E4E2DC;
+      --text: #1C1B18;
+      --text-muted: #7A776E;
+      --accent: #3D5A80;
+      --accent-hover: #2C4A6E;
+      --accent-fg: #FFFFFF;
+      --success: #4A8B6E;
+      --warning: #C4923A;
+      --danger: #C45B4A;
+
+      --fs-xs: 12px;
+      --fs-sm: 13px;
+      --fs-base: 14px;
+      --fs-lg: 16px;
+      --fs-xl: 20px;
+      --fs-2xl: 28px;
+      --fs-3xl: 40px;
+
+      --space-1: 4px;
+      --space-2: 8px;
+      --space-3: 12px;
+      --space-4: 16px;
+      --space-5: 24px;
+      --space-6: 32px;
+      --space-7: 48px;
+      --space-8: 64px;
+
+      --radius-sm: 6px;
+      --radius-md: 10px;
+      --radius-lg: 14px;
+      --radius-xl: 24px;
+    }
+
+    *, *::before, *::after {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+      min-width: 0;
+    }
+
+    html {
+      overflow-x: hidden;
+      max-width: 100%;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+      overflow-x: hidden;
+      max-width: 100%;
+      word-break: break-word;
+      overflow-wrap: break-word;
+    }
+
+    /* Header */
+    .header {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-8) var(--space-5) var(--space-7);
+      text-align: center;
+    }
+
+    .header-logo {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: var(--space-3);
+      margin-bottom: var(--space-5);
+    }
+
+    .header-logo svg {
+      width: 36px;
+      height: 36px;
+      color: var(--accent);
+    }
+
+    .header-logo span {
+      font-family: 'DM Serif Display', Georgia, serif;
+      font-size: var(--fs-xl);
+      color: var(--text);
+      letter-spacing: -0.01em;
+    }
+
+    .header h1 {
+      font-family: 'DM Serif Display', Georgia, serif;
+      font-size: var(--fs-3xl);
+      font-weight: 400;
+      line-height: 1.2;
+      color: var(--text);
+      margin-bottom: var(--space-4);
+      letter-spacing: -0.02em;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
+    }
+
+    .header p {
+      font-size: var(--fs-lg);
+      color: var(--text-muted);
+      max-width: 640px;
+      margin: 0 auto var(--space-5);
+      line-height: 1.6;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
+    }
+
+    .header-meta {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--fs-sm);
+      color: var(--text-muted);
+      background: var(--surface-2);
+      padding: var(--space-2) var(--space-4);
+      border-radius: var(--radius-xl);
+      max-width: 100%;
+      flex-wrap: wrap;
+      justify-content: center;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
+    }
+
+    .header-meta svg {
+      width: 14px;
+      height: 14px;
+    }
+
+    /* Cards grid */
+    .cards-section {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 var(--space-5) var(--space-8);
+    }
+
+    .cards-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-5);
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      text-decoration: none;
+      color: inherit;
+      transition: transform 180ms ease-out, box-shadow 180ms ease-out, border-color 180ms ease-out;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card:hover {
+      transform: translateY(-3px);
+      box-shadow: 0 8px 24px rgba(0,0,0,0.06), 0 2px 8px rgba(0,0,0,0.04);
+      border-color: var(--accent);
+    }
+
+    .card:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .card-preview {
+      aspect-ratio: 16 / 10;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .card-number {
+      position: absolute;
+      top: var(--space-3);
+      left: var(--space-3);
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(8px);
+      font-size: var(--fs-xs);
+      font-weight: 600;
+      color: var(--text-muted);
+      padding: var(--space-1) var(--space-3);
+      border-radius: var(--radius-sm);
+      z-index: 2;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+
+    /* Card 1: Notebook — warm sage */
+    .card-1 .card-preview {
+      background: linear-gradient(145deg, #F0EDE8 0%, #E8E3DB 100%);
+    }
+
+    .card-1-mockup {
+      position: absolute;
+      inset: 20px 16px 0;
+      background: #fff;
+      border-radius: var(--radius-md) var(--radius-md) 0 0;
+      box-shadow: 0 -2px 12px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .card-1-topbar {
+      display: flex;
+      align-items: center;
+      gap: var(--space-2);
+      padding: var(--space-2) var(--space-3);
+      border-bottom: 1px solid #E5E0D8;
+      background: #FAF8F5;
+    }
+
+    .card-1-dot { width: 6px; height: 6px; border-radius: 50%; }
+    .card-1-dot:nth-child(1) { background: #E5E0D8; }
+    .card-1-dot:nth-child(2) { background: #E5E0D8; }
+    .card-1-dot:nth-child(3) { background: #E5E0D8; }
+
+    .card-1-title-bar {
+      margin-left: var(--space-2);
+      font-size: 7px;
+      font-weight: 500;
+      color: #2D2A26;
+    }
+
+    .card-1-badge {
+      font-size: 5px;
+      background: #5B7A6B;
+      color: #fff;
+      padding: 1px 4px;
+      border-radius: 3px;
+      margin-left: var(--space-1);
+    }
+
+    .card-1-body {
+      flex: 1;
+      display: flex;
+    }
+
+    .card-1-content {
+      flex: 1;
+      padding: var(--space-2) var(--space-3);
+    }
+
+    .card-1-content-line {
+      height: 3px;
+      background: #F3F0EC;
+      border-radius: 2px;
+      margin-bottom: 4px;
+    }
+
+    .card-1-content-line:nth-child(1) { width: 70%; }
+    .card-1-content-line:nth-child(2) { width: 90%; }
+    .card-1-content-line:nth-child(3) { width: 55%; }
+    .card-1-content-line:nth-child(4) { width: 80%; }
+    .card-1-content-line:nth-child(5) { width: 40%; }
+
+    .card-1-sidebar {
+      width: 50px;
+      background: #FAF8F5;
+      border-left: 1px solid #E5E0D8;
+      padding: var(--space-2) 4px;
+    }
+
+    .card-1-sidebar-item {
+      height: 4px;
+      background: #E5E0D8;
+      border-radius: 2px;
+      margin-bottom: 5px;
+    }
+
+    .card-1-sidebar-item:nth-child(1) { width: 70%; }
+    .card-1-sidebar-item:nth-child(2) { width: 90%; background: #5B7A6B; }
+    .card-1-sidebar-item:nth-child(3) { width: 60%; }
+
+    /* Card 2: Workspace — cool violet */
+    .card-2 .card-preview {
+      background: linear-gradient(145deg, #EEEDF2 0%, #E4E2EC 100%);
+    }
+
+    .card-2-mockup {
+      position: absolute;
+      inset: 20px 16px 0;
+      display: grid;
+      grid-template-columns: 42px 1fr;
+      gap: 0;
+      overflow: hidden;
+      border-radius: var(--radius-md) var(--radius-md) 0 0;
+      box-shadow: 0 -2px 12px rgba(0,0,0,0.06);
+    }
+
+    .card-2-rail {
+      background: #1A1825;
+      padding: var(--space-2) 4px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .card-2-rail-dot {
+      width: 22px;
+      height: 22px;
+      border-radius: var(--radius-sm);
+      background: rgba(255,255,255,0.08);
+    }
+
+    .card-2-rail-dot.active {
+      background: #6C5CE7;
+    }
+
+    .card-2-main {
+      background: #fff;
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 6px;
+      padding: var(--space-2);
+    }
+
+    .card-2-site-card {
+      background: #F6F5F8;
+      border-radius: 4px;
+      padding: 5px;
+    }
+
+    .card-2-site-card-line {
+      height: 3px;
+      background: #DCDAE3;
+      border-radius: 2px;
+      margin-bottom: 3px;
+    }
+
+    .card-2-site-card-line:first-child { width: 60%; background: #1A1825; height: 4px; }
+    .card-2-site-card-line:nth-child(2) { width: 80%; }
+    .card-2-site-card-line:nth-child(3) { width: 45%; }
+
+    .card-2-site-card.draft {
+      border: 1px dashed #6C5CE7;
+      background: rgba(108,92,231,0.04);
+    }
+
+    /* Card 3: Hub — warm coral */
+    .card-3 .card-preview {
+      background: linear-gradient(145deg, #FFF5EE 0%, #F5E8DD 100%);
+    }
+
+    .card-3-mockup {
+      position: absolute;
+      inset: 20px 16px 0;
+      background: #fff;
+      border-radius: var(--radius-md) var(--radius-md) 0 0;
+      box-shadow: 0 -2px 12px rgba(0,0,0,0.06);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .card-3-preview-zone {
+      height: 45%;
+      background: linear-gradient(135deg, #FFFBF7 0%, #F5F0EA 100%);
+      border-bottom: 1px solid #E8E2DA;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .card-3-preview-inner {
+      width: 75%;
+      height: 70%;
+      background: #fff;
+      border-radius: 3px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.08);
+      padding: 4px;
+    }
+
+    .card-3-preview-line {
+      height: 3px;
+      background: #F5F0EA;
+      border-radius: 2px;
+      margin-bottom: 3px;
+    }
+
+    .card-3-preview-line:first-child { width: 50%; background: #E07850; }
+    .card-3-preview-line:nth-child(2) { width: 80%; }
+    .card-3-preview-line:nth-child(3) { width: 65%; }
+
+    .card-3-panels {
+      flex: 1;
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 0;
+    }
+
+    .card-3-panel {
+      padding: 4px 6px;
+      border-right: 1px solid #E8E2DA;
+    }
+
+    .card-3-panel:last-child { border-right: none; }
+
+    .card-3-panel-title {
+      font-size: 5px;
+      font-weight: 600;
+      color: #2C2520;
+      margin-bottom: 3px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .card-3-panel-line {
+      height: 3px;
+      background: #F5F0EA;
+      border-radius: 2px;
+      margin-bottom: 3px;
+    }
+
+    /* Card content */
+    .card-body {
+      padding: var(--space-5);
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card-direction {
+      font-size: var(--fs-xs);
+      font-weight: 600;
+      color: var(--accent);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: var(--space-2);
+    }
+
+    .card h2 {
+      font-family: 'DM Serif Display', Georgia, serif;
+      font-size: var(--fs-2xl);
+      font-weight: 400;
+      line-height: 1.25;
+      margin-bottom: var(--space-3);
+      letter-spacing: -0.01em;
+    }
+
+    .card p {
+      font-size: var(--fs-base);
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin-bottom: var(--space-5);
+      flex: 1;
+      overflow-wrap: break-word;
+      word-wrap: break-word;
+    }
+
+    .card-cta {
+      display: inline-flex;
+      align-items: center;
+      gap: var(--space-2);
+      font-size: var(--fs-sm);
+      font-weight: 500;
+      color: var(--accent);
+      text-decoration: none;
+      transition: gap 180ms ease-out;
+    }
+
+    .card:hover .card-cta {
+      gap: var(--space-3);
+    }
+
+    .card-cta svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* Rationale section */
+    .rationale {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 0 var(--space-5) var(--space-8);
+    }
+
+    .rationale-inner {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: var(--space-7) var(--space-6);
+    }
+
+    .rationale h2 {
+      font-family: 'DM Serif Display', Georgia, serif;
+      font-size: var(--fs-2xl);
+      font-weight: 400;
+      margin-bottom: var(--space-5);
+      letter-spacing: -0.01em;
+    }
+
+    .rationale-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: var(--space-6);
+    }
+
+    .rationale-item h3 {
+      font-size: var(--fs-base);
+      font-weight: 600;
+      margin-bottom: var(--space-2);
+    }
+
+    .rationale-item p {
+      font-size: var(--fs-sm);
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    /* Footer */
+    .footer {
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: var(--space-6) var(--space-5);
+      text-align: center;
+      font-size: var(--fs-sm);
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+    }
+
+    .footer a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    .footer a:hover {
+      text-decoration: underline;
+    }
+
+    /* Responsive */
+    @media (max-width: 900px) {
+      .cards-grid {
+        grid-template-columns: 1fr;
+        gap: var(--space-5);
+      }
+
+      .card-preview {
+        aspect-ratio: 16 / 9;
+      }
+
+      .rationale-grid {
+        grid-template-columns: 1fr;
+        gap: var(--space-5);
+      }
+
+      .header h1 {
+        font-size: var(--fs-2xl);
+      }
+
+      .header {
+        padding: var(--space-7) var(--space-4) var(--space-6);
+      }
+
+      .header-logo span {
+        font-size: var(--fs-lg);
+      }
+
+      .header p {
+        font-size: var(--fs-base);
+        padding: 0 var(--space-2);
+      }
+
+      .rationale-inner {
+        padding: var(--space-6) var(--space-5);
+      }
+    }
+
+    @media (max-width: 480px) {
+      .header h1 {
+        font-size: 18px;
+        line-height: 1.3;
+        padding: 0 var(--space-1);
+      }
+
+      .header-logo {
+        gap: var(--space-2);
+      }
+
+      .header-logo svg {
+        width: 28px;
+        height: 28px;
+      }
+
+      .header p {
+        font-size: var(--fs-sm);
+        padding: 0 var(--space-2);
+      }
+
+      .header-meta {
+        font-size: var(--fs-xs);
+        max-width: 100%;
+        text-align: center;
+        word-wrap: break-word;
+      }
+
+      .card h2 {
+        font-size: var(--fs-xl);
+      }
+
+      .header {
+        padding: var(--space-6) var(--space-5) var(--space-5);
+      }
+
+      .header-logo span {
+        font-size: var(--fs-lg);
+      }
+
+      .cards-section {
+        padding: 0 var(--space-4) var(--space-6);
+      }
+
+      .card-body {
+        padding: var(--space-4);
+      }
+
+      .rationale {
+        padding: 0 var(--space-4) var(--space-6);
+      }
+
+      .rationale-inner {
+        padding: var(--space-5) var(--space-4);
+      }
+
+      .rationale h2 {
+        font-size: var(--fs-xl);
+      }
+
+      .footer {
+        padding: var(--space-5) var(--space-4);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .card {
+        transition: none;
+      }
+      .card-cta {
+        transition: none;
+      }
+    }
+  </style>
+</head>
+<body>
+
+  <header class="header">
+    <div class="header-logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="10"/>
+        <path d="M2.5 12h19"/>
+        <path d="M12 2.5c-2.7 3-4.2 6.5-4.2 9.5s1.5 6.5 4.2 9.5"/>
+        <path d="M12 2.5c2.7 3 4.2 6.5 4.2 9.5s-1.5 6.5-4.2 9.5"/>
+      </svg>
+      <span>WordPress Playground</span>
+    </div>
+    <h1>Three directions for the next interface</h1>
+    <p>Each mockup reimagines the same product through a different organizing metaphor. All ten critical user flows are interactive — click through to explore.</p>
+    <div class="header-meta">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h14M5 3h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/><path d="M7 1v4M13 1v4"/></svg>
+      v3 — grounded in flow audit &middot; 31 flows mapped &middot; 10 critical
+    </div>
+  </header>
+
+  <section class="cards-section">
+    <div class="cards-grid">
+
+      <!-- Card 1: Notebook -->
+      <a href="mockup-1-notebook/index.html" class="card card-1">
+        <div class="card-preview">
+          <span class="card-number">Direction 1</span>
+          <div class="card-1-mockup">
+            <div class="card-1-topbar">
+              <div class="card-1-dot"></div>
+              <div class="card-1-dot"></div>
+              <div class="card-1-dot"></div>
+              <span class="card-1-title-bar">My Blog <span class="card-1-badge">Saved</span></span>
+            </div>
+            <div class="card-1-body">
+              <div class="card-1-content">
+                <div class="card-1-content-line"></div>
+                <div class="card-1-content-line"></div>
+                <div class="card-1-content-line"></div>
+                <div class="card-1-content-line"></div>
+                <div class="card-1-content-line"></div>
+              </div>
+              <div class="card-1-sidebar">
+                <div class="card-1-sidebar-item"></div>
+                <div class="card-1-sidebar-item"></div>
+                <div class="card-1-sidebar-item"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="card-direction">Notebook</div>
+          <h2>The quiet canvas</h2>
+          <p>Document-centric layout where the preview fills the page and chrome steps back. A command bar and slim side panel surface everything without clutter.</p>
+          <span class="card-cta">
+            Explore mockup
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+          </span>
+        </div>
+      </a>
+
+      <!-- Card 2: Workspace -->
+      <a href="mockup-2-workspace/index.html" class="card card-2">
+        <div class="card-preview">
+          <span class="card-number">Direction 2</span>
+          <div class="card-2-mockup">
+            <div class="card-2-rail">
+              <div class="card-2-rail-dot active"></div>
+              <div class="card-2-rail-dot"></div>
+              <div class="card-2-rail-dot"></div>
+              <div class="card-2-rail-dot"></div>
+            </div>
+            <div class="card-2-main">
+              <div class="card-2-site-card draft">
+                <div class="card-2-site-card-line"></div>
+                <div class="card-2-site-card-line"></div>
+                <div class="card-2-site-card-line"></div>
+              </div>
+              <div class="card-2-site-card">
+                <div class="card-2-site-card-line"></div>
+                <div class="card-2-site-card-line"></div>
+                <div class="card-2-site-card-line"></div>
+              </div>
+              <div class="card-2-site-card">
+                <div class="card-2-site-card-line"></div>
+                <div class="card-2-site-card-line"></div>
+                <div class="card-2-site-card-line"></div>
+              </div>
+              <div class="card-2-site-card">
+                <div class="card-2-site-card-line"></div>
+                <div class="card-2-site-card-line"></div>
+                <div class="card-2-site-card-line"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="card-direction">Workspace</div>
+          <h2>The site dashboard</h2>
+          <p>Multi-site-first: your sites live in a grid you can scan and switch between instantly. Each opens into a focused editor with clean controls.</p>
+          <span class="card-cta">
+            Explore mockup
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+          </span>
+        </div>
+      </a>
+
+      <!-- Card 3: Hub -->
+      <a href="mockup-3-hub/index.html" class="card card-3">
+        <div class="card-preview">
+          <span class="card-number">Direction 3</span>
+          <div class="card-3-mockup">
+            <div class="card-3-preview-zone">
+              <div class="card-3-preview-inner">
+                <div class="card-3-preview-line"></div>
+                <div class="card-3-preview-line"></div>
+                <div class="card-3-preview-line"></div>
+              </div>
+            </div>
+            <div class="card-3-panels">
+              <div class="card-3-panel">
+                <div class="card-3-panel-title">Configure</div>
+                <div class="card-3-panel-line" style="width:70%"></div>
+                <div class="card-3-panel-line" style="width:85%"></div>
+                <div class="card-3-panel-line" style="width:55%"></div>
+              </div>
+              <div class="card-3-panel">
+                <div class="card-3-panel-title">Export</div>
+                <div class="card-3-panel-line" style="width:65%"></div>
+                <div class="card-3-panel-line" style="width:75%"></div>
+                <div class="card-3-panel-line" style="width:50%"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="card-direction">Hub</div>
+          <h2>The single page</h2>
+          <p>Everything on one scrolling surface — live preview, configuration, and export all visible at once. No modals required for common tasks.</p>
+          <span class="card-cta">
+            Explore mockup
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h10M9 4l4 4-4 4"/></svg>
+          </span>
+        </div>
+      </a>
+
+    </div>
+  </section>
+
+  <section class="rationale">
+    <div class="rationale-inner">
+      <h2>Design rationale</h2>
+      <div class="rationale-grid">
+        <div class="rationale-item">
+          <h3>Grounded in real usage</h3>
+          <p>Every mockup was built against a 31-flow audit of the live product. The critical ten — from first visit to GitHub push — are all interactive and reachable in two clicks or fewer.</p>
+        </div>
+        <div class="rationale-item">
+          <h3>Three mental models</h3>
+          <p>Rather than proposing one "right" layout, these three directions test whether the product works best as a focused canvas, a multi-project dashboard, or an all-in-one surface.</p>
+        </div>
+        <div class="rationale-item">
+          <h3>Responsive from the start</h3>
+          <p>Each direction was designed at 360px, 768px, 1024px, and 1280px simultaneously. Every action is reachable on mobile — panels collapse into sheets, grids stack, and text reflows.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    <p>WordPress Playground UX Explorations v3 &middot; Based on <a href="research/flows.md">feature audit</a> &middot; <a href="https://github.com/adamziel/experiments">Source</a></p>
+  </footer>
+
+</body>
+</html>

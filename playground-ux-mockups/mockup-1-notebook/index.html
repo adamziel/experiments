@@ -1,0 +1,2472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WordPress Playground — Notebook</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+/* ===== Reset ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0;}
+button,input,select,textarea{font:inherit;color:inherit;}
+a{color:inherit;text-decoration:none;}
+ul,ol{list-style:none;}
+img{display:block;max-width:100%;}
+
+/* ===== Custom Properties ===== */
+:root{
+  /* Colors */
+  --bg:#FAF8F5;
+  --surface:#FFFFFF;
+  --surface-2:#F3F0EC;
+  --border:#E5E0D8;
+  --text:#2D2A26;
+  --text-muted:#8A857D;
+  --accent:#5B7A6B;
+  --accent-hover:#4D6A5C;
+  --accent-fg:#FFFFFF;
+  --success:#4A8B6E;
+  --warning:#C4923A;
+  --danger:#C45B4A;
+  --info:#5B7AAB;
+
+  /* Typography */
+  --font-sans:'Inter',system-ui,-apple-system,sans-serif;
+  --font-mono:'JetBrains Mono',ui-monospace,monospace;
+  --fs-xs:12px;--fs-sm:13px;--fs-base:14px;--fs-lg:16px;--fs-xl:20px;--fs-2xl:28px;--fs-3xl:40px;
+  --lh-prose:1.5;--lh-heading:1.25;
+
+  /* Spacing (4px grid) */
+  --space-1:4px;--space-2:8px;--space-3:12px;--space-4:16px;--space-5:24px;--space-6:32px;--space-7:48px;--space-8:64px;
+
+  /* Radii */
+  --radius-sm:6px;--radius-md:10px;--radius-lg:14px;--radius-xl:24px;
+
+  /* Shadows */
+  --shadow-sm:0 1px 2px rgba(45,42,38,.06),0 1px 3px rgba(45,42,38,.08);
+  --shadow-md:0 2px 4px rgba(45,42,38,.04),0 4px 12px rgba(45,42,38,.08);
+  --shadow-lg:0 4px 8px rgba(45,42,38,.04),0 8px 24px rgba(45,42,38,.10);
+  --shadow-xl:0 8px 16px rgba(45,42,38,.06),0 16px 48px rgba(45,42,38,.12);
+
+  /* Layout */
+  --topbar-h:52px;
+  --panel-w:320px;
+}
+
+body{
+  font-family:var(--font-sans);
+  font-size:var(--fs-base);
+  line-height:var(--lh-prose);
+  color:var(--text);
+  background:var(--bg);
+  overflow:hidden;
+  height:100vh;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ===== Focus ===== */
+:focus-visible{
+  outline:2px solid var(--accent);
+  outline-offset:2px;
+  border-radius:var(--radius-sm);
+}
+
+/* ===== Top Bar ===== */
+.topbar{
+  display:flex;
+  align-items:center;
+  height:var(--topbar-h);
+  padding:0 var(--space-4);
+  background:var(--surface);
+  border-bottom:1px solid var(--border);
+  gap:var(--space-3);
+  position:relative;
+  z-index:100;
+}
+
+.topbar-left{
+  display:flex;
+  align-items:center;
+  gap:var(--space-3);
+  flex:1;
+  min-width:0;
+}
+
+.topbar-right{
+  display:flex;
+  align-items:center;
+  gap:var(--space-2);
+  flex-shrink:0;
+}
+
+/* Site switcher */
+.site-switcher-btn{
+  display:flex;align-items:center;justify-content:center;
+  width:34px;height:34px;
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface);
+  cursor:pointer;
+  color:var(--text-muted);
+  transition:all .15s ease;
+  flex-shrink:0;
+  position:relative;
+}
+.site-switcher-btn:hover{
+  background:var(--surface-2);
+  color:var(--text);
+  border-color:var(--accent);
+}
+
+.site-switcher-dropdown{
+  position:absolute;
+  top:calc(100% + 6px);
+  left:0;
+  width:280px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-md);
+  box-shadow:var(--shadow-lg);
+  z-index:500;
+  display:none;
+  overflow:hidden;
+}
+.site-switcher-dropdown.open{display:block;}
+
+.site-switcher-dropdown .dropdown-header{
+  padding:var(--space-3) var(--space-4);
+  font-size:var(--fs-xs);
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+  color:var(--text-muted);
+  border-bottom:1px solid var(--border);
+}
+
+.site-switcher-dropdown .site-item{
+  display:flex;
+  align-items:center;
+  gap:var(--space-3);
+  padding:var(--space-3) var(--space-4);
+  cursor:pointer;
+  transition:background .1s ease;
+  border:none;
+  background:none;
+  width:100%;
+  text-align:left;
+}
+.site-switcher-dropdown .site-item:hover{background:var(--surface-2);}
+.site-switcher-dropdown .site-item.active{background:rgba(91,122,107,.08);}
+
+.site-switcher-dropdown .site-item .site-dot{
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+}
+.site-switcher-dropdown .site-item .site-info{
+  flex:1;min-width:0;
+}
+.site-switcher-dropdown .site-item .site-name{
+  font-size:var(--fs-sm);
+  font-weight:500;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.site-switcher-dropdown .site-item .site-meta{
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+}
+
+.site-switcher-dropdown .dropdown-footer{
+  padding:var(--space-2) var(--space-4);
+  border-top:1px solid var(--border);
+}
+.site-switcher-dropdown .dropdown-footer button{
+  display:flex;align-items:center;gap:var(--space-2);
+  width:100%;
+  padding:var(--space-2) var(--space-2);
+  border:none;background:none;
+  font-size:var(--fs-sm);
+  color:var(--accent);
+  cursor:pointer;
+  border-radius:var(--radius-sm);
+  font-weight:500;
+}
+.site-switcher-dropdown .dropdown-footer button:hover{background:var(--surface-2);}
+
+/* Inline-editable title */
+.site-title-wrapper{
+  display:flex;align-items:center;gap:var(--space-2);
+  min-width:0;
+}
+.site-title{
+  font-size:var(--fs-lg);
+  font-weight:600;
+  color:var(--text);
+  cursor:pointer;
+  padding:var(--space-1) var(--space-2);
+  border-radius:var(--radius-sm);
+  border:1px solid transparent;
+  transition:all .15s ease;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  max-width:280px;
+  line-height:var(--lh-heading);
+}
+.site-title:hover{
+  background:var(--surface-2);
+  border-color:var(--border);
+}
+
+.site-title-input{
+  font-size:var(--fs-lg);
+  font-weight:600;
+  color:var(--text);
+  padding:var(--space-1) var(--space-2);
+  border-radius:var(--radius-sm);
+  border:1px solid var(--accent);
+  background:var(--surface);
+  outline:none;
+  width:260px;
+  max-width:280px;
+  display:none;
+  line-height:var(--lh-heading);
+}
+
+/* Storage badge */
+.storage-badge{
+  display:inline-flex;align-items:center;gap:var(--space-1);
+  padding:2px var(--space-2);
+  font-size:var(--fs-xs);
+  font-weight:500;
+  border-radius:99px;
+  cursor:pointer;
+  border:1px solid var(--border);
+  background:var(--surface-2);
+  color:var(--text-muted);
+  transition:all .15s ease;
+  white-space:nowrap;
+  flex-shrink:0;
+  position:relative;
+}
+.storage-badge:hover{
+  border-color:var(--accent);
+  color:var(--text);
+}
+.storage-badge .dot{
+  width:6px;height:6px;border-radius:50%;
+}
+.storage-badge[data-state="temporary"] .dot{background:var(--warning);}
+.storage-badge[data-state="browser"] .dot{background:var(--success);}
+.storage-badge[data-state="device"] .dot{background:var(--accent);}
+
+/* Storage dropdown */
+.storage-dropdown{
+  position:absolute;
+  top:calc(100% + 6px);
+  left:0;
+  width:260px;
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-md);
+  box-shadow:var(--shadow-lg);
+  z-index:500;
+  display:none;
+  overflow:hidden;
+}
+.storage-dropdown.open{display:block;}
+
+.storage-dropdown .storage-option{
+  display:flex;align-items:flex-start;gap:var(--space-3);
+  padding:var(--space-3) var(--space-4);
+  cursor:pointer;
+  border:none;background:none;width:100%;text-align:left;
+  transition:background .1s ease;
+}
+.storage-dropdown .storage-option:hover{background:var(--surface-2);}
+.storage-dropdown .storage-option.active{background:rgba(91,122,107,.08);}
+.storage-dropdown .storage-option .opt-dot{
+  width:8px;height:8px;border-radius:50%;margin-top:5px;flex-shrink:0;
+}
+.storage-dropdown .storage-option .opt-label{font-size:var(--fs-sm);font-weight:500;}
+.storage-dropdown .storage-option .opt-desc{font-size:var(--fs-xs);color:var(--text-muted);margin-top:2px;}
+
+/* Top bar buttons */
+.topbar-btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
+  height:34px;
+  padding:0 var(--space-3);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface);
+  cursor:pointer;
+  font-size:var(--fs-sm);
+  font-weight:500;
+  color:var(--text);
+  transition:all .15s ease;
+  white-space:nowrap;
+}
+.topbar-btn:hover{background:var(--surface-2);border-color:var(--accent);}
+
+.topbar-btn.primary{
+  background:var(--accent);
+  color:var(--accent-fg);
+  border-color:var(--accent);
+}
+.topbar-btn.primary:hover{background:var(--accent-hover);}
+
+.topbar-icon-btn{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:34px;height:34px;
+  border:none;background:none;
+  cursor:pointer;
+  color:var(--text-muted);
+  border-radius:var(--radius-sm);
+  transition:all .15s ease;
+}
+.topbar-icon-btn:hover{background:var(--surface-2);color:var(--text);}
+
+/* ===== Main Layout ===== */
+.main-layout{
+  display:flex;
+  height:calc(100vh - var(--topbar-h));
+  overflow:hidden;
+}
+
+/* Preview area */
+.preview-area{
+  flex:1;
+  min-width:0;
+  background:var(--bg);
+  padding:var(--space-4);
+  overflow:auto;
+}
+
+.preview-frame{
+  width:100%;
+  max-width:960px;
+  margin:0 auto;
+  background:var(--surface);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--shadow-md);
+  overflow:hidden;
+  min-height:calc(100vh - var(--topbar-h) - var(--space-8));
+}
+
+/* Mock WordPress site */
+.wp-mock{font-family:var(--font-sans);}
+
+.wp-mock-header{
+  padding:var(--space-6) var(--space-7);
+  border-bottom:1px solid var(--border);
+}
+.wp-mock-header .wp-site-name{
+  font-size:var(--fs-2xl);
+  font-weight:600;
+  color:var(--text);
+  line-height:var(--lh-heading);
+}
+.wp-mock-header .wp-site-tagline{
+  font-size:var(--fs-base);
+  color:var(--text-muted);
+  margin-top:var(--space-1);
+}
+
+.wp-mock-nav{
+  display:flex;
+  gap:var(--space-5);
+  padding:var(--space-3) var(--space-7);
+  border-bottom:1px solid var(--border);
+  background:var(--surface-2);
+}
+.wp-mock-nav a{
+  font-size:var(--fs-sm);
+  font-weight:500;
+  color:var(--text-muted);
+  padding:var(--space-1) 0;
+  border-bottom:2px solid transparent;
+  transition:all .15s ease;
+}
+.wp-mock-nav a:first-child{color:var(--text);border-bottom-color:var(--accent);}
+
+.wp-mock-content{
+  padding:var(--space-7);
+  display:flex;
+  flex-direction:column;
+  gap:var(--space-7);
+}
+
+.wp-post{border-bottom:1px solid var(--border);padding-bottom:var(--space-7);}
+.wp-post:last-child{border-bottom:none;padding-bottom:0;}
+
+.wp-post-meta{
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+  margin-bottom:var(--space-2);
+  display:flex;
+  align-items:center;
+  gap:var(--space-2);
+}
+.wp-post-meta .category{
+  background:rgba(91,122,107,.1);
+  color:var(--accent);
+  padding:1px var(--space-2);
+  border-radius:99px;
+  font-weight:500;
+}
+
+.wp-post-title{
+  font-size:var(--fs-xl);
+  font-weight:600;
+  line-height:var(--lh-heading);
+  margin-bottom:var(--space-2);
+  color:var(--text);
+}
+
+.wp-post-excerpt{
+  font-size:var(--fs-base);
+  color:var(--text-muted);
+  line-height:var(--lh-prose);
+  max-width:65ch;
+}
+
+.wp-post-img{
+  width:100%;
+  height:200px;
+  border-radius:var(--radius-md);
+  margin-bottom:var(--space-4);
+  background:linear-gradient(135deg,var(--surface-2),var(--border));
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  color:var(--text-muted);
+  font-size:var(--fs-sm);
+}
+.wp-post-img.hero{height:280px;}
+
+.wp-post-readmore{
+  display:inline-flex;
+  align-items:center;
+  gap:var(--space-1);
+  margin-top:var(--space-3);
+  font-size:var(--fs-sm);
+  font-weight:500;
+  color:var(--accent);
+}
+
+/* Mock sidebar in preview */
+.wp-mock-sidebar{
+  padding:var(--space-5) var(--space-7) var(--space-7);
+  border-top:1px solid var(--border);
+  display:grid;
+  grid-template-columns:1fr 1fr 1fr;
+  gap:var(--space-5);
+}
+.wp-mock-sidebar .widget{
+  padding:var(--space-4);
+  background:var(--surface-2);
+  border-radius:var(--radius-md);
+}
+.wp-mock-sidebar .widget h4{
+  font-size:var(--fs-sm);
+  font-weight:600;
+  margin-bottom:var(--space-2);
+  color:var(--text);
+}
+.wp-mock-sidebar .widget p,
+.wp-mock-sidebar .widget li{
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+  line-height:var(--lh-prose);
+}
+.wp-mock-sidebar .widget ul{
+  display:flex;flex-direction:column;gap:var(--space-1);
+}
+
+/* ===== Side Panel ===== */
+.side-panel{
+  width:var(--panel-w);
+  background:var(--surface);
+  border-left:1px solid var(--border);
+  display:flex;
+  flex-direction:column;
+  flex-shrink:0;
+  transition:width .2s ease, opacity .2s ease;
+  overflow:hidden;
+}
+.side-panel.collapsed{
+  width:0;
+  opacity:0;
+  border-left:none;
+}
+
+.panel-tabs{
+  display:flex;
+  border-bottom:1px solid var(--border);
+  overflow-x:auto;
+  flex-shrink:0;
+  scrollbar-width:none;
+}
+.panel-tabs::-webkit-scrollbar{display:none;}
+
+.panel-tab{
+  padding:var(--space-3) var(--space-4);
+  font-size:var(--fs-sm);
+  font-weight:500;
+  color:var(--text-muted);
+  border:none;background:none;
+  cursor:pointer;
+  white-space:nowrap;
+  border-bottom:2px solid transparent;
+  transition:all .15s ease;
+}
+.panel-tab:hover{color:var(--text);}
+.panel-tab.active{
+  color:var(--accent);
+  border-bottom-color:var(--accent);
+}
+
+.panel-content{
+  flex:1;
+  overflow-y:auto;
+  scrollbar-width:thin;
+  scrollbar-color:var(--border) transparent;
+}
+
+.panel-section{
+  padding:var(--space-4);
+  display:none;
+}
+.panel-section.active{display:block;}
+
+.panel-section-title{
+  font-size:var(--fs-xs);
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+  color:var(--text-muted);
+  margin-bottom:var(--space-3);
+}
+
+/* Form controls */
+.form-group{
+  margin-bottom:var(--space-4);
+}
+.form-label{
+  display:block;
+  font-size:var(--fs-sm);
+  font-weight:500;
+  margin-bottom:var(--space-1);
+  color:var(--text);
+}
+.form-select{
+  width:100%;
+  padding:var(--space-2) var(--space-3);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface);
+  font-size:var(--fs-sm);
+  color:var(--text);
+  cursor:pointer;
+  appearance:none;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 5l3 3 3-3' fill='none' stroke='%238A857D' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;
+  background-position:right 8px center;
+  padding-right:28px;
+}
+.form-select:focus{border-color:var(--accent);outline:none;}
+
+.form-input{
+  width:100%;
+  padding:var(--space-2) var(--space-3);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface);
+  font-size:var(--fs-sm);
+  color:var(--text);
+}
+.form-input:focus{border-color:var(--accent);outline:none;}
+.form-input::placeholder{color:var(--text-muted);}
+
+.form-textarea{
+  width:100%;
+  padding:var(--space-2) var(--space-3);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface);
+  font-size:var(--fs-sm);
+  font-family:var(--font-mono);
+  color:var(--text);
+  resize:vertical;
+  min-height:120px;
+}
+.form-textarea:focus{border-color:var(--accent);outline:none;}
+
+.toggle-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:var(--space-2) 0;
+}
+.toggle-label{font-size:var(--fs-sm);font-weight:500;}
+.toggle{
+  position:relative;
+  width:36px;height:20px;
+  border:none;
+  background:var(--border);
+  border-radius:99px;
+  cursor:pointer;
+  transition:background .15s ease;
+  flex-shrink:0;
+}
+.toggle.on{background:var(--accent);}
+.toggle::after{
+  content:'';
+  position:absolute;
+  top:2px;left:2px;
+  width:16px;height:16px;
+  background:var(--surface);
+  border-radius:50%;
+  transition:transform .15s ease;
+  box-shadow:0 1px 3px rgba(0,0,0,.15);
+}
+.toggle.on::after{transform:translateX(16px);}
+
+.checkbox-row{
+  display:flex;
+  align-items:center;
+  gap:var(--space-2);
+  padding:var(--space-1) 0;
+}
+.checkbox-row input[type="checkbox"]{
+  width:16px;height:16px;
+  accent-color:var(--accent);
+  cursor:pointer;
+}
+.checkbox-row label{font-size:var(--fs-sm);cursor:pointer;}
+
+/* Status pill */
+.status-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:var(--space-1);
+  padding:2px var(--space-2);
+  border-radius:99px;
+  font-size:var(--fs-xs);
+  font-weight:500;
+  background:rgba(91,122,107,.1);
+  color:var(--accent);
+  transition:all .3s ease;
+}
+.status-pill.applying{
+  background:rgba(196,146,58,.12);
+  color:var(--warning);
+}
+
+/* ===== Address Bar ===== */
+.address-bar{
+  display:flex;
+  align-items:center;
+  gap:var(--space-2);
+  padding:var(--space-2) var(--space-3);
+  margin-bottom:var(--space-4);
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:999px;
+  max-width:960px;
+  margin-left:auto;
+  margin-right:auto;
+}
+.address-bar-nav{
+  display:flex;
+  align-items:center;
+  gap:var(--space-1);
+}
+.address-bar-nav button{
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  border-radius:var(--radius-sm);
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all .15s;
+  padding:0;
+}
+.address-bar-nav button:hover{background:var(--surface-2);color:var(--text);}
+.address-bar-nav button svg{width:16px;height:16px;}
+.address-bar-input{
+  flex:1;min-width:0;
+  border:none;background:transparent;
+  font-family:var(--font-mono);
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+  outline:none;
+  padding:var(--space-1) 0;
+}
+.address-bar-input:focus{color:var(--text);}
+.address-bar-copy{
+  width:28px;height:28px;
+  display:flex;align-items:center;justify-content:center;
+  border:none;background:transparent;
+  border-radius:var(--radius-sm);
+  color:var(--text-muted);
+  cursor:pointer;
+  transition:all .15s;
+  padding:0;
+}
+.address-bar-copy:hover{background:var(--surface-2);color:var(--text);}
+.address-bar-copy svg{width:14px;height:14px;}
+@media(max-width:600px){
+  .address-bar{margin-bottom:var(--space-3);padding:var(--space-1) var(--space-2);}
+  .address-bar-nav button{width:24px;height:24px;}
+  .address-bar-nav button svg{width:14px;height:14px;}
+  .address-bar-input{font-size:11px;}
+}
+@media(max-width:400px){
+  .address-bar-nav .ab-back,.address-bar-nav .ab-fwd{display:none;}
+}
+
+/* Blueprint */
+.blueprint-actions{
+  display:flex;flex-direction:column;gap:var(--space-3);
+  margin-bottom:var(--space-4);
+}
+
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--space-2);
+  padding:var(--space-2) var(--space-4);
+  border:1px solid var(--border);
+  border-radius:var(--radius-sm);
+  background:var(--surface);
+  font-size:var(--fs-sm);
+  font-weight:500;
+  cursor:pointer;
+  transition:all .15s ease;
+  white-space:nowrap;
+}
+.btn:hover{border-color:var(--accent);color:var(--accent);}
+.btn.primary{
+  background:var(--accent);
+  color:var(--accent-fg);
+  border-color:var(--accent);
+}
+.btn.primary:hover{background:var(--accent-hover);}
+.btn.danger{color:var(--danger);}
+.btn.danger:hover{border-color:var(--danger);}
+.btn.full{width:100%;}
+.btn.sm{padding:var(--space-1) var(--space-3);font-size:var(--fs-xs);}
+
+/* ===== Command Palette (Cmd+K) ===== */
+.cmd-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(45,42,38,.4);
+  z-index:1000;
+  display:none;
+  align-items:flex-start;
+  justify-content:center;
+  padding-top:120px;
+  backdrop-filter:blur(2px);
+}
+.cmd-overlay.open{display:flex;}
+
+.cmd-palette{
+  width:560px;
+  max-width:calc(100vw - 32px);
+  background:var(--surface);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--shadow-xl);
+  overflow:hidden;
+  max-height:480px;
+  display:flex;
+  flex-direction:column;
+}
+
+.cmd-search-wrapper{
+  display:flex;
+  align-items:center;
+  gap:var(--space-3);
+  padding:var(--space-4);
+  border-bottom:1px solid var(--border);
+}
+.cmd-search-wrapper svg{color:var(--text-muted);flex-shrink:0;}
+.cmd-search{
+  flex:1;
+  border:none;outline:none;
+  font-size:var(--fs-lg);
+  background:transparent;
+  color:var(--text);
+}
+.cmd-search::placeholder{color:var(--text-muted);}
+.cmd-kbd{
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+  background:var(--surface-2);
+  padding:2px var(--space-2);
+  border-radius:var(--radius-sm);
+  font-family:var(--font-mono);
+  border:1px solid var(--border);
+}
+
+.cmd-results{
+  overflow-y:auto;
+  flex:1;
+  padding:var(--space-2);
+  scrollbar-width:thin;
+}
+
+.cmd-group-label{
+  font-size:var(--fs-xs);
+  font-weight:600;
+  text-transform:uppercase;
+  letter-spacing:.05em;
+  color:var(--text-muted);
+  padding:var(--space-2) var(--space-3);
+  margin-top:var(--space-1);
+}
+
+.cmd-item{
+  display:flex;
+  align-items:center;
+  gap:var(--space-3);
+  padding:var(--space-2) var(--space-3);
+  border-radius:var(--radius-sm);
+  cursor:pointer;
+  transition:background .08s ease;
+  border:none;background:none;width:100%;text-align:left;
+  font-size:var(--fs-sm);
+  color:var(--text);
+}
+.cmd-item:hover,.cmd-item.highlighted{background:var(--surface-2);}
+.cmd-item svg{color:var(--text-muted);flex-shrink:0;}
+.cmd-item .cmd-item-label{flex:1;}
+.cmd-item .cmd-item-shortcut{
+  font-size:var(--fs-xs);
+  color:var(--text-muted);
+  font-family:var(--font-mono);
+}
+
+/* ===== Modals ===== */
+.modal-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(45,42,38,.5);
+  z-index:1100;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  backdrop-filter:blur(2px);
+}
+.modal-overlay.open{display:flex;}
+
+.modal{
+  width:480px;
+  max-width:calc(100vw - 32px);
+  background:var(--surface);
+  border-radius:var(--radius-lg);
+  box-shadow:var(--shadow-xl);
+  overflow:hidden;
+}
+
+.modal-header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding:var(--space-4) var(--space-5);
+  border-bottom:1px solid var(--border);
+}
+.modal-title{font-size:var(--fs-lg);font-weight:600;}
+.modal-close{
+  display:flex;align-items:center;justify-content:center;
+  width:28px;height:28px;
+  border:none;background:none;
+  cursor:pointer;color:var(--text-muted);
+  border-radius:var(--radius-sm);
+}
+.modal-close:hover{background:var(--surface-2);color:var(--text);}
+
+.modal-body{
+  padding:var(--space-5);
+}
+
+.modal-footer{
+  display:flex;
+  justify-content:flex-end;
+  gap:var(--space-2);
+  padding:var(--space-4) var(--space-5);
+  border-top:1px solid var(--border);
+}
+
+/* Blueprint preview */
+.blueprint-preview{
+  background:var(--surface-2);
+  border:1px solid var(--border);
+  border-radius:var(--radius-md);
+  padding:var(--space-4);
+  font-family:var(--font-mono);
+  font-size:var(--fs-xs);
+  color:var(--text);
+  max-height:240px;
+  overflow-y:auto;
+  white-space:pre;
+  line-height:1.6;
+  margin-bottom:var(--space-4);
+  scrollbar-width:thin;
+}
+
+/* New site picker */
+.new-site-grid{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:var(--space-3);
+  margin-bottom:var(--space-4);
+}
+.new-site-option{
+  display:flex;
+  flex-direction:column;
+  align-items:center;
+  gap:var(--space-2);
+  padding:var(--space-5) var(--space-3);
+  border:1px solid var(--border);
+  border-radius:var(--radius-md);
+  background:var(--surface);
+  cursor:pointer;
+  transition:all .15s ease;
+}
+.new-site-option:hover{
+  border-color:var(--accent);
+  background:rgba(91,122,107,.03);
+}
+.new-site-option svg{color:var(--accent);}
+.new-site-option span{font-size:var(--fs-sm);font-weight:500;}
+
+/* ===== Toast ===== */
+.toast-container{
+  position:fixed;
+  bottom:var(--space-5);
+  right:var(--space-5);
+  z-index:2000;
+  display:flex;
+  flex-direction:column;
+  gap:var(--space-2);
+  pointer-events:none;
+}
+
+.toast{
+  display:flex;
+  align-items:center;
+  gap:var(--space-3);
+  padding:var(--space-3) var(--space-4);
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-md);
+  box-shadow:var(--shadow-lg);
+  font-size:var(--fs-sm);
+  font-weight:500;
+  pointer-events:auto;
+  animation:toast-in .25s ease forwards;
+  min-width:240px;
+  max-width:380px;
+}
+.toast.removing{animation:toast-out .2s ease forwards;}
+
+.toast .toast-icon{flex-shrink:0;}
+.toast.success{border-left:3px solid var(--success);}
+.toast.success .toast-icon{color:var(--success);}
+.toast.info{border-left:3px solid var(--info);}
+.toast.info .toast-icon{color:var(--info);}
+.toast.warning{border-left:3px solid var(--warning);}
+.toast.warning .toast-icon{color:var(--warning);}
+.toast.error{border-left:3px solid var(--danger);}
+.toast.error .toast-icon{color:var(--danger);}
+
+@keyframes toast-in{
+  from{opacity:0;transform:translateX(40px);}
+  to{opacity:1;transform:translateX(0);}
+}
+@keyframes toast-out{
+  from{opacity:1;transform:translateX(0);}
+  to{opacity:0;transform:translateX(40px);}
+}
+
+/* ===== Mobile Bottom Sheet ===== */
+.bottom-sheet-overlay{
+  position:fixed;
+  inset:0;
+  background:rgba(45,42,38,.4);
+  z-index:900;
+  display:none;
+}
+.bottom-sheet-overlay.open{display:block;}
+
+.bottom-sheet{
+  position:fixed;
+  bottom:0;left:0;right:0;
+  background:var(--surface);
+  border-radius:var(--radius-xl) var(--radius-xl) 0 0;
+  box-shadow:var(--shadow-xl);
+  z-index:950;
+  max-height:75vh;
+  display:none;
+  flex-direction:column;
+  overflow:hidden;
+}
+.bottom-sheet.open{display:flex;}
+
+.bottom-sheet-handle{
+  width:36px;height:4px;
+  background:var(--border);
+  border-radius:99px;
+  margin:var(--space-3) auto var(--space-2);
+  flex-shrink:0;
+}
+
+.bottom-sheet-content{
+  overflow-y:auto;
+  flex:1;
+  padding:0 var(--space-4) var(--space-5);
+}
+
+/* Mobile tab bar */
+.mobile-tab-bar{
+  display:none;
+  position:fixed;
+  bottom:0;left:0;right:0;
+  background:var(--surface);
+  border-top:1px solid var(--border);
+  z-index:800;
+  padding:var(--space-2) 0 calc(var(--space-2) + env(safe-area-inset-bottom,0px));
+}
+
+.mobile-tab-bar-inner{
+  display:flex;
+  justify-content:space-around;
+}
+
+.mobile-tab{
+  display:flex;flex-direction:column;align-items:center;gap:2px;
+  padding:var(--space-1) var(--space-2);
+  border:none;background:none;
+  font-size:10px;font-weight:500;
+  color:var(--text-muted);
+  cursor:pointer;
+}
+.mobile-tab.active{color:var(--accent);}
+.mobile-tab svg{width:20px;height:20px;}
+
+/* ===== Responsive ===== */
+@media(max-width:768px){
+  .topbar{padding:0 var(--space-3);}
+  .site-title{max-width:160px;font-size:var(--fs-base);}
+  .site-title-input{width:160px;font-size:var(--fs-base);}
+  .topbar-btn .btn-label{display:none;}
+  .side-panel{display:none !important;}
+  .mobile-tab-bar{display:block;}
+  .preview-area{padding:var(--space-2);padding-bottom:60px;}
+  .wp-mock-header{padding:var(--space-4) var(--space-5);}
+  .wp-mock-header .wp-site-name{font-size:var(--fs-xl);}
+  .wp-mock-content{padding:var(--space-5);}
+  .wp-mock-nav{padding:var(--space-2) var(--space-5);gap:var(--space-4);}
+  .wp-mock-sidebar{grid-template-columns:1fr;padding:var(--space-4) var(--space-5);}
+  .wp-post-img{height:140px;}
+  .wp-post-img.hero{height:180px;}
+  .cmd-overlay{padding-top:var(--space-4);}
+  .storage-badge .badge-label{display:none;}
+}
+
+@media(max-width:480px){
+  .site-title{max-width:120px;}
+  .new-site-grid{grid-template-columns:1fr;}
+}
+
+/* ===== Reduced motion ===== */
+@media(prefers-reduced-motion:reduce){
+  *,*::before,*::after{
+    animation-duration:.01ms !important;
+    animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;
+  }
+}
+
+/* Panel toggle button */
+.panel-toggle{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:34px;height:34px;
+  border:none;background:none;
+  cursor:pointer;color:var(--text-muted);
+  border-radius:var(--radius-sm);
+  transition:all .15s ease;
+}
+.panel-toggle:hover{background:var(--surface-2);color:var(--text);}
+.panel-toggle.active{color:var(--accent);}
+
+/* Upload area */
+.upload-area{
+  border:2px dashed var(--border);
+  border-radius:var(--radius-md);
+  padding:var(--space-5);
+  text-align:center;
+  cursor:pointer;
+  transition:all .15s ease;
+  margin-bottom:var(--space-3);
+}
+.upload-area:hover{border-color:var(--accent);background:rgba(91,122,107,.03);}
+.upload-area p{font-size:var(--fs-sm);color:var(--text-muted);}
+.upload-area .upload-label{font-weight:500;color:var(--accent);}
+
+/* Separator */
+.sep{
+  height:1px;
+  background:var(--border);
+  margin:var(--space-2) 0;
+}
+
+/* PR chip */
+.pr-chip{
+  display:inline-flex;
+  align-items:center;
+  gap:var(--space-1);
+  padding:2px var(--space-2);
+  background:rgba(91,122,107,.1);
+  color:var(--accent);
+  border-radius:99px;
+  font-size:var(--fs-xs);
+  font-weight:500;
+  margin-top:var(--space-2);
+}
+</style>
+</head>
+<body>
+
+<!-- ===== Top Bar ===== -->
+<header class="topbar" role="banner">
+  <div class="topbar-left">
+    <!-- Site Switcher -->
+    <div style="position:relative;">
+      <button class="site-switcher-btn" id="siteSwitcherBtn" aria-label="Switch sites">
+        <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="3" y="3" width="6" height="6" rx="1.5"/>
+          <rect x="11" y="3" width="6" height="6" rx="1.5"/>
+          <rect x="3" y="11" width="6" height="6" rx="1.5"/>
+          <rect x="11" y="11" width="6" height="6" rx="1.5"/>
+        </svg>
+      </button>
+      <div class="site-switcher-dropdown" id="siteSwitcherDropdown">
+        <div class="dropdown-header">Your Sites</div>
+        <button class="site-item active" data-site-id="0" onclick="switchSite(0)">
+          <span class="site-dot" style="background:var(--success);"></span>
+          <span class="site-info">
+            <span class="site-name">Spring Cafe Blog</span>
+            <span class="site-meta">Browser storage</span>
+          </span>
+        </button>
+        <button class="site-item" data-site-id="1" onclick="switchSite(1)">
+          <span class="site-dot" style="background:var(--warning);"></span>
+          <span class="site-info">
+            <span class="site-name">Edge Rendering Demo</span>
+            <span class="site-meta">Temporary</span>
+          </span>
+        </button>
+        <button class="site-item" data-site-id="2" onclick="switchSite(2)">
+          <span class="site-dot" style="background:var(--accent);"></span>
+          <span class="site-info">
+            <span class="site-name">Portfolio Redesign</span>
+            <span class="site-meta">Device storage</span>
+          </span>
+        </button>
+        <button class="site-item" data-site-id="3" onclick="switchSite(3)">
+          <span class="site-dot" style="background:var(--success);"></span>
+          <span class="site-info">
+            <span class="site-name">WooCommerce Sandbox</span>
+            <span class="site-meta">Browser storage</span>
+          </span>
+        </button>
+        <div class="dropdown-footer">
+          <button onclick="openNewSiteModal()">
+            <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="10" y1="4" x2="10" y2="16"/><line x1="4" y1="10" x2="16" y2="10"/></svg>
+            Create new site
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Inline-editable title -->
+    <div class="site-title-wrapper">
+      <span class="site-title" id="siteTitle" tabindex="0" role="button" aria-label="Click to edit site title">Spring Cafe Blog</span>
+      <input type="text" class="site-title-input" id="siteTitleInput" aria-label="Site title" maxlength="60">
+    </div>
+
+    <!-- Storage badge -->
+    <div style="position:relative;">
+      <button class="storage-badge" id="storageBadge" data-state="browser" aria-label="Storage: Browser storage">
+        <span class="dot"></span>
+        <span class="badge-label">Browser</span>
+      </button>
+      <div class="storage-dropdown" id="storageDropdown">
+        <button class="storage-option" data-storage="temporary" onclick="setStorage('temporary')">
+          <span class="opt-dot" style="background:var(--warning);"></span>
+          <span>
+            <span class="opt-label">Keep in memory (Temporary)</span>
+            <p class="opt-desc">Lost when you close the tab</p>
+          </span>
+        </button>
+        <button class="storage-option active" data-storage="browser" onclick="setStorage('browser')">
+          <span class="opt-dot" style="background:var(--success);"></span>
+          <span>
+            <span class="opt-label">Save to browser storage</span>
+            <p class="opt-desc">Persists across sessions in this browser</p>
+          </span>
+        </button>
+        <button class="storage-option" data-storage="device" onclick="setStorage('device')">
+          <span class="opt-dot" style="background:var(--accent);"></span>
+          <span>
+            <span class="opt-label">Save to a folder on your device</span>
+            <p class="opt-desc">Full control, works with any editor</p>
+          </span>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="topbar-right">
+    <!-- Cmd+K button -->
+    <button class="topbar-icon-btn" id="cmdKBtn" aria-label="Command palette (Cmd+K)" title="Cmd+K">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="9" cy="9" r="5.5"/>
+        <line x1="13.5" y1="13.5" x2="17" y2="17"/>
+      </svg>
+    </button>
+
+    <!-- Share -->
+    <button class="topbar-btn" id="shareBtn" aria-label="Share site">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M10 3v10"/>
+        <path d="M6 7l4-4 4 4"/>
+        <path d="M3 13v2a2 2 0 002 2h10a2 2 0 002-2v-2"/>
+      </svg>
+      <span class="btn-label">Share</span>
+    </button>
+
+    <!-- Save -->
+    <button class="topbar-btn primary" id="saveBtn" aria-label="Save site">
+      <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M15.5 17H4.5A1.5 1.5 0 013 15.5V4.5A1.5 1.5 0 014.5 3h8.38a1.5 1.5 0 011.06.44l2.62 2.62A1.5 1.5 0 0117 7.12V15.5a1.5 1.5 0 01-1.5 1.5z"/>
+        <path d="M7 3v4h6V3"/>
+        <rect x="6" y="11" width="8" height="6" rx="1"/>
+      </svg>
+      <span class="btn-label">Save</span>
+    </button>
+
+    <!-- Panel toggle -->
+    <button class="panel-toggle active" id="panelToggle" aria-label="Toggle side panel">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+        <rect x="2" y="3" width="16" height="14" rx="2"/>
+        <line x1="13" y1="3" x2="13" y2="17"/>
+      </svg>
+    </button>
+  </div>
+</header>
+
+<!-- ===== Main Layout ===== -->
+<div class="main-layout">
+
+  <!-- Preview Area -->
+  <main class="preview-area" role="main">
+    <!-- Address Bar -->
+    <div class="address-bar" id="addressBar">
+      <div class="address-bar-nav">
+        <button class="ab-back" aria-label="Back" onclick="navBack()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4l-6 6 6 6"/></svg>
+        </button>
+        <button class="ab-fwd" aria-label="Forward" onclick="navForward()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4l6 6-6 6"/></svg>
+        </button>
+        <button aria-label="Refresh" onclick="navRefresh()">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10a7 7 0 0112.9-3.7M17 10a7 7 0 01-12.9 3.7"/><path d="M17 3v4h-4M3 17v-4h4"/></svg>
+        </button>
+      </div>
+      <input class="address-bar-input" id="addressInput" type="text" value="playground.wordpress.net/scope:abc123/" spellcheck="false" aria-label="Site URL">
+      <button class="address-bar-copy" aria-label="Copy URL" onclick="copyAddressUrl()">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="10" height="10" rx="2"/><path d="M6 14H5a2 2 0 01-2-2V5a2 2 0 012-2h7a2 2 0 012 2v1"/></svg>
+      </button>
+    </div>
+    <div class="preview-frame" id="previewFrame">
+      <div class="wp-mock" id="wpMock">
+        <header class="wp-mock-header">
+          <h1 class="wp-site-name" id="wpSiteName">Spring Cafe Blog</h1>
+          <p class="wp-site-tagline">Seasonal flavors, edge-first performance</p>
+        </header>
+        <nav class="wp-mock-nav" aria-label="Site navigation">
+          <a href="#" onclick="event.preventDefault()">Home</a>
+          <a href="#" onclick="event.preventDefault()">Menu</a>
+          <a href="#" onclick="event.preventDefault()">About</a>
+          <a href="#" onclick="event.preventDefault()">Events</a>
+          <a href="#" onclick="event.preventDefault()">Contact</a>
+        </nav>
+        <div class="wp-mock-content">
+          <!-- Post 1 -->
+          <article class="wp-post">
+            <div class="wp-post-img hero" style="background:linear-gradient(135deg,#a8c5a0,#5B7A6B);">
+              <span>Featured Image</span>
+            </div>
+            <div class="wp-post-meta">
+              <span class="category">Seasonal</span>
+              <span>April 10, 2026</span>
+            </div>
+            <h2 class="wp-post-title">Introducing our spring menu</h2>
+            <p class="wp-post-excerpt">After months of testing and tasting, we are thrilled to share our new spring lineup. From lavender honey lattes to matcha croissants, every item on the menu draws inspiration from the season's first blooms. We partnered with three local farms to source ingredients at peak freshness.</p>
+            <a href="#" class="wp-post-readmore" onclick="event.preventDefault()">
+              Read more
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10h10"/><path d="M11 6l4 4-4 4"/></svg>
+            </a>
+          </article>
+
+          <!-- Post 2 -->
+          <article class="wp-post">
+            <div class="wp-post-meta">
+              <span class="category">Engineering</span>
+              <span>March 28, 2026</span>
+            </div>
+            <h2 class="wp-post-title">Why we switched to edge rendering</h2>
+            <p class="wp-post-excerpt">Our old server-rendered setup was adding 800ms of latency for visitors in Asia and South America. After migrating to a Cloudflare Workers-based edge rendering pipeline, we cut Time to First Byte to under 50ms globally. Here is how we did it without rewriting a single WordPress template.</p>
+            <a href="#" class="wp-post-readmore" onclick="event.preventDefault()">
+              Read more
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10h10"/><path d="M11 6l4 4-4 4"/></svg>
+            </a>
+          </article>
+
+          <!-- Post 3 -->
+          <article class="wp-post">
+            <div class="wp-post-img" style="background:linear-gradient(135deg,#E5E0D8,#C4923A);">
+              <span>Featured Image</span>
+            </div>
+            <div class="wp-post-meta">
+              <span class="category">Community</span>
+              <span>March 15, 2026</span>
+            </div>
+            <h2 class="wp-post-title">Saturday workshops are back</h2>
+            <p class="wp-post-excerpt">Starting April 5th, we are hosting free latte art workshops every Saturday morning. No experience needed. Bring your curiosity and we will provide the oat milk. Space is limited to 12 participants per session, so register early using the form on our Events page.</p>
+            <a href="#" class="wp-post-readmore" onclick="event.preventDefault()">
+              Read more
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10h10"/><path d="M11 6l4 4-4 4"/></svg>
+            </a>
+          </article>
+
+          <!-- Post 4 -->
+          <article class="wp-post">
+            <div class="wp-post-meta">
+              <span class="category">Sustainability</span>
+              <span>March 2, 2026</span>
+            </div>
+            <h2 class="wp-post-title">Our zero-waste journey, one year in</h2>
+            <p class="wp-post-excerpt">Twelve months ago we committed to eliminating single-use packaging from every part of our operation. Today we are proud to report a 94% reduction in landfill-bound waste. The remaining 6% is compostable. In this post we share the wins, the setbacks, and the suppliers who made it possible.</p>
+            <a href="#" class="wp-post-readmore" onclick="event.preventDefault()">
+              Read more
+              <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 10h10"/><path d="M11 6l4 4-4 4"/></svg>
+            </a>
+          </article>
+        </div>
+
+        <!-- Footer widgets -->
+        <div class="wp-mock-sidebar">
+          <div class="widget">
+            <h4>About</h4>
+            <p>We are a neighborhood cafe committed to seasonal ingredients and sustainable practices. Open daily 7am to 6pm.</p>
+          </div>
+          <div class="widget">
+            <h4>Categories</h4>
+            <ul>
+              <li>Seasonal (8)</li>
+              <li>Engineering (4)</li>
+              <li>Community (6)</li>
+              <li>Sustainability (3)</li>
+            </ul>
+          </div>
+          <div class="widget">
+            <h4>Recent Comments</h4>
+            <ul>
+              <li>Maya on Spring menu</li>
+              <li>Tyler on Edge rendering</li>
+              <li>Priya on Zero-waste</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <!-- ===== Side Panel ===== -->
+  <aside class="side-panel" id="sidePanel" role="complementary">
+    <nav class="panel-tabs" aria-label="Panel tabs">
+      <button class="panel-tab active" data-tab="settings" aria-label="Settings tab">Settings</button>
+      <button class="panel-tab" data-tab="blueprint" aria-label="Blueprint tab">Blueprint</button>
+      <button class="panel-tab" data-tab="export" aria-label="Export tab">Export</button>
+    </nav>
+
+    <div class="panel-content">
+
+      <!-- Settings -->
+      <div class="panel-section active" id="tab-settings">
+        <div class="panel-section-title">Environment</div>
+        <div class="form-group">
+          <label class="form-label" for="phpVersion">PHP Version</label>
+          <select class="form-select" id="phpVersion" onchange="applySetting(this,'PHP version')">
+            <option>8.0</option>
+            <option selected>8.2</option>
+            <option>8.3</option>
+            <option>8.4</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="wpVersion">WordPress Version</label>
+          <select class="form-select" id="wpVersion" onchange="applySetting(this,'WordPress version')">
+            <option>6.4</option>
+            <option>6.5</option>
+            <option selected>6.7</option>
+            <option>Nightly</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="langSelect">Language</label>
+          <select class="form-select" id="langSelect" onchange="applySetting(this,'Language')">
+            <option selected>English (en_US)</option>
+            <option>Spanish (es_ES)</option>
+            <option>French (fr_FR)</option>
+            <option>German (de_DE)</option>
+            <option>Japanese (ja)</option>
+            <option>Portuguese (pt_BR)</option>
+          </select>
+        </div>
+
+        <div class="panel-section-title" style="margin-top:var(--space-4);">PHP Extensions</div>
+        <div class="checkbox-row"><input type="checkbox" id="extGd" checked onchange="applySetting(this,'gd extension')"><label for="extGd">gd</label></div>
+        <div class="checkbox-row"><input type="checkbox" id="extMbstring" checked onchange="applySetting(this,'mbstring extension')"><label for="extMbstring">mbstring</label></div>
+        <div class="checkbox-row"><input type="checkbox" id="extSqlite" checked onchange="applySetting(this,'sqlite3 extension')"><label for="extSqlite">sqlite3</label></div>
+        <div class="checkbox-row"><input type="checkbox" id="extIconv" onchange="applySetting(this,'iconv extension')"><label for="extIconv">iconv</label></div>
+        <div class="checkbox-row"><input type="checkbox" id="extOpenssl" onchange="applySetting(this,'openssl extension')"><label for="extOpenssl">openssl</label></div>
+        <div class="checkbox-row"><input type="checkbox" id="extXml" checked onchange="applySetting(this,'xml extension')"><label for="extXml">xml</label></div>
+
+        <div class="panel-section-title" style="margin-top:var(--space-4);">Features</div>
+        <div class="toggle-row">
+          <span class="toggle-label">Networking</span>
+          <button class="toggle on" id="toggleNet" aria-label="Toggle networking" onclick="toggleSwitch(this,'Networking')"></button>
+        </div>
+        <div class="toggle-row">
+          <span class="toggle-label">Multisite</span>
+          <button class="toggle" id="toggleMulti" aria-label="Toggle multisite" onclick="toggleSwitch(this,'Multisite')"></button>
+        </div>
+      </div>
+
+      <!-- Blueprint -->
+      <div class="panel-section" id="tab-blueprint">
+        <div class="panel-section-title">Import</div>
+        <div class="form-group">
+          <label class="form-label" for="blueprintUrl">Import from URL</label>
+          <div style="display:flex;gap:var(--space-2);">
+            <input type="text" class="form-input" id="blueprintUrl" placeholder="https://example.com/blueprint.json">
+            <button class="btn sm" onclick="importBlueprint()">Load</button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="blueprintJson">Paste JSON</label>
+          <textarea class="form-textarea" id="blueprintJson" placeholder='{"landingPage":"/","steps":[...]}'></textarea>
+          <button class="btn sm full" style="margin-top:var(--space-2);" onclick="applyBlueprintJson()">Apply Blueprint</button>
+        </div>
+
+        <div class="sep" style="margin:var(--space-5) 0;"></div>
+
+        <div class="panel-section-title">Export</div>
+        <button class="btn full" id="exportBlueprintBtn" onclick="exportBlueprint()">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 13v2a2 2 0 002 2h10a2 2 0 002-2v-2"/><path d="M10 3v10"/><path d="M6 7l4-4 4 4"/></svg>
+          Export current site as Blueprint
+        </button>
+      </div>
+
+      <!-- Export -->
+      <div class="panel-section" id="tab-export">
+        <div class="panel-section-title">Download</div>
+        <button class="btn full" style="margin-bottom:var(--space-3);" onclick="downloadZip()">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10"/><path d="M6 9l4 4 4-4"/><path d="M3 15v1a1 1 0 001 1h12a1 1 0 001-1v-1"/></svg>
+          Download as ZIP
+        </button>
+        <button class="btn full" style="margin-bottom:var(--space-3);" onclick="exportWxr()">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/><path d="M7 8h6"/><path d="M7 12h4"/></svg>
+          Export as WXR (WordPress eXtended RSS)
+        </button>
+
+        <div class="sep" style="margin:var(--space-5) 0;"></div>
+
+        <div class="panel-section-title">Push to GitHub</div>
+        <div class="form-group">
+          <label class="form-label" for="ghRepo">Repository</label>
+          <input type="text" class="form-input" id="ghRepo" placeholder="wordpress/playground-site" value="wordpress/playground-site">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="ghBranch">Branch</label>
+          <input type="text" class="form-input" id="ghBranch" placeholder="main" value="add/spring-cafe-theme">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="ghPrTitle">PR Title</label>
+          <input type="text" class="form-input" id="ghPrTitle" placeholder="Pull request title" value="Add spring cafe blog theme and content">
+        </div>
+        <div class="form-group">
+          <label class="form-label" for="ghPrDesc">PR Description</label>
+          <textarea class="form-textarea" id="ghPrDesc" style="min-height:80px;font-family:var(--font-sans);" placeholder="Describe your changes...">This PR adds the new seasonal theme with four blog posts and updated navigation. Tested on PHP 8.2 and WordPress 6.7.</textarea>
+        </div>
+        <button class="btn primary full" id="pushGhBtn" onclick="pushToGithub()">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0018 10c0-4.42-3.58-8-8-8z"/></svg>
+          Create Pull Request
+        </button>
+        <div id="prChipArea"></div>
+      </div>
+
+    </div>
+  </aside>
+</div>
+
+<!-- ===== Command Palette ===== -->
+<div class="cmd-overlay" id="cmdOverlay" role="dialog" aria-label="Command palette">
+  <div class="cmd-palette">
+    <div class="cmd-search-wrapper">
+      <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="5.5"/><line x1="13.5" y1="13.5" x2="17" y2="17"/></svg>
+      <input type="text" class="cmd-search" id="cmdSearch" placeholder="Type a command or search..." autocomplete="off">
+      <span class="cmd-kbd">Esc</span>
+    </div>
+    <div class="cmd-results" id="cmdResults"></div>
+  </div>
+</div>
+
+<!-- ===== Blueprint Export Modal ===== -->
+<div class="modal-overlay" id="blueprintModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Export as Blueprint</span>
+      <button class="modal-close" aria-label="Close" onclick="closeModal('blueprintModal')">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="5" x2="15" y2="15"/><line x1="15" y1="5" x2="5" y2="15"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <p style="font-size:var(--fs-sm);color:var(--text-muted);margin-bottom:var(--space-4);">This JSON blueprint describes your current site configuration. Share it with others to reproduce this exact setup.</p>
+      <div class="blueprint-preview" id="blueprintPreviewContent"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeModal('blueprintModal')">Cancel</button>
+      <button class="btn primary" onclick="copyBlueprint()">
+        <svg width="14" height="14" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="11" height="11" rx="2"/><path d="M4 14H3.5A1.5 1.5 0 012 12.5v-9A1.5 1.5 0 013.5 2h9A1.5 1.5 0 0114 3.5V4"/></svg>
+        Copy to Clipboard
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== New Site Modal ===== -->
+<div class="modal-overlay" id="newSiteModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Create a New Site</span>
+      <button class="modal-close" aria-label="Close" onclick="closeModal('newSiteModal')">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="5" x2="15" y2="15"/><line x1="15" y1="5" x2="5" y2="15"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="new-site-grid">
+        <button class="new-site-option" onclick="createNewSite('Blank Site')">
+          <svg width="24" height="24" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="2"/><line x1="10" y1="7" x2="10" y2="13"/><line x1="7" y1="10" x2="13" y2="10"/></svg>
+          <span>Blank</span>
+        </button>
+        <button class="new-site-option" onclick="createNewSite('Blog')">
+          <svg width="24" height="24" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h12a1 1 0 011 1v10a1 1 0 01-1 1H4a1 1 0 01-1-1V5a1 1 0 011-1z"/><path d="M7 8h6"/><path d="M7 12h4"/></svg>
+          <span>Blog</span>
+        </button>
+        <button class="new-site-option" onclick="createNewSite('Portfolio')">
+          <svg width="24" height="24" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="2"/><rect x="6" y="6" width="3" height="3" rx=".5"/><rect x="11" y="6" width="3" height="3" rx=".5"/><rect x="6" y="11" width="3" height="3" rx=".5"/><rect x="11" y="11" width="3" height="3" rx=".5"/></svg>
+          <span>Portfolio</span>
+        </button>
+        <button class="new-site-option" onclick="createNewSite('Store')">
+          <svg width="24" height="24" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7l1.5-4h11L17 7"/><rect x="3" y="7" width="14" height="10" rx="1"/><path d="M8 7v2a2 2 0 004 0V7"/></svg>
+          <span>Store</span>
+        </button>
+        <button class="new-site-option" onclick="createNewSite('Docs Site')">
+          <svg width="24" height="24" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3h7l4 4v10a1 1 0 01-1 1H5a1 1 0 01-1-1V4a1 1 0 011-1z"/><path d="M12 3v4h4"/><path d="M7 10h6"/><path d="M7 13h4"/></svg>
+          <span>Docs Site</span>
+        </button>
+        <button class="new-site-option" onclick="createFromBlueprintUrl()">
+          <svg width="24" height="24" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12l-2 2 2 2"/><path d="M12 8l2-2-2-2"/><path d="M6 14l8-8"/></svg>
+          <span>From Blueprint URL</span>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Share Modal ===== -->
+<div class="modal-overlay" id="shareModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">Share Site</span>
+      <button class="modal-close" aria-label="Close" onclick="closeModal('shareModal')">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="5" x2="15" y2="15"/><line x1="15" y1="5" x2="5" y2="15"/></svg>
+      </button>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <label class="form-label">Playground URL</label>
+        <div style="display:flex;gap:var(--space-2);">
+          <input type="text" class="form-input" id="shareUrl" readonly value="https://playground.wordpress.net/?blueprint=eyJsYW5kZ...">
+          <button class="btn primary" onclick="copyShareUrl()">Copy</button>
+        </div>
+      </div>
+      <div class="sep" style="margin:var(--space-4) 0;"></div>
+      <button class="btn full" onclick="copyShareBlueprint()">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 12l-2 2 2 2"/><path d="M12 8l2-2-2-2"/><path d="M6 14l8-8"/></svg>
+        Share as Blueprint URL
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ===== Mobile Tab Bar ===== -->
+<nav class="mobile-tab-bar" aria-label="Mobile navigation">
+  <div class="mobile-tab-bar-inner">
+    <button class="mobile-tab active" data-mobile-tab="preview" onclick="mobileTabSwitch('preview')">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="2"/></svg>
+      Preview
+    </button>
+    <button class="mobile-tab" data-mobile-tab="settings" onclick="mobileTabSwitch('settings')">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 2v2m0 12v2m-6-8H2m16 0h-2m-1.17-4.83l1.41-1.41M4.76 15.24l1.41-1.41m0-7.66L4.76 4.76m10.48 10.48l-1.41-1.41"/></svg>
+      Settings
+    </button>
+    <button class="mobile-tab" data-mobile-tab="more" onclick="mobileTabSwitch('more')">
+      <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="5" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="10" cy="15" r="1.5"/></svg>
+      More
+    </button>
+  </div>
+</nav>
+
+<!-- ===== Mobile Bottom Sheet ===== -->
+<div class="bottom-sheet-overlay" id="mobileSheetOverlay" onclick="closeMobileSheet()"></div>
+<div class="bottom-sheet" id="mobileSheet">
+  <div class="bottom-sheet-handle"></div>
+  <div class="bottom-sheet-content" id="mobileSheetContent"></div>
+</div>
+
+<!-- ===== Toasts ===== -->
+<div class="toast-container" id="toastContainer" aria-live="polite"></div>
+
+<script>
+// ===== State =====
+const state = {
+  currentSiteId: 0,
+  siteTitle: 'Spring Cafe Blog',
+  storageState: 'browser',
+  sites: [
+    { id: 0, name: 'Spring Cafe Blog', storage: 'browser', tagline: 'Seasonal flavors, edge-first performance' },
+    { id: 1, name: 'Edge Rendering Demo', storage: 'temporary', tagline: 'Performance testing sandbox' },
+    { id: 2, name: 'Portfolio Redesign', storage: 'device', tagline: 'Creative works showcase' },
+    { id: 3, name: 'WooCommerce Sandbox', storage: 'browser', tagline: 'E-commerce experiments' }
+  ]
+};
+
+// ===== Toast System =====
+function showToast(message, type = 'info') {
+  const container = document.getElementById('toastContainer');
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+
+  const icons = {
+    success: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 10l3 3 5-6"/><circle cx="10" cy="10" r="8"/></svg>',
+    info: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><path d="M10 9v4"/><circle cx="10" cy="6.5" r=".5" fill="currentColor"/></svg>',
+    warning: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3l8 14H2L10 3z"/><path d="M10 9v3"/><circle cx="10" cy="14" r=".5" fill="currentColor"/></svg>',
+    error: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="8"/><line x1="7" y1="7" x2="13" y2="13"/><line x1="13" y1="7" x2="7" y2="13"/></svg>'
+  };
+
+  toast.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span><span>${message}</span>`;
+  container.appendChild(toast);
+
+  setTimeout(() => {
+    toast.classList.add('removing');
+    setTimeout(() => toast.remove(), 200);
+  }, 3000);
+}
+
+// ===== Address Bar Navigation =====
+const addressPages = {
+  '/': 'frontPage',
+  '/wp-admin/': 'adminPage',
+  '/?p=1': 'singlePost',
+  '/sample-page/': 'samplePage'
+};
+
+let navHistory = ['playground.wordpress.net/scope:abc123/'];
+let navIndex = 0;
+
+function navigatePreview(path) {
+  const frame = document.getElementById('previewFrame');
+  frame.style.opacity = '0.4';
+  frame.style.transition = 'opacity .2s';
+  setTimeout(() => {
+    frame.style.opacity = '1';
+  }, 400);
+}
+
+function navBack() {
+  if (navIndex > 0) {
+    navIndex--;
+    document.getElementById('addressInput').value = navHistory[navIndex];
+    navigatePreview(navHistory[navIndex]);
+  }
+}
+
+function navForward() {
+  if (navIndex < navHistory.length - 1) {
+    navIndex++;
+    document.getElementById('addressInput').value = navHistory[navIndex];
+    navigatePreview(navHistory[navIndex]);
+  }
+}
+
+function navRefresh() {
+  navigatePreview(document.getElementById('addressInput').value);
+}
+
+function copyAddressUrl() {
+  const url = 'https://' + document.getElementById('addressInput').value;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(url).then(() => showToast('Link copied', 'success')).catch(() => showToast('Link copied', 'success'));
+  } else {
+    showToast('Link copied', 'success');
+  }
+}
+
+document.getElementById('addressInput').addEventListener('keydown', function(e) {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    const val = this.value.trim();
+    if (val) {
+      navIndex++;
+      navHistory = navHistory.slice(0, navIndex);
+      navHistory.push(val);
+      navigatePreview(val);
+    }
+  }
+});
+
+// ===== Inline-Editable Title =====
+const siteTitle = document.getElementById('siteTitle');
+const siteTitleInput = document.getElementById('siteTitleInput');
+
+siteTitle.addEventListener('click', startEditingTitle);
+siteTitle.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); startEditingTitle(); }
+});
+
+function startEditingTitle() {
+  siteTitleInput.value = state.siteTitle;
+  siteTitle.style.display = 'none';
+  siteTitleInput.style.display = 'block';
+  siteTitleInput.focus();
+  siteTitleInput.select();
+}
+
+siteTitleInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    commitTitle();
+  } else if (e.key === 'Escape') {
+    cancelTitle();
+  }
+});
+
+siteTitleInput.addEventListener('blur', commitTitle);
+
+function commitTitle() {
+  const newTitle = siteTitleInput.value.trim();
+  if (newTitle && newTitle !== state.siteTitle) {
+    state.siteTitle = newTitle;
+    siteTitle.textContent = newTitle;
+    document.getElementById('wpSiteName').textContent = newTitle;
+    state.sites[state.currentSiteId].name = newTitle;
+    updateSiteSwitcherItems();
+    showToast(`Site renamed to "${newTitle}"`, 'success');
+  }
+  siteTitle.style.display = '';
+  siteTitleInput.style.display = 'none';
+}
+
+function cancelTitle() {
+  siteTitle.style.display = '';
+  siteTitleInput.style.display = 'none';
+}
+
+// ===== Storage =====
+const storageBadge = document.getElementById('storageBadge');
+const storageDropdown = document.getElementById('storageDropdown');
+
+storageBadge.addEventListener('click', (e) => {
+  e.stopPropagation();
+  storageDropdown.classList.toggle('open');
+});
+
+function setStorage(type) {
+  state.storageState = type;
+  storageBadge.setAttribute('data-state', type);
+  const labels = { temporary: 'Temporary', browser: 'Browser', device: 'Device' };
+  storageBadge.querySelector('.badge-label').textContent = labels[type];
+  storageBadge.setAttribute('aria-label', `Storage: ${labels[type]}`);
+  storageDropdown.classList.remove('open');
+
+  document.querySelectorAll('.storage-option').forEach(opt => {
+    opt.classList.toggle('active', opt.dataset.storage === type);
+  });
+
+  state.sites[state.currentSiteId].storage = type;
+  updateSiteSwitcherItems();
+
+  const msgs = {
+    temporary: 'Site is in memory only. It will be lost when you close the tab.',
+    browser: 'Site saved to browser storage. It persists across sessions.',
+    device: 'Site saved to your device. Full control with any editor.'
+  };
+  showToast(msgs[type], type === 'temporary' ? 'warning' : 'success');
+}
+
+// ===== Site Switcher =====
+const siteSwitcherBtn = document.getElementById('siteSwitcherBtn');
+const siteSwitcherDropdown = document.getElementById('siteSwitcherDropdown');
+
+siteSwitcherBtn.addEventListener('click', (e) => {
+  e.stopPropagation();
+  siteSwitcherDropdown.classList.toggle('open');
+});
+
+function updateSiteSwitcherItems() {
+  const items = siteSwitcherDropdown.querySelectorAll('.site-item');
+  items.forEach(item => {
+    const id = parseInt(item.dataset.siteId);
+    if (isNaN(id) || !state.sites[id]) return;
+    item.classList.toggle('active', id === state.currentSiteId);
+    item.querySelector('.site-name').textContent = state.sites[id].name;
+    const storageMeta = { temporary: 'Temporary', browser: 'Browser storage', device: 'Device storage' };
+    item.querySelector('.site-meta').textContent = storageMeta[state.sites[id].storage] || state.sites[id].storage;
+    const dotColors = { temporary: 'var(--warning)', browser: 'var(--success)', device: 'var(--accent)' };
+    item.querySelector('.site-dot').style.background = dotColors[state.sites[id].storage] || 'var(--text-muted)';
+  });
+}
+
+function switchSite(id) {
+  if (id === state.currentSiteId) {
+    siteSwitcherDropdown.classList.remove('open');
+    return;
+  }
+
+  const site = state.sites[id];
+  if (!site) return;
+
+  state.currentSiteId = id;
+  state.siteTitle = site.name;
+  state.storageState = site.storage;
+
+  // Update title
+  siteTitle.textContent = site.name;
+  document.getElementById('wpSiteName').textContent = site.name;
+  document.querySelector('.wp-site-tagline').textContent = site.tagline;
+
+  // Update storage badge
+  storageBadge.setAttribute('data-state', site.storage);
+  const labels = { temporary: 'Temporary', browser: 'Browser', device: 'Device' };
+  storageBadge.querySelector('.badge-label').textContent = labels[site.storage];
+  storageBadge.setAttribute('aria-label', `Storage: ${labels[site.storage]}`);
+
+  // Update storage dropdown active state
+  document.querySelectorAll('.storage-option').forEach(opt => {
+    opt.classList.toggle('active', opt.dataset.storage === site.storage);
+  });
+
+  // Update site switcher active state
+  updateSiteSwitcherItems();
+  siteSwitcherDropdown.classList.remove('open');
+
+  // Flash preview to simulate loading
+  const preview = document.getElementById('previewFrame');
+  preview.style.opacity = '0.5';
+  setTimeout(() => { preview.style.opacity = '1'; }, 400);
+
+  showToast(`Switched to "${site.name}"`, 'success');
+}
+
+// ===== Panel Tabs =====
+document.querySelectorAll('.panel-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel-section').forEach(s => s.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById(`tab-${tab.dataset.tab}`).classList.add('active');
+  });
+});
+
+// ===== Panel Toggle =====
+const panelToggle = document.getElementById('panelToggle');
+const sidePanel = document.getElementById('sidePanel');
+
+panelToggle.addEventListener('click', () => {
+  sidePanel.classList.toggle('collapsed');
+  panelToggle.classList.toggle('active');
+});
+
+// ===== Settings =====
+function applySetting(el, name) {
+  const value = el.type === 'checkbox' ? (el.checked ? 'enabled' : 'disabled') : el.value;
+  const pill = document.createElement('span');
+  pill.className = 'status-pill applying';
+  pill.textContent = 'Applying...';
+  el.closest('.form-group, .checkbox-row')?.appendChild(pill);
+
+  setTimeout(() => {
+    pill.textContent = 'Applied';
+    pill.classList.remove('applying');
+    showToast(`${name} set to ${value}`, 'success');
+    setTimeout(() => pill.remove(), 1500);
+  }, 800);
+}
+
+function toggleSwitch(btn, name) {
+  btn.classList.toggle('on');
+  const isOn = btn.classList.contains('on');
+  showToast(`${name} ${isOn ? 'enabled' : 'disabled'}`, 'success');
+}
+
+// ===== Blueprint =====
+function importBlueprint() {
+  const url = document.getElementById('blueprintUrl').value.trim();
+  if (!url) {
+    showToast('Please enter a blueprint URL', 'warning');
+    return;
+  }
+  showToast('Loading blueprint from URL...', 'info');
+  setTimeout(() => showToast('Blueprint loaded and applied', 'success'), 1500);
+}
+
+function applyBlueprintJson() {
+  const json = document.getElementById('blueprintJson').value.trim();
+  if (!json) {
+    showToast('Please paste valid JSON', 'warning');
+    return;
+  }
+  try {
+    JSON.parse(json);
+    showToast('Applying blueprint...', 'info');
+    setTimeout(() => showToast('Blueprint applied successfully', 'success'), 1200);
+  } catch {
+    showToast('Invalid JSON. Please check your blueprint.', 'error');
+  }
+}
+
+function exportBlueprint() {
+  const blueprint = {
+    landingPage: "/",
+    phpVersion: document.getElementById('phpVersion').value,
+    wpVersion: document.getElementById('wpVersion').value,
+    features: {
+      networking: document.getElementById('toggleNet').classList.contains('on'),
+      multisite: document.getElementById('toggleMulti').classList.contains('on')
+    },
+    steps: [
+      {
+        step: "setSiteOptions",
+        options: {
+          blogname: state.siteTitle,
+          blogdescription: "Seasonal flavors, edge-first performance"
+        }
+      }
+    ]
+  };
+
+  document.getElementById('blueprintPreviewContent').textContent = JSON.stringify(blueprint, null, 2);
+  openModal('blueprintModal');
+}
+
+function copyBlueprint() {
+  const text = document.getElementById('blueprintPreviewContent').textContent;
+  navigator.clipboard.writeText(text).then(() => {
+    showToast('Blueprint JSON copied to clipboard', 'success');
+    closeModal('blueprintModal');
+  }).catch(() => {
+    showToast('Failed to copy. Please copy manually.', 'error');
+  });
+}
+
+// ===== Export =====
+function downloadZip() {
+  showToast('Preparing ZIP download...', 'info');
+  setTimeout(() => showToast('Download started: spring-cafe-blog.zip', 'success'), 1200);
+}
+
+function exportWxr() {
+  showToast('Generating WXR export...', 'info');
+  setTimeout(() => showToast('WXR export ready: spring-cafe-blog.xml', 'success'), 1000);
+}
+
+// ===== GitHub =====
+function pushToGithub() {
+  const btn = document.getElementById('pushGhBtn');
+  const repo = document.getElementById('ghRepo').value;
+  const branch = document.getElementById('ghBranch').value;
+  const title = document.getElementById('ghPrTitle').value;
+
+  if (!repo || !branch || !title) {
+    showToast('Please fill in repository, branch, and PR title', 'warning');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '<span>Creating PR...</span>';
+
+  setTimeout(() => {
+    btn.disabled = false;
+    btn.innerHTML = `<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0018 10c0-4.42-3.58-8-8-8z"/></svg> Create Pull Request`;
+    showToast(`PR #42 created on ${repo}`, 'success');
+    document.getElementById('prChipArea').innerHTML = '<span class="pr-chip"><svg width="12" height="12" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="7" cy="5" r="2"/><circle cx="13" cy="15" r="2"/><path d="M7 7v6a4 4 0 004 4h2"/></svg> PR #42 open</span>';
+  }, 2000);
+}
+
+// ===== Share =====
+document.getElementById('shareBtn').addEventListener('click', () => {
+  openModal('shareModal');
+});
+
+function copyShareUrl() {
+  const url = document.getElementById('shareUrl').value;
+  navigator.clipboard.writeText(url).then(() => {
+    showToast('Playground URL copied to clipboard', 'success');
+    closeModal('shareModal');
+  }).catch(() => {
+    showToast('Failed to copy. Please copy manually.', 'error');
+  });
+}
+
+function copyShareBlueprint() {
+  navigator.clipboard.writeText('https://playground.wordpress.net/?blueprint-url=https://example.com/spring-cafe-blueprint.json').then(() => {
+    showToast('Blueprint URL copied to clipboard', 'success');
+    closeModal('shareModal');
+  }).catch(() => {
+    showToast('Failed to copy.', 'error');
+  });
+}
+
+// ===== Save =====
+document.getElementById('saveBtn').addEventListener('click', () => {
+  const labels = { temporary: 'memory', browser: 'browser storage', device: 'device' };
+  showToast(`Site saved to ${labels[state.storageState]}`, 'success');
+});
+
+// ===== Cmd+S =====
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    e.preventDefault();
+    const labels = { temporary: 'memory', browser: 'browser storage', device: 'device' };
+    showToast(`Site saved to ${labels[state.storageState]}`, 'success');
+  }
+});
+
+// ===== New Site =====
+function openNewSiteModal() {
+  siteSwitcherDropdown.classList.remove('open');
+  closeCmdPalette();
+  openModal('newSiteModal');
+}
+
+function createNewSite(type) {
+  closeModal('newSiteModal');
+  const preview = document.getElementById('previewFrame');
+  preview.style.opacity = '0.4';
+
+  const names = {
+    'Blank Site': 'Untitled Site',
+    'Blog': 'My New Blog',
+    'Portfolio': 'My Portfolio',
+    'Store': 'My Online Store',
+    'Docs Site': 'Documentation'
+  };
+
+  const newName = names[type] || 'Untitled Site';
+
+  setTimeout(() => {
+    const newId = state.sites.length;
+    state.sites.push({ id: newId, name: newName, storage: 'temporary', tagline: `A fresh ${type.toLowerCase()} site` });
+    state.currentSiteId = newId;
+    state.siteTitle = newName;
+    state.storageState = 'temporary';
+
+    siteTitle.textContent = newName;
+    document.getElementById('wpSiteName').textContent = newName;
+    document.querySelector('.wp-site-tagline').textContent = `A fresh ${type.toLowerCase()} site`;
+
+    storageBadge.setAttribute('data-state', 'temporary');
+    storageBadge.querySelector('.badge-label').textContent = 'Temporary';
+    document.querySelectorAll('.storage-option').forEach(opt => {
+      opt.classList.toggle('active', opt.dataset.storage === 'temporary');
+    });
+
+    // Add to site switcher
+    const footer = siteSwitcherDropdown.querySelector('.dropdown-footer');
+    const newItem = document.createElement('button');
+    newItem.className = 'site-item';
+    newItem.dataset.siteId = newId;
+    newItem.onclick = () => switchSite(newId);
+    newItem.innerHTML = `
+      <span class="site-dot" style="background:var(--warning);"></span>
+      <span class="site-info">
+        <span class="site-name">${newName}</span>
+        <span class="site-meta">Temporary</span>
+      </span>
+    `;
+    footer.before(newItem);
+    updateSiteSwitcherItems();
+
+    preview.style.opacity = '1';
+    showToast(`Created new ${type} site`, 'success');
+  }, 600);
+}
+
+function createFromBlueprintUrl() {
+  closeModal('newSiteModal');
+  // Switch to blueprint tab
+  document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel-section').forEach(s => s.classList.remove('active'));
+  document.querySelector('[data-tab="blueprint"]').classList.add('active');
+  document.getElementById('tab-blueprint').classList.add('active');
+
+  if (sidePanel.classList.contains('collapsed')) {
+    sidePanel.classList.remove('collapsed');
+    panelToggle.classList.add('active');
+  }
+  showToast('Enter a blueprint URL or paste JSON to create a site', 'info');
+}
+
+// ===== Command Palette =====
+const cmdOverlay = document.getElementById('cmdOverlay');
+const cmdSearch = document.getElementById('cmdSearch');
+const cmdResults = document.getElementById('cmdResults');
+
+const cmdActions = [
+  // Your Sites
+  { group: 'Your Sites', label: 'Spring Cafe Blog', desc: 'Browser storage', icon: 'site', action: () => switchSite(0) },
+  { group: 'Your Sites', label: 'Edge Rendering Demo', desc: 'Temporary', icon: 'site', action: () => switchSite(1) },
+  { group: 'Your Sites', label: 'Portfolio Redesign', desc: 'Device storage', icon: 'site', action: () => switchSite(2) },
+  { group: 'Your Sites', label: 'WooCommerce Sandbox', desc: 'Browser storage', icon: 'site', action: () => switchSite(3) },
+
+  // Create
+  { group: 'Create', label: 'New site...', icon: 'plus', action: openNewSiteModal },
+
+  // Actions
+  { group: 'Actions', label: 'Save', shortcut: '\u2318S', icon: 'save', action: () => {
+    const labels = { temporary: 'memory', browser: 'browser storage', device: 'device' };
+    showToast(`Site saved to ${labels[state.storageState]}`, 'success');
+  }},
+  { group: 'Actions', label: 'Share site', icon: 'share', action: () => openModal('shareModal') },
+  { group: 'Actions', label: 'Download as ZIP', icon: 'download', action: downloadZip },
+  { group: 'Actions', label: 'Export as WXR', icon: 'download', action: exportWxr },
+  { group: 'Actions', label: 'Export as Blueprint', icon: 'code', action: exportBlueprint },
+  { group: 'Actions', label: 'Push to GitHub', icon: 'github', action: () => {
+    document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel-section').forEach(s => s.classList.remove('active'));
+    document.querySelector('[data-tab="export"]').classList.add('active');
+    document.getElementById('tab-export').classList.add('active');
+    if (sidePanel.classList.contains('collapsed')) {
+      sidePanel.classList.remove('collapsed');
+      panelToggle.classList.add('active');
+    }
+  }},
+
+  // Settings
+  { group: 'Settings', label: 'Change PHP version', icon: 'settings', action: () => switchPanelTab('settings') },
+  { group: 'Settings', label: 'Change WordPress version', icon: 'settings', action: () => switchPanelTab('settings') },
+  { group: 'Settings', label: 'Change language', icon: 'settings', action: () => switchPanelTab('settings') },
+  { group: 'Settings', label: 'Toggle networking', icon: 'settings', action: () => { toggleSwitch(document.getElementById('toggleNet'), 'Networking'); } },
+  { group: 'Settings', label: 'Toggle multisite', icon: 'settings', action: () => { toggleSwitch(document.getElementById('toggleMulti'), 'Multisite'); } },
+
+  // Persistence
+  { group: 'Storage', label: 'Keep in memory (Temporary)', icon: 'storage', action: () => setStorage('temporary') },
+  { group: 'Storage', label: 'Save to browser storage', icon: 'storage', action: () => setStorage('browser') },
+  { group: 'Storage', label: 'Save to a folder on your device', icon: 'storage', action: () => setStorage('device') },
+
+  // Panel tabs
+  { group: 'Navigate', label: 'Open Settings panel', icon: 'panel', action: () => switchPanelTab('settings') },
+  { group: 'Navigate', label: 'Open Blueprint panel', icon: 'panel', action: () => switchPanelTab('blueprint') },
+  { group: 'Navigate', label: 'Open Export panel', icon: 'panel', action: () => switchPanelTab('export') },
+];
+
+function switchPanelTab(tabName) {
+  document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.panel-section').forEach(s => s.classList.remove('active'));
+  document.querySelector(`[data-tab="${tabName}"]`).classList.add('active');
+  document.getElementById(`tab-${tabName}`).classList.add('active');
+  if (sidePanel.classList.contains('collapsed')) {
+    sidePanel.classList.remove('collapsed');
+    panelToggle.classList.add('active');
+  }
+}
+
+const cmdIcons = {
+  site: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="14" height="14" rx="2"/><circle cx="10" cy="10" r="3"/></svg>',
+  plus: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><line x1="10" y1="4" x2="10" y2="16"/><line x1="4" y1="10" x2="16" y2="10"/></svg>',
+  save: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15.5 17H4.5A1.5 1.5 0 013 15.5V4.5A1.5 1.5 0 014.5 3h8.38a1.5 1.5 0 011.06.44l2.62 2.62A1.5 1.5 0 0117 7.12V15.5a1.5 1.5 0 01-1.5 1.5z"/></svg>',
+  share: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10"/><path d="M6 7l4-4 4 4"/><path d="M3 13v2a2 2 0 002 2h10a2 2 0 002-2v-2"/></svg>',
+  download: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10"/><path d="M6 9l4 4 4-4"/><path d="M3 15v1a1 1 0 001 1h12a1 1 0 001-1v-1"/></svg>',
+  code: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l-4 3 4 3"/><path d="M13 7l4 3-4 3"/></svg>',
+  github: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 2C5.58 2 2 5.58 2 10c0 3.54 2.29 6.53 5.47 7.59.4.07.53-.17.53-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0018 10c0-4.42-3.58-8-8-8z"/></svg>',
+  settings: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3"/><path d="M10 2v2m0 12v2m-6-8H2m16 0h-2"/></svg>',
+  storage: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="14" height="4" rx="1"/><rect x="3" y="12" width="14" height="4" rx="1"/><circle cx="6" cy="6" r=".5" fill="currentColor"/><circle cx="6" cy="14" r=".5" fill="currentColor"/></svg>',
+  panel: '<svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="16" height="14" rx="2"/><line x1="13" y1="3" x2="13" y2="17"/></svg>'
+};
+
+function renderCmdResults(query = '') {
+  const q = query.toLowerCase().trim();
+  let filtered = cmdActions;
+
+  if (q) {
+    filtered = cmdActions.filter(a => {
+      return a.label.toLowerCase().includes(q) ||
+             a.group.toLowerCase().includes(q) ||
+             (a.desc && a.desc.toLowerCase().includes(q));
+    });
+  }
+
+  // Group actions
+  const groups = {};
+  filtered.forEach(a => {
+    if (!groups[a.group]) groups[a.group] = [];
+    groups[a.group].push(a);
+  });
+
+  let html = '';
+  // Ensure "Your Sites" comes first
+  const groupOrder = ['Your Sites', 'Create', 'Actions', 'Settings', 'Storage', 'Navigate'];
+  groupOrder.forEach(groupName => {
+    if (groups[groupName]) {
+      html += `<div class="cmd-group-label">${groupName}</div>`;
+      groups[groupName].forEach(a => {
+        html += `<button class="cmd-item" data-action-label="${a.label}">
+          ${cmdIcons[a.icon] || ''}
+          <span class="cmd-item-label">${a.label}${a.desc ? ` <span style="color:var(--text-muted);font-size:var(--fs-xs);">${a.desc}</span>` : ''}</span>
+          ${a.shortcut ? `<span class="cmd-item-shortcut">${a.shortcut}</span>` : ''}
+        </button>`;
+      });
+    }
+  });
+
+  if (!html) {
+    html = '<div style="padding:var(--space-5);text-align:center;color:var(--text-muted);font-size:var(--fs-sm);">No results found</div>';
+  }
+
+  cmdResults.innerHTML = html;
+
+  // Bind clicks
+  cmdResults.querySelectorAll('.cmd-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const label = item.dataset.actionLabel;
+      const action = cmdActions.find(a => a.label === label);
+      if (action) {
+        closeCmdPalette();
+        action.action();
+      }
+    });
+  });
+}
+
+function openCmdPalette() {
+  cmdOverlay.classList.add('open');
+  cmdSearch.value = '';
+  renderCmdResults();
+  setTimeout(() => cmdSearch.focus(), 50);
+}
+
+function closeCmdPalette() {
+  cmdOverlay.classList.remove('open');
+  cmdSearch.value = '';
+}
+
+document.getElementById('cmdKBtn').addEventListener('click', openCmdPalette);
+
+cmdOverlay.addEventListener('click', (e) => {
+  if (e.target === cmdOverlay) closeCmdPalette();
+});
+
+cmdSearch.addEventListener('input', () => {
+  renderCmdResults(cmdSearch.value);
+});
+
+cmdSearch.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') closeCmdPalette();
+  if (e.key === 'Enter') {
+    const first = cmdResults.querySelector('.cmd-item');
+    if (first) first.click();
+  }
+  if (e.key === 'ArrowDown') {
+    e.preventDefault();
+    const items = cmdResults.querySelectorAll('.cmd-item');
+    const highlighted = cmdResults.querySelector('.cmd-item.highlighted');
+    if (!highlighted && items.length > 0) {
+      items[0].classList.add('highlighted');
+      items[0].scrollIntoView({ block: 'nearest' });
+    } else if (highlighted) {
+      const idx = Array.from(items).indexOf(highlighted);
+      highlighted.classList.remove('highlighted');
+      const next = items[idx + 1] || items[0];
+      next.classList.add('highlighted');
+      next.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  if (e.key === 'ArrowUp') {
+    e.preventDefault();
+    const items = cmdResults.querySelectorAll('.cmd-item');
+    const highlighted = cmdResults.querySelector('.cmd-item.highlighted');
+    if (highlighted) {
+      const idx = Array.from(items).indexOf(highlighted);
+      highlighted.classList.remove('highlighted');
+      const prev = items[idx - 1] || items[items.length - 1];
+      prev.classList.add('highlighted');
+      prev.scrollIntoView({ block: 'nearest' });
+    }
+  }
+  if (e.key === 'Enter') {
+    const highlighted = cmdResults.querySelector('.cmd-item.highlighted');
+    if (highlighted) { e.preventDefault(); highlighted.click(); }
+  }
+});
+
+// Cmd+K global
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+    e.preventDefault();
+    if (cmdOverlay.classList.contains('open')) {
+      closeCmdPalette();
+    } else {
+      openCmdPalette();
+    }
+  }
+});
+
+// ===== Modals =====
+function openModal(id) {
+  document.getElementById(id).classList.add('open');
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.remove('open');
+}
+
+// Close modals on overlay click
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.classList.remove('open');
+  });
+});
+
+// Escape to close modals
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay.open').forEach(m => m.classList.remove('open'));
+    // Also close cmd palette
+    if (cmdOverlay.classList.contains('open')) closeCmdPalette();
+  }
+});
+
+// ===== Close dropdowns on outside click =====
+document.addEventListener('click', (e) => {
+  if (!e.target.closest('.site-switcher-btn') && !e.target.closest('.site-switcher-dropdown')) {
+    siteSwitcherDropdown.classList.remove('open');
+  }
+  if (!e.target.closest('.storage-badge') && !e.target.closest('.storage-dropdown')) {
+    storageDropdown.classList.remove('open');
+  }
+});
+
+// ===== Mobile Bottom Sheet =====
+function mobileTabSwitch(tab) {
+  document.querySelectorAll('.mobile-tab').forEach(t => t.classList.remove('active'));
+  document.querySelector(`[data-mobile-tab="${tab}"]`).classList.add('active');
+
+  if (tab === 'preview') {
+    closeMobileSheet();
+    return;
+  }
+
+  const sheet = document.getElementById('mobileSheet');
+  const overlay = document.getElementById('mobileSheetOverlay');
+  const content = document.getElementById('mobileSheetContent');
+
+  if (tab === 'settings') {
+    content.innerHTML = document.getElementById('tab-settings').innerHTML;
+    // Re-bind toggles
+    content.querySelectorAll('.toggle').forEach(btn => {
+      const name = btn.closest('.toggle-row')?.querySelector('.toggle-label')?.textContent || 'Feature';
+      btn.addEventListener('click', () => toggleSwitch(btn, name));
+    });
+  } else if (tab === 'more') {
+    content.innerHTML = `
+      <div style="padding:var(--space-2) 0;">
+        <div class="cmd-group-label">Quick Actions</div>
+        <button class="cmd-item" onclick="openCmdPalette();closeMobileSheet();">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="9" r="5.5"/><line x1="13.5" y1="13.5" x2="17" y2="17"/></svg>
+          <span class="cmd-item-label">Command palette</span>
+        </button>
+        <button class="cmd-item" onclick="closeMobileSheet();openModal('shareModal');">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10"/><path d="M6 7l4-4 4 4"/><path d="M3 13v2a2 2 0 002 2h10a2 2 0 002-2v-2"/></svg>
+          <span class="cmd-item-label">Share site</span>
+        </button>
+        <button class="cmd-item" onclick="closeMobileSheet();downloadZip();">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3v10"/><path d="M6 9l4 4 4-4"/><path d="M3 15v1a1 1 0 001 1h12a1 1 0 001-1v-1"/></svg>
+          <span class="cmd-item-label">Download as ZIP</span>
+        </button>
+        <button class="cmd-item" onclick="closeMobileSheet();exportBlueprint();">
+          <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7l-4 3 4 3"/><path d="M13 7l4 3-4 3"/></svg>
+          <span class="cmd-item-label">Export as Blueprint</span>
+        </button>
+      </div>
+    `;
+  }
+
+  sheet.classList.add('open');
+  overlay.classList.add('open');
+}
+
+function closeMobileSheet() {
+  document.getElementById('mobileSheet').classList.remove('open');
+  document.getElementById('mobileSheetOverlay').classList.remove('open');
+}
+
+// ===== Dynamic site updates for command palette =====
+// Keep the command palette site list in sync with state
+function updateCmdSites() {
+  // Remove existing site entries
+  const nonSiteActions = cmdActions.filter(a => a.group !== 'Your Sites');
+  cmdActions.length = 0;
+
+  // Re-add sites from state
+  state.sites.forEach(site => {
+    const storageMeta = { temporary: 'Temporary', browser: 'Browser storage', device: 'Device storage' };
+    cmdActions.push({
+      group: 'Your Sites',
+      label: site.name,
+      desc: storageMeta[site.storage] || site.storage,
+      icon: 'site',
+      action: () => switchSite(site.id)
+    });
+  });
+
+  // Re-add non-site actions
+  nonSiteActions.forEach(a => cmdActions.push(a));
+}
+
+// Override switchSite to also update cmd palette
+const originalSwitchSite = switchSite;
+// (already works because cmdActions references state.sites dynamically via the updateCmdSites call)
+
+// Refresh command palette site list when sites change
+const origCreateNewSite = createNewSite;
+
+// ===== Init =====
+renderCmdResults();
+</script>
+</body>
+</html>
